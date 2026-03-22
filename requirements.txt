@@ -1,0 +1,26 @@
+# Copy Trader - Windows Dependencies
+# pip install -r requirements.txt
+
+# Core
+Pillow>=10.0.0
+
+# Windows screen capture
+pywin32>=306
+
+# OCR
+pytesseract>=0.3.10
+winsdk>=1.0.0b10
+
+# Signal parsing
+anthropic>=0.18.0
+groq>=0.4.0
+
+# Image deduplication
+imagehash>=4.3.0
+
+# GUI
+PySide6>=6.6.0
+qasync>=0.27.1
+
+# Packaging
+pyinstaller>=6.0

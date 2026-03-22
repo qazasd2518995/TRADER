@@ -1,0 +1,55 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicedoc/tauri2-schema/main/tauri.conf.schema.json",
+  "productName": "黃金跟單系統",
+  "version": "1.0.0",
+  "identifier": "com.goldtrader.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run dev"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "黃金跟單系統",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 1100,
+        "minHeight": 700,
+        "decorations": true,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": false,
+      "tooltip": "黃金跟單系統"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "resources": [
+      "binaries/*",
+      "../mt5_ea/*"
+    ],
+    "windows": {
+      "nsis": {
+        "displayLanguageSelector": false
+      }
+    }
+  },
+  "plugins": {
+    "shell": {
+      "open": true
+    }
+  }
+}

@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+venv/
+
+# Build outputs
+dist/
+build/
+src-tauri/target/
+src-tauri/binaries/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp files
+*.tmp
+*.log
+copy_trader_*.png
+
+# Debug screenshots
+debug_*.png
+test_*.png
+
+# Config with user data
+config.json
+copy_trader_signals.json
+
+# Error logs
+sidecar_err.txt
+
+# Claude Code
+.claude/
+
+# TS build info
+tsconfig.tsbuildinfo
