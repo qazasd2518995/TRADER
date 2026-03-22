@@ -139,6 +139,9 @@ class CopyTrader:
         self._signals_file = DATA_DIR / "copy_trader_signals.json"
         self._last_cleanup_time = 0.0
         self._cancel_processed: set = set()
+        # Vision dedup: prevent sending the same incomplete signal to Vision repeatedly
+        # Key: (source, direction, tp_tuple) -> expiry timestamp
+        self._vision_sent_cache: Dict[str, float] = {}
 
         # Stats
         self._api_calls_today = 0
@@ -329,7 +332,25 @@ class CopyTrader:
                 if regex_signal.entry_price: have.append(f"入場={regex_signal.entry_price}")
                 if regex_signal.stop_loss: have.append(f"SL={regex_signal.stop_loss}")
                 if regex_signal.take_profit: have.append(f"TP={regex_signal.take_profit}")
+
+                # --- Vision dedup: don't send the same incomplete signal to Vision repeatedly ---
+                # Use parsed signal content (not OCR text hash) as key, because OCR text
+                # varies slightly between captures even when the actual signal is the same.
+                source_name = frame.source_name or "default"
+                tp_tuple = tuple(regex_signal.take_profit) if regex_signal.take_profit else ()
+                vision_key = f"{source_name}:{regex_signal.direction}:{regex_signal.entry_price}:{regex_signal.stop_loss}:{tp_tuple}"
+                vision_expiry = self._vision_sent_cache.get(vision_key, 0)
+
+                if time.time() < vision_expiry:
+                    # Already sent this incomplete signal to Vision recently — skip
+                    logger.debug(f"Vision dedup: 同一不完整信號已送過，跳過 ({', '.join(have)})")
+                    self._add_hash_with_ttl(text_hash, 60)
+                    continue
+
                 logger.info(f"Regex 不完整 ({', '.join(have) or '無'}), 送 Vision 補充...")
+
+                # Cache this signal for 120 seconds to prevent repeated Vision calls
+                self._vision_sent_cache[vision_key] = time.time() + 120
 
                 signal = None
                 self._api_calls_today += 1
@@ -675,38 +696,70 @@ class CopyTrader:
             return False
 
     # Cancel keywords that trigger deletion of all pending orders
-    CANCEL_KEYWORDS = ['撤單', '撤单', '刪單', '删单', '測單', '测单', '測掉', '撤掉', '撒掉', '撤', '取消']
+    # Multi-char keywords first (more specific), single-char last (prone to false positives)
+    CANCEL_KEYWORDS = ['撤單', '撤单', '刪單', '删单', '測單', '测单', '測掉', '撤掉', '撒掉', '取消', '撤', '撒']
+
+    # Blocks containing these patterns are likely UI elements (title bar, tabs, ads),
+    # not actual chat messages. Skip them to avoid false cancel triggers.
+    UI_NOISE_PATTERNS = [
+        'Leverage Empire',
+        '禁言群',
+        '黃金報單',
+        '限定優惠',
+        '最低一件',
+        '立即下載',
+    ]
 
     def _check_cancel_keywords(self, text: str, source_name: str = "") -> bool:
         """
-        Check if the latest message contains cancel keywords.
-        If found, cancel pending orders AND close open positions from the SAME source.
+        Check if recent messages contain cancel keywords.
+        If found, cancel pending orders from the SAME source.
         Returns True if cancel was triggered (caller should skip signal parsing).
+
+        Checks the last 3 blocks (not just the latest) because:
+        - LINE reply/quote messages may split across timestamp blocks
+        - OCR may produce extra blocks from UI elements
         """
-        # Only check the LATEST message block (not older ones)
+        # Only check RECENT message blocks (not older ones)
         # This prevents old cancel messages from blocking newer signals
         blocks = self._regex_parser._split_by_timestamps(text)
 
-        # Find the last block with actual content (skip empty / input area junk)
-        latest_block = ""
+        # Collect last 3 non-trivial blocks, skipping UI noise
+        recent_blocks = []
         for block in reversed(blocks):
             block_text = block.strip()
-            if len(block_text) >= 3:
-                latest_block = block_text
+            if len(block_text) < 1:
+                continue
+            # Skip blocks that look like UI elements (title bar, ads, tabs)
+            if any(noise in block_text for noise in self.UI_NOISE_PATTERNS):
+                continue
+            recent_blocks.append(block_text)
+            if len(recent_blocks) >= 3:
                 break
 
-        if not latest_block:
+        if not recent_blocks:
             return False
 
-        # Check if the latest block contains cancel keywords
+        # Check if any recent block contains cancel keywords
         found_keyword = None
-        matched_block = latest_block
-        for kw in self.CANCEL_KEYWORDS:
-            if kw in latest_block:
-                found_keyword = kw
+        matched_block = ""
+        for block_text in recent_blocks:
+            for kw in self.CANCEL_KEYWORDS:
+                if kw in block_text:
+                    found_keyword = kw
+                    matched_block = block_text
+                    break
+            if found_keyword:
                 break
 
         if not found_keyword:
+            return False
+
+        # Extra validation for single-char keywords (high false positive risk):
+        # Block must be SHORT (< 30 chars) — real cancel messages are brief like "撤" or "撤 🙈"
+        # Long blocks containing "撤" are likely OCR noise from UI elements
+        if len(found_keyword) == 1 and len(matched_block) > 30:
+            logger.debug(f"Cancel keyword '{found_keyword}' ignored — block too long ({len(matched_block)} chars), likely UI noise")
             return False
 
         # Dedup: don't process the same cancel text twice
@@ -980,6 +1033,11 @@ class CopyTrader:
         stale_retries = [k for k, v in self._incomplete_retry_counts.items() if v > 20]
         for k in stale_retries:
             del self._incomplete_retry_counts[k]
+
+        # Clean expired vision dedup cache
+        expired_vision = [k for k, exp in self._vision_sent_cache.items() if now >= exp]
+        for k in expired_vision:
+            del self._vision_sent_cache[k]
 
         # Clean up temp screenshot files
         self.capture_service.cleanup_old_files(max_age_seconds=300)

@@ -388,8 +388,8 @@ class ScreenCaptureService:
                     # Use perceptual hash for better dedup (tolerates minor rendering differences)
                     phash = self._compute_perceptual_hash(frame.image_path)
                     last_hash = self._last_hashes.get(window.name)
-                    if last_hash and self._phash_similar(phash, last_hash, threshold=6):
-                        logger.debug(f"Window '{window.name}' unchanged (phash distance < 3), skipping")
+                    if last_hash and self._phash_similar(phash, last_hash, threshold=10):
+                        logger.debug(f"Window '{window.name}' unchanged (phash distance < 10), skipping")
                         Path(frame.image_path).unlink(missing_ok=True)
                         continue
                     if last_hash:

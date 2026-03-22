@@ -320,7 +320,8 @@ class RegexSignalParser:
         return signal
 
     def _text_from_last_direction(self, text: str) -> str:
-        """Find the last direction keyword and return text from that point onward.
+        """Find the last direction keyword and return text from that point onward,
+        but also include preceding entry price if adjacent.
 
         When OCR captures multiple signals in one block (no timestamp between them),
         the older signal's SL/TP can pollute the newer signal's parsing.
@@ -328,6 +329,9 @@ class RegexSignalParser:
 
         Example OCR: "乘XAUUSD黃金 SL:5030 ... 乘XAUUSD黃金 BUY:4999 SL:4990 TP:5017"
         → returns: "BUY:4999 SL:4990 TP:5017"
+
+        For "黃金 4695-4696 空 Tp ...", the entry price directly precedes the
+        direction keyword, so we expand leftward to include it.
         """
         # Find all direction keyword positions
         direction_patterns = [
@@ -342,6 +346,21 @@ class RegexSignalParser:
                     last_pos = m.start()
 
         if last_pos > 0:
+            # Look backward from the direction keyword for an adjacent entry price
+            # e.g. "4695-4696 空" or "4695 空" — include the price(s) in the result
+            prefix = text[:last_pos]
+            price_prefix_match = re.search(
+                r'(\d{4,5}(?:\.\d+)?\s*[-~]\s*\d{4,5}(?:\.\d+)?\s*)$',
+                prefix,
+            )
+            if not price_prefix_match:
+                price_prefix_match = re.search(
+                    r'(\d{4,5}(?:\.\d+)?\s*)$',
+                    prefix,
+                )
+            if price_prefix_match:
+                # Expand start to include the entry price
+                return text[price_prefix_match.start():]
             return text[last_pos:]
         return text
 
@@ -417,7 +436,21 @@ class RegexSignalParser:
             except Exception:
                 pass
 
-        # "5180多" / "5180空" — price before Chinese direction keyword
+        # "4695-4696多" / "4695-4696空" — range entry before direction keyword
+        # Check range BEFORE single price to avoid matching only the second number
+        range_before_dir = re.search(
+            r'(\d{4,5}(?:\.\d+)?)\s*[-~]\s*(\d{4,5}(?:\.\d+)?)\s*(?:多|空)',
+            text,
+        )
+        if range_before_dir:
+            try:
+                p1, p2 = float(range_before_dir.group(1)), float(range_before_dir.group(2))
+                # Use the first price (signal author's primary reference)
+                return p1, False
+            except Exception:
+                pass
+
+        # "5180多" / "5180空" — single price before Chinese direction keyword
         price_before_dir = re.search(
             r'(\d{4,5}(?:\.\d+)?)\s*(?:多|空)',
             text,
@@ -434,10 +467,10 @@ class RegexSignalParser:
             if match:
                 groups = match.groups()
                 if len(groups) == 2:
-                    # Range: take midpoint
+                    # Range: use first price
                     try:
                         p1, p2 = float(groups[0]), float(groups[1])
-                        return (p1 + p2) / 2, False
+                        return p1, False
                     except:
                         pass
                 elif len(groups) == 1:
