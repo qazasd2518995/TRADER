@@ -106,12 +106,21 @@ fn spawn_sidecar(app: &AppHandle) {
 
     debug_log(app, &format!("resource_dir: {:?}", resource_dir));
 
-    let sidecar_path =
-        resource_dir.join("binaries/copy-trader-sidecar-x86_64-pc-windows-msvc.exe");
-    let sidecar_path = if sidecar_path.exists() {
-        sidecar_path
+    // Platform-specific sidecar binary name
+    let sidecar_path = if cfg!(target_os = "macos") {
+        let path = resource_dir.join("binaries/copy-trader-sidecar-aarch64-apple-darwin");
+        if path.exists() {
+            path
+        } else {
+            resource_dir.join("binaries/copy-trader-sidecar")
+        }
     } else {
-        resource_dir.join("binaries/copy-trader-sidecar.exe")
+        let path = resource_dir.join("binaries/copy-trader-sidecar-x86_64-pc-windows-msvc.exe");
+        if path.exists() {
+            path
+        } else {
+            resource_dir.join("binaries/copy-trader-sidecar.exe")
+        }
     };
 
     debug_log(app, &format!("sidecar_path: {:?}, exists: {}", sidecar_path, sidecar_path.exists()));
