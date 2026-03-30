@@ -61,7 +61,7 @@ a = Analysis(
         # pyobjc — macOS screen capture
         'objc', 'Quartz', 'AppKit', 'Vision', 'Foundation', 'CoreFoundation',
         # PIL — image processing
-        'PIL', 'PIL.Image', 'PIL.ImageGrab',
+        'PIL', 'PIL.Image',
         'imagehash',
         # OCR
         'rapidocr', 'onnxruntime',
