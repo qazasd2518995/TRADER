@@ -1,7 +1,7 @@
 """
-Screen Capture Service for Windows
+Screen Capture Service (cross-platform)
 Captures specified screen regions or windows for OCR processing.
-Supports window capture for background windows using win32gui.
+Uses platform abstraction layer for Windows (pywin32) and macOS (Quartz).
 """
 import subprocess
 import tempfile
@@ -15,17 +15,14 @@ import logging
 logger = logging.getLogger(__name__)
 
 try:
-    import win32gui
-    import win32ui
-    import win32con
-    import win32api
-    WIN32_AVAILABLE = True
+    from copy_trader.platform import ScreenCapture, KeyboardControl, WindowInfo
+    PLATFORM_AVAILABLE = True
 except ImportError:
-    WIN32_AVAILABLE = False
-    logger.warning("win32gui not available. Install pywin32: pip install pywin32")
+    PLATFORM_AVAILABLE = False
+    logger.warning("Platform layer not available")
 
 try:
-    from PIL import ImageGrab, Image
+    from PIL import Image
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
@@ -33,37 +30,20 @@ except ImportError:
 
 
 def get_window_id_by_name(window_name: str, app_name: str = "LINE") -> Optional[int]:
-    """
-    Get window handle (HWND) by window title.
-
-    Args:
-        window_name: Part of window title to match
-        app_name: Application name (used for logging)
-
-    Returns:
-        Window handle (HWND) or None if not found
-    """
-    if not WIN32_AVAILABLE:
-        logger.error("win32gui not available. Install pywin32")
+    """Get window ID by window title (cross-platform)."""
+    if not PLATFORM_AVAILABLE:
+        logger.error("Platform layer not available")
         return None
 
-    result = []
-
-    def enum_callback(hwnd, _):
-        if win32gui.IsWindowVisible(hwnd):
-            title = win32gui.GetWindowText(hwnd)
-            if window_name in title:
-                result.append((hwnd, title))
-
     try:
-        win32gui.EnumWindows(enum_callback, None)
-        if result:
-            # Prefer shortest title (exact/closest match) to avoid matching
-            # unrelated windows that happen to contain the search string
-            result.sort(key=lambda x: len(x[1]))
-            hwnd, title = result[0]
-            logger.info(f"Found window: '{title}' (HWND: {hwnd})")
-            return hwnd
+        sc = ScreenCapture()
+        windows = sc.enumerate_windows(window_name)
+        if windows:
+            # Prefer shortest title (exact/closest match)
+            windows.sort(key=lambda w: len(w.title))
+            wid = windows[0].window_id
+            logger.info(f"Found window: '{windows[0].title}' (ID: {wid})")
+            return wid
         logger.warning(f"Window not found: {window_name}")
         return None
     except Exception as e:
@@ -73,27 +53,18 @@ def get_window_id_by_name(window_name: str, app_name: str = "LINE") -> Optional[
 
 def list_app_windows(app_name: str = "LINE") -> List[Dict]:
     """List all visible windows (optionally filter by app name in title)."""
-    if not WIN32_AVAILABLE:
+    if not PLATFORM_AVAILABLE:
         return []
 
-    result = []
-
-    def enum_callback(hwnd, _):
-        if win32gui.IsWindowVisible(hwnd):
-            title = win32gui.GetWindowText(hwnd)
-            if title and (not app_name or app_name.lower() in title.lower()):
-                result.append({
-                    'id': hwnd,
-                    'name': title,
-                    'owner': app_name
-                })
-
     try:
-        win32gui.EnumWindows(enum_callback, None)
+        sc = ScreenCapture()
+        windows = sc.enumerate_windows(app_name)
+        return [
+            {'id': w.window_id, 'name': w.title, 'owner': w.owner_name or app_name}
+            for w in windows
+        ]
     except Exception:
-        pass
-
-    return result
+        return []
 
 
 @dataclass
@@ -134,7 +105,7 @@ class CapturedFrame:
 
 
 class ScreenCaptureService:
-    """Service for capturing screen regions or windows on Windows."""
+    """Service for capturing screen regions or windows (cross-platform)."""
 
     def __init__(
         self,
@@ -150,21 +121,26 @@ class ScreenCaptureService:
         self._last_force_refresh: float = 0.0
         self.FORCE_REFRESH_INTERVAL: float = 60.0  # Force OCR every 60s to catch short messages (撤/SL)
 
+        # Initialize platform layer
+        self._screen_capture = ScreenCapture() if PLATFORM_AVAILABLE else None
+        self._keyboard = KeyboardControl() if PLATFORM_AVAILABLE else None
+
         Path(self.temp_dir).mkdir(parents=True, exist_ok=True)
         logger.info(f"ScreenCaptureService initialized with {len(self.regions)} regions, {len(self.windows)} windows")
 
     def capture_region(self, region: CaptureRegion) -> CapturedFrame:
-        """Capture a single screen region using Pillow ImageGrab."""
-        if not PIL_AVAILABLE:
-            raise RuntimeError("Pillow not available for screen capture")
+        """Capture a single screen region (cross-platform)."""
+        if not PLATFORM_AVAILABLE:
+            raise RuntimeError("Platform layer not available for screen capture")
 
         timestamp = time.time()
         filename = f"{region.name}_{int(timestamp * 1000)}.png"
         filepath = str(Path(self.temp_dir) / filename)
 
         try:
-            bbox = (region.x, region.y, region.x + region.width, region.y + region.height)
-            img = ImageGrab.grab(bbox=bbox)
+            img = self._screen_capture.capture_region(region.x, region.y, region.width, region.height)
+            if img is None:
+                raise RuntimeError("Screen capture returned None")
             img.save(filepath)
 
             img_hash = self._compute_file_hash(filepath)
@@ -187,11 +163,7 @@ class ScreenCaptureService:
             self._scroll_times: Dict[int, float] = {}
 
     def _send_scroll_to_bottom(self, hwnd: int):
-        """
-        Scroll LINE window to bottom to ensure latest messages are visible.
-        Uses brief focus switch + keybd_event because PostMessage doesn't work
-        with LINE's CEF/Chromium rendering engine.
-        """
+        """Scroll window to bottom to ensure latest messages are visible (cross-platform)."""
         self.__init_scroll_times()
 
         now = time.time()
@@ -199,47 +171,22 @@ class ScreenCaptureService:
             return
         self._scroll_times[hwnd] = now
 
-        try:
-            import ctypes
-            VK_END = 0x23
-            VK_CONTROL = 0x11
-            KEYEVENTF_EXTENDEDKEY = 0x01
-            KEYEVENTF_KEYUP = 0x02
-
-            # Save current foreground window
-            old_fg = win32gui.GetForegroundWindow()
-
-            # Briefly focus the LINE window (required for CEF)
-            ctypes.windll.user32.SetForegroundWindow(hwnd)
-            time.sleep(0.05)
-
-            # Ctrl+End: jump to bottom
-            ctypes.windll.user32.keybd_event(VK_CONTROL, 0, 0, 0)
-            ctypes.windll.user32.keybd_event(VK_END, 0, KEYEVENTF_EXTENDEDKEY, 0)
-            ctypes.windll.user32.keybd_event(VK_END, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
-            ctypes.windll.user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
-            time.sleep(0.05)
-
-            # Restore previous foreground window
-            if old_fg and old_fg != hwnd:
-                ctypes.windll.user32.SetForegroundWindow(old_fg)
-
-            logger.debug(f"Scrolled window {hwnd} to bottom")
-        except Exception as e:
-            logger.debug(f"Failed to scroll window {hwnd}: {e}")
+        if self._keyboard:
+            try:
+                self._keyboard.send_scroll_to_bottom(hwnd)
+                logger.debug(f"Scrolled window {hwnd} to bottom")
+            except Exception as e:
+                logger.debug(f"Failed to scroll window {hwnd}: {e}")
 
     def capture_window(self, window: CaptureWindow) -> Optional[CapturedFrame]:
-        """
-        Capture a window by its handle. Works even if window is in background.
-        Uses Win32 API PrintWindow for background capture.
-        """
+        """Capture a window by its handle. Works even if window is in background (cross-platform)."""
         hwnd = window.get_window_id()
         if not hwnd:
             logger.error(f"Could not get window handle for '{window.name}'")
             return None
 
-        if not WIN32_AVAILABLE:
-            logger.error("win32gui not available for window capture")
+        if not PLATFORM_AVAILABLE:
+            logger.error("Platform layer not available for window capture")
             return None
 
         # Scroll to bottom to ensure latest messages are visible
@@ -249,63 +196,24 @@ class ScreenCaptureService:
         filename = f"{window.name}_{int(timestamp * 1000)}.png"
         filepath = str(Path(self.temp_dir) / filename)
 
-        hwnd_dc = None
-        mfc_dc = None
-        save_dc = None
-        bitmap = None
-
         try:
-            # Restore minimized windows — PrintWindow cannot capture minimized windows
-            import ctypes
-            if win32gui.IsIconic(hwnd):
-                # SW_SHOWNOACTIVATE (4): restore without stealing focus
-                ctypes.windll.user32.ShowWindow(hwnd, 4)
-                time.sleep(0.3)  # Wait for window to restore
-                logger.debug(f"Restored minimized window: {window.name}")
-
-            # Get window dimensions
-            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-            width = right - left
-            height = bottom - top
-
-            if width <= 0 or height <= 0:
-                logger.error("Window has zero dimensions")
+            img = self._screen_capture.capture_window(hwnd)
+            if img is None:
+                logger.error(f"Window capture returned None for '{window.name}'")
                 return None
 
-            # Create device context and bitmap
-            hwnd_dc = win32gui.GetWindowDC(hwnd)
-            mfc_dc = win32ui.CreateDCFromHandle(hwnd_dc)
-            save_dc = mfc_dc.CreateCompatibleDC()
-
-            bitmap = win32ui.CreateBitmap()
-            bitmap.CreateCompatibleBitmap(mfc_dc, width, height)
-            save_dc.SelectObject(bitmap)
-
-            # Use PrintWindow to capture (works for background/occluded windows)
-            # Flag 2 = PW_RENDERFULLCONTENT: captures even hardware-accelerated content
-            # Flag 3 = PW_RENDERFULLCONTENT | PW_CLIENTONLY: client area only (no title bar)
-            import ctypes
-            result = ctypes.windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), 3)
-            if not result:
-                # Retry with flag=2 (include title bar)
-                ctypes.windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), 2)
-
-            # Convert to PIL Image and save
-            bmp_info = bitmap.GetInfo()
-            bmp_str = bitmap.GetBitmapBits(True)
-            img = Image.frombuffer(
-                'RGB',
-                (bmp_info['bmWidth'], bmp_info['bmHeight']),
-                bmp_str, 'raw', 'BGRX', 0, 1
-            )
             img.save(filepath)
 
-            # Check for black/empty capture (PrintWindow failure)
-            import numpy as np
-            arr = np.array(img)
-            if arr.mean() < 5:
-                logger.warning(f"PrintWindow returned black image for '{window.name}', window may need to be visible")
+            # Check for black/empty capture (permission issue on macOS)
+            try:
+                import numpy as np
+                arr = np.array(img)
+                if arr.mean() < 5:
+                    logger.warning(f"Capture returned black image for '{window.name}', check screen recording permission")
+            except ImportError:
+                pass
 
+            width, height = img.size
             img_hash = self._compute_file_hash(filepath)
             dummy_region = CaptureRegion(x=0, y=0, width=width, height=height, name=window.name)
 
@@ -314,50 +222,11 @@ class ScreenCaptureService:
                 timestamp=timestamp,
                 region=dummy_region,
                 image_hash=img_hash,
-                source_name=window.name
+                source_name=window.name,
             )
-
         except Exception as e:
-            logger.error(f"Error capturing window via PrintWindow: {e}")
-            # Fallback: screenshot of window area (requires window to be visible)
-            try:
-                left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-                img = ImageGrab.grab(bbox=(left, top, right, bottom))
-                img.save(filepath)
-                img_hash = self._compute_file_hash(filepath)
-                dummy_region = CaptureRegion(x=left, y=top, width=right-left, height=bottom-top, name=window.name)
-                return CapturedFrame(
-                    image_path=filepath,
-                    timestamp=timestamp,
-                    region=dummy_region,
-                    image_hash=img_hash
-                )
-            except Exception as e2:
-                logger.error(f"Fallback capture also failed: {e2}")
-                return None
-
-        finally:
-            # Always release GDI resources to prevent resource leak
-            try:
-                if bitmap:
-                    win32gui.DeleteObject(bitmap.GetHandle())
-            except Exception:
-                pass
-            try:
-                if save_dc:
-                    save_dc.DeleteDC()
-            except Exception:
-                pass
-            try:
-                if mfc_dc:
-                    mfc_dc.DeleteDC()
-            except Exception:
-                pass
-            try:
-                if hwnd_dc:
-                    win32gui.ReleaseDC(hwnd, hwnd_dc)
-            except Exception:
-                pass
+            logger.error(f"Error capturing window: {e}")
+            return None
 
     def capture_single_window(self, source_name: str) -> Optional[CapturedFrame]:
         """Capture a specific window by its source name (no dedup)."""
@@ -529,7 +398,7 @@ class ScreenCaptureService:
 
 
 def select_region_interactive() -> CaptureRegion:
-    """Interactive region selector for Windows."""
+    """Interactive region selector."""
     print("Please configure the screen capture region.")
     print("Open your chat application and note the window position.\n")
 
