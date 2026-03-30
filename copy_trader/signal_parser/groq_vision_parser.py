@@ -228,11 +228,11 @@ class GroqVisionParser:
 
         except Exception as e:
             error_str = str(e)
-            # Detect 429 daily token limit
-            if "429" in error_str and "tokens per day" in error_str.lower():
+            # Detect any 429 rate limit (daily tokens, RPM, etc.)
+            if "429" in error_str or "rate_limit" in error_str.lower():
                 self._daily_limit_hit = True
                 self._daily_limit_reset = time.time() + 600  # retry in 10 min
-                logger.error("Groq Vision 每日 token 額度用完，10 分鐘後重試，暫時使用 regex 解析")
+                logger.error("Groq Vision 額度限制，10 分鐘後重試，暫時使用 regex 解析")
             else:
                 logger.error(f"Groq Vision API error: {e}")
             return ParsedSignal(is_valid=False, error=error_str)

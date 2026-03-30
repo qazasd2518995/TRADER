@@ -15,6 +15,8 @@ function defaultConfig(): TradingConfig {
     auto_execute: true,
     cancel_pending_after_seconds: 1800,
     use_martingale: true,
+    martingale_per_source: false,
+    martingale_source_lots: {},
     martingale_lots: [0.01, 0.02, 0.04, 0.08, 0.16],
     martingale_max_level: 4,
     parser_mode: "regex",
@@ -260,7 +262,19 @@ export default function Settings() {
 
             {cfg.use_martingale ? (
               <>
-                <div style={{ fontSize: "12px", color: "var(--color-ink-muted)", margin: "12px 0 8px" }}>每層手數設定</div>
+                <FormRow label="馬丁模式">
+                  <select className="form-input" style={{ width: 220 }}
+                    value={cfg.martingale_per_source ? "per_source" : "global"}
+                    onChange={(e) => update("martingale_per_source", e.target.value === "per_source")}>
+                    <option value="global">全域共用（所有群合併計算）</option>
+                    <option value="per_source">各群獨立（每群各自計算）</option>
+                  </select>
+                </FormRow>
+
+                {/* Global lot table (always shown) */}
+                <div style={{ fontSize: "12px", color: "var(--color-ink-muted)", margin: "12px 0 8px" }}>
+                  {cfg.martingale_per_source ? "全域預設手數（未單獨設定的群使用此值）" : "每層手數設定"}
+                </div>
 
                 <table className="data-table" style={{ maxWidth: 320 }}>
                   <thead>
@@ -287,6 +301,71 @@ export default function Settings() {
                   <button onClick={addLevel} className="btn-outline">{S.BTN_ADD}層級</button>
                   <button onClick={removeLevel} className="btn-danger-outline">{S.BTN_REMOVE}最後</button>
                 </div>
+
+                {/* Per-source lot tables (only in per_source mode) */}
+                {cfg.martingale_per_source && cfg.capture_windows.length > 0 && (
+                  <>
+                    {cfg.capture_windows.map((w) => {
+                      const sourceLots: number[] = (cfg.martingale_source_lots ?? {})[w.window_name] ?? [];
+                      const updateSourceLot = (idx: number, val: number) => {
+                        const newLots = [...sourceLots];
+                        newLots[idx] = val;
+                        const newMap = { ...(cfg.martingale_source_lots ?? {}), [w.window_name]: newLots };
+                        const updated = { ...cfg, martingale_source_lots: newMap };
+                        setCfg(updated);
+                        setConfig(updated);
+                        setDirty(true);
+                      };
+                      const addSourceLevel = () => {
+                        const last = sourceLots.length > 0 ? sourceLots[sourceLots.length - 1] * 2 : 0.01;
+                        const newLots = [...sourceLots, Math.round(last * 100) / 100];
+                        const newMap = { ...(cfg.martingale_source_lots ?? {}), [w.window_name]: newLots };
+                        const updated = { ...cfg, martingale_source_lots: newMap };
+                        setCfg(updated);
+                        setConfig(updated);
+                        setDirty(true);
+                      };
+                      const removeSourceLevel = () => {
+                        if (sourceLots.length <= 0) return;
+                        const newLots = sourceLots.slice(0, -1);
+                        const newMap = { ...(cfg.martingale_source_lots ?? {}), [w.window_name]: newLots };
+                        const updated = { ...cfg, martingale_source_lots: newMap };
+                        setCfg(updated);
+                        setConfig(updated);
+                        setDirty(true);
+                      };
+
+                      return (
+                        <div key={w.window_name} style={{ marginTop: "16px", padding: "12px", border: "1px solid var(--border-hairline)", borderRadius: "8px" }}>
+                          <div style={{ fontSize: "12px", color: "var(--color-ink-muted)", marginBottom: "8px" }}>
+                            {w.window_name} {sourceLots.length === 0 && "（使用全域預設）"}
+                          </div>
+                          {sourceLots.length > 0 && (
+                            <table className="data-table" style={{ maxWidth: 280 }}>
+                              <thead><tr><th>層級</th><th>手數</th></tr></thead>
+                              <tbody>
+                                {sourceLots.map((lot, i) => (
+                                  <tr key={i}>
+                                    <td style={{ textAlign: "center" }}>{i + 1}</td>
+                                    <td>
+                                      <input type="number" className="form-input" style={{ width: 80, padding: "4px 8px", textAlign: "center" }}
+                                        step="0.01" min="0.01" value={lot}
+                                        onChange={(e) => updateSourceLot(i, parseFloat(e.target.value) || 0.01)} />
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+                          <div className="flex gap-2" style={{ marginTop: "8px" }}>
+                            <button onClick={addSourceLevel} className="btn-outline" style={{ fontSize: "11px", padding: "4px 10px" }}>新增層級</button>
+                            <button onClick={removeSourceLevel} className="btn-danger-outline" style={{ fontSize: "11px", padding: "4px 10px" }}>移除最後</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </>
+                )}
               </>
             ) : (
               <FormRow label="固定下單手數">
@@ -385,7 +464,7 @@ export default function Settings() {
         </>
       )}
 
-      {/* Capture tab */}
+      {/* Capture tab — moved to Dashboard, show redirect */}
       {activeTab === 1 && (
         <>
           <div className="section stagger-1">
@@ -394,8 +473,8 @@ export default function Settings() {
             </div>
             <div className="divider" style={{ marginBottom: "16px" }} />
 
-            <div style={{ fontSize: "12px", color: "var(--color-ink-muted)", marginBottom: "12px" }}>
-              已選擇要監控的視窗（{cfg.capture_windows.length}/{maxWindows === Infinity ? "∞" : maxWindows}）
+            <div style={{ fontSize: "13px", color: "var(--color-ink-muted)", padding: "20px 0", textAlign: "center" }}>
+              監控群組設定已移至「儀表板」頁面，方便即時調整。
             </div>
 
             {cfg.capture_windows.length === 0 ? (

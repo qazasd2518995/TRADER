@@ -6,8 +6,10 @@ import json
 import time
 import threading
 import logging
+from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict
+from pathlib import Path
 from enum import Enum
 from pathlib import Path
 
@@ -90,12 +92,26 @@ class TradeManager:
         self.martingale_multiplier = 2.0  # 2x after each loss
         self.martingale_max_level = 5     # Max 5 levels (0.01 -> 0.02 -> 0.04 -> 0.08 -> 0.16)
         self.martingale_lots: List[float] = []  # 自訂每層手數（優先使用）
+        self.martingale_per_source = False  # True=per source, False=global
+        self.martingale_source_lots: Dict[str, List[float]] = {}  # per-source lot tables
+
+        # Global martingale state
         self.current_martingale_level = 0
         self.consecutive_losses = 0
+
+        # Per-source martingale state: source_window -> {"level": int, "losses": int}
+        self._source_martingale: Dict[str, dict] = {}
 
         # Martingale state persistence
         self._martingale_state_file = self.mt5_files_dir / "martingale_state.json"
         self._load_martingale_state()
+
+        # Trade journal path (same as app.py uses)
+        try:
+            from config import DATA_DIR
+            self._journal_file = DATA_DIR / "trade_journal.txt"
+        except Exception:
+            self._journal_file = Path("trade_journal.txt")
 
         # Signal source mapping: ticket -> source_window (for trade history enrichment)
         self._signal_sources_file = self.mt5_files_dir / "signal_sources.json"
@@ -103,6 +119,17 @@ class TradeManager:
 
         logger.info(f"TradeManager initialized with MT5 dir: {mt5_files_dir}")
         logger.info(f"Martingale: {'ON' if self.use_martingale else 'OFF'} (x{self.martingale_multiplier})")
+
+    def _write_journal(self, action: str, details: str = ""):
+        """Write to trade journal for audit trail."""
+        try:
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(self._journal_file, 'a', encoding='utf-8') as f:
+                f.write(f"\n{'='*60}\n[{ts}] {action}\n")
+                if details:
+                    f.write(f"  {details}\n")
+        except Exception:
+            pass
 
     def set_symbol_name(self, symbol_name: str):
         self.symbol_name = symbol_name or "XAUUSD.s"
@@ -160,6 +187,11 @@ class TradeManager:
 
         with self._lock:
             self.orders[signal_id] = order
+
+        # Save source_window mapping immediately (not just after fill)
+        # so cancel keywords can match pending orders to their source
+        if source_window:
+            self._signal_sources[signal_id] = source_window
 
         logger.info(f"Signal submitted: {signal_id} - {signal}")
 
@@ -227,74 +259,109 @@ class TradeManager:
         with self._lock:
             return list(self.orders.values())
 
-    def get_martingale_lot_size(self) -> float:
+    def get_martingale_lot_size(self, source_window: str = "") -> float:
         """
         Calculate current lot size based on Martingale level.
 
-        If martingale_lots is set, use custom lookup table.
-        Otherwise fall back to multiplier ** level formula.
-
-        Returns:
-            Current lot size based on martingale level
+        Args:
+            source_window: If martingale_per_source=True, use this source's level.
         """
         if not self.use_martingale:
             return self.default_lot_size
 
-        # 自訂手數列表優先
-        if self.martingale_lots:
-            max_level = len(self.martingale_lots) - 1
-            level = min(self.current_martingale_level, max_level)
-            lot = self.martingale_lots[level]
+        # Get the right level (per-source or global)
+        if self.martingale_per_source and source_window:
+            state = self._source_martingale.get(source_window, {"level": 0, "losses": 0})
+            level = state["level"]
+        else:
+            level = self.current_martingale_level
+
+        src_tag = f" [{source_window}]" if self.martingale_per_source and source_window else ""
+
+        # Per-source lot table (highest priority when in per_source mode)
+        source_lots = self.martingale_source_lots.get(source_window, []) if source_window else []
+        # Fall back to global lot table
+        lots = source_lots or self.martingale_lots
+
+        if lots:
+            max_level = len(lots) - 1
+            level = min(level, max_level)
+            lot = lots[level]
             lot = round(lot, 2)
-            logger.info(f"Martingale Level {level}: Lot size = {lot} (custom)")
+            tag = "(各群自訂)" if source_lots else "(全域自訂)"
+            logger.info(f"Martingale Level {level}{src_tag}: Lot size = {lot} {tag}")
             return lot
 
         # 退回公式計算
-        level = min(self.current_martingale_level, self.martingale_max_level)
+        level = min(level, self.martingale_max_level)
         lot = self.default_lot_size * (self.martingale_multiplier ** level)
         lot = round(lot, 2)
 
-        logger.info(f"Martingale Level {level}: Lot size = {lot}")
+        logger.info(f"Martingale Level {level}{src_tag}: Lot size = {lot}")
         return lot
 
-    def on_trade_result(self, is_win: bool, signal_id: str = None):
+    def on_trade_result(self, is_win: bool, signal_id: str = None, source_window: str = ""):
         """
         Update martingale level based on trade result.
-        Called when a trade closes.
 
         Args:
             is_win: True if trade was profitable, False if loss
             signal_id: Optional signal ID for logging
+            source_window: Source window for per-source martingale
         """
         if not self.use_martingale:
             return
 
-        if is_win:
-            # Reset to base level on win
-            if self.current_martingale_level > 0:
-                logger.info(f"WIN: Resetting martingale from level {self.current_martingale_level} to 0")
-            self.current_martingale_level = 0
-            self.consecutive_losses = 0
-        else:
-            # Increase level on loss (up to max)
-            self.consecutive_losses += 1
-            max_level = (len(self.martingale_lots) - 1) if self.martingale_lots else self.martingale_max_level
-            if self.current_martingale_level < max_level:
-                self.current_martingale_level += 1
-                logger.info(
-                    f"LOSS: Martingale level increased to {self.current_martingale_level} "
-                    f"(next lot: {self.get_martingale_lot_size()})"
-                )
+        src_tag = f" [{source_window}]" if self.martingale_per_source and source_window else ""
+        max_level = (len(self.martingale_lots) - 1) if self.martingale_lots else self.martingale_max_level
+
+        if self.martingale_per_source and source_window:
+            # Per-source mode
+            state = self._source_martingale.get(source_window, {"level": 0, "losses": 0})
+            if is_win:
+                if state["level"] > 0:
+                    logger.info(f"WIN{src_tag}: Resetting martingale from level {state['level']} to 0")
+                state["level"] = 0
+                state["losses"] = 0
             else:
-                # Already at max level — reset to 0 to start a new cycle
-                logger.warning(
-                    f"LOSS: Max martingale level {max_level} reached, "
-                    f"resetting to level 0 (consecutive losses: {self.consecutive_losses})"
-                )
+                state["losses"] += 1
+                if state["level"] < max_level:
+                    state["level"] += 1
+                    logger.info(f"LOSS{src_tag}: Martingale level → {state['level']}")
+                else:
+                    logger.warning(f"LOSS{src_tag}: Max level {max_level}, resetting")
+                    state["level"] = 0
+                    state["losses"] = 0
+            self._source_martingale[source_window] = state
+        else:
+            # Global mode
+            if is_win:
+                if self.current_martingale_level > 0:
+                    logger.info(f"WIN: Resetting martingale from level {self.current_martingale_level} to 0")
                 self.current_martingale_level = 0
                 self.consecutive_losses = 0
+            else:
+                self.consecutive_losses += 1
+                if self.current_martingale_level < max_level:
+                    self.current_martingale_level += 1
+                    logger.info(f"LOSS: Martingale level → {self.current_martingale_level}")
+                else:
+                    logger.warning(f"LOSS: Max level {max_level}, resetting")
+                    self.current_martingale_level = 0
+                    self.consecutive_losses = 0
 
         self._save_martingale_state()
+
+        # Journal
+        result_str = "WIN" if is_win else "LOSS"
+        mg_level = self.current_martingale_level
+        if self.martingale_per_source and source_window:
+            mg_level = self._source_martingale.get(source_window, {}).get("level", 0)
+        self._write_journal(
+            f"TRADE_CLOSED_{result_str}",
+            f"signal_id={signal_id} | 來源={source_window} | 馬丁層級={mg_level} "
+            f"| 下一手數={self.get_martingale_lot_size(source_window)}"
+        )
 
     def on_order_cancelled(self, signal_id: str):
         """
@@ -321,9 +388,10 @@ class TradeManager:
                     data = json.load(f)
                 self.current_martingale_level = data.get('level', 0)
                 self.consecutive_losses = data.get('consecutive_losses', 0)
+                self._source_martingale = data.get('per_source', {})
                 logger.info(
-                    f"Restored martingale state: level={self.current_martingale_level}, "
-                    f"consecutive_losses={self.consecutive_losses}"
+                    f"Restored martingale state: global level={self.current_martingale_level}, "
+                    f"per_source={len(self._source_martingale)} sources"
                 )
         except Exception as e:
             logger.warning(f"Failed to load martingale state: {e}")
@@ -334,6 +402,7 @@ class TradeManager:
             data = {
                 'level': self.current_martingale_level,
                 'consecutive_losses': self.consecutive_losses,
+                'per_source': self._source_martingale,
                 'updated': time.strftime('%Y-%m-%d %H:%M:%S')
             }
             with open(self._martingale_state_file, 'w') as f:
@@ -434,8 +503,25 @@ class TradeManager:
         return success
 
     def _write_command(self, command: dict) -> bool:
-        """Write a command to the MT5 commands file."""
+        """Write a command to the MT5 commands file.
+
+        Waits for previous command to be consumed by EA (file contains '{}')
+        before writing, to prevent command overwrites.
+        """
         try:
+            # Wait up to 5 seconds for EA to consume the previous command
+            for _ in range(50):
+                try:
+                    if self.commands_file.exists():
+                        content = self.commands_file.read_text().strip()
+                        if content in ('{}', ''):
+                            break  # Previous command consumed, safe to write
+                    else:
+                        break  # File doesn't exist yet, safe to write
+                except (PermissionError, OSError):
+                    pass  # File locked by EA, keep waiting
+                time.sleep(0.1)
+
             with open(self.commands_file, 'w') as f:
                 json.dump(command, f, separators=(',', ':'))
             logger.debug(f"Command written: {command}")
@@ -709,6 +795,12 @@ class TradeManager:
                         order.entry_time = time.time()
                         order.remaining_volume = pos.get('volume', 0)
                         logger.info(f"Order filled: {signal_id} @ {order.entry_price}")
+                        self._write_journal(
+                            "ORDER_FILLED",
+                            f"signal_id={signal_id} | ticket={order.ticket} "
+                            f"| 成交價={order.entry_price} | 手數={order.remaining_volume} "
+                            f"| 來源={order.source_window}"
+                        )
                         # Save source window mapping for trade history
                         if order.source_window and order.ticket:
                             self._signal_sources[str(order.ticket)] = order.source_window
@@ -723,6 +815,11 @@ class TradeManager:
                         if f"copy_{signal_id}" in comment:
                             order.ticket = po.get('ticket')
                             logger.debug(f"Pending order ticket found: {signal_id} -> {order.ticket}")
+                            # Map ticket → source immediately so cancel-by-source works
+                            # (don't wait until fill — pending orders need source isolation too)
+                            if order.source_window and order.ticket:
+                                self._signal_sources[str(order.ticket)] = order.source_window
+                                self._save_signal_sources()
                             break
 
     # Max time (seconds) to wait for EA to confirm a partial close before retrying
@@ -906,10 +1003,14 @@ class TradeManager:
 
                 if should_cancel:
                     order.status = OrderStatus.CANCELLED
-                    # Send delete command to MT5 if we have the ticket
                     if order.ticket:
                         self._delete_pending_order(order.ticket)
                         logger.info(f"Order {signal_id} auto-cancelled + MT5 delete sent (ticket {order.ticket}): {cancel_reason}")
                     else:
                         logger.warning(f"Order {signal_id} auto-cancelled but no MT5 ticket found: {cancel_reason}")
                     self.on_order_cancelled(signal_id)
+                    self._write_journal(
+                        "ORDER_AUTO_CANCELLED",
+                        f"signal_id={signal_id} | ticket={order.ticket} | 原因={cancel_reason} "
+                        f"| 信號={order.signal} | 來源={order.source_window}"
+                    )

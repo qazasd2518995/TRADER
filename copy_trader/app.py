@@ -119,6 +119,8 @@ class CopyTrader:
         self.trade_manager.martingale_multiplier = config.martingale_multiplier
         self.trade_manager.martingale_max_level = config.martingale_max_level
         self.trade_manager.martingale_lots = getattr(config, 'martingale_lots', [])
+        self.trade_manager.martingale_per_source = getattr(config, 'martingale_per_source', False)
+        self.trade_manager.martingale_source_lots = getattr(config, 'martingale_source_lots', {})
 
         # Build mapping from internal window name -> display name
         self._window_display_names: Dict[str, str] = {}
@@ -129,6 +131,7 @@ class CopyTrader:
         # State
         self._running = False
         self._processed_hashes: Dict[str, float] = {}   # hash -> expiry timestamp
+        self._recent_ocr_texts: list = []  # last N OCR texts for fuzzy dedup
         self._processed_signals: Set[str] = set()  # Dedup by parsed signal content
         self._daily_loss = 0.0
         self._daily_trades = 0
@@ -152,6 +155,13 @@ class CopyTrader:
         self._load_existing_mt5_orders()
 
         logger.info("CopyTrader initialized")
+
+        # Create trade journal on startup
+        windows_str = ", ".join([w.window_name for w in config.capture_windows]) or "無"
+        self._write_trade_journal(
+            "SYSTEM_START",
+            details=f"監控群組=[{windows_str}] | 馬丁={'各群獨立' if config.martingale_per_source else '全域共用'} | 自動下單={config.auto_execute}",
+        )
         self._emit_event("initialized", {})
         tiers_log = []
         if self.gemini_parser: tiers_log.append("Gemini")
@@ -179,22 +189,63 @@ class CopyTrader:
         # Setup signal handlers
         self._setup_signal_handlers()
 
-        # Main loop
+        # Main loop with adaptive frequency
         self._running = True
+        self._idle_cycles = 0
+        self._startup_baseline = True  # First cycle = baseline only, don't trade
         logger.info("Copy Trader running. Press Ctrl+C to stop.")
+
+        # First cycle: capture baseline (record current screen state as "already seen")
+        # This prevents old signals on screen from being treated as new
+        logger.info("Building baseline from current screen (skipping existing signals)...")
+        try:
+            frames = self.capture_service.capture_all_regions(deduplicate=False)
+            for frame in frames:
+                text = self.ocr_service.extract_newest_bubble_text(frame.image_path)
+                if text and len(text.strip()) >= 10:
+                    text_hash = self._compute_text_hash(text)
+                    self._add_hash_with_ttl(text_hash, self.config.signal_dedup_minutes * 60)
+                    self._recent_ocr_texts.append(text)
+                    # Also try to parse and mark as processed
+                    signal = self.signal_parser.parse_latest(text)
+                    if signal.is_valid and signal.stop_loss and signal.take_profit:
+                        key = str(self._signal_key(signal))
+                        self._processed_signals.add(key)
+                        logger.info(f"Baseline: marked as seen: {signal}")
+                Path(frame.image_path).unlink(missing_ok=True)
+            logger.info(f"Baseline complete: {len(self._processed_signals)} signals, {len(self._processed_hashes)} hashes")
+        except Exception as e:
+            logger.warning(f"Baseline scan failed: {e}")
 
         while self._running:
             try:
-                await self._process_cycle()
+                had_frames = await self._process_cycle()
                 self._periodic_cleanup()
-                await asyncio.sleep(self.config.capture_interval)
+
+                # Adaptive frequency: slow down when idle, speed up on activity
+                if had_frames:
+                    self._idle_cycles = 0
+                    interval = self.config.capture_interval  # normal: 1s
+                else:
+                    self._idle_cycles += 1
+                    if self._idle_cycles > 10:
+                        interval = min(3.0, self.config.capture_interval * 2)  # idle: slow to 2-3s
+                    else:
+                        interval = self.config.capture_interval
+
+                await asyncio.sleep(interval)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Error in main loop: {e}", exc_info=True)
+                self._write_trade_journal(
+                    "SYSTEM_ERROR",
+                    details=f"主迴圈錯誤: {str(e)[:200]}",
+                )
                 await asyncio.sleep(5)
 
         logger.info("Copy Trader stopped")
+        self._write_trade_journal("SYSTEM_STOP", details="系統正常停止")
 
     def stop(self):
         """Stop the copy trader."""
@@ -234,18 +285,19 @@ class CopyTrader:
         logger.info("MT5 connection verified")
         return True
 
-    async def _process_cycle(self):
-        """Single processing cycle."""
-        # Check daily loss limit
+    async def _process_cycle(self) -> bool:
+        """Single processing cycle. Returns True if frames were processed."""
+        # Update and check daily loss limit from closed trades
+        self._update_daily_loss()
         if self._daily_loss >= self.config.max_daily_loss:
             logger.warning(f"Daily loss limit reached (${self._daily_loss:.2f})")
-            return
+            return False
 
         # Capture screen regions
         frames = self.capture_service.capture_all_regions(deduplicate=True)
 
         if not frames:
-            return
+            return False
 
         # Clean up expired pending signals (>120s)
         now = time.time()
@@ -262,23 +314,53 @@ class CopyTrader:
         for frame in frames:
             source_display = self._window_display_names.get(frame.source_name or "", frame.source_name or "")
 
-            # --- LOCAL OCR for quick filtering (cancel keywords, dedup) ---
+            # --- BUBBLE-AWARE OCR: detect newest chat bubbles, OCR only those ---
             t_ocr = time.time()
-            text = self.ocr_service.extract_text(frame.image_path)
+            text = self.ocr_service.extract_newest_bubble_text(frame.image_path)
             ocr_ms = (time.time() - t_ocr) * 1000
-            logger.debug(f"OCR took {ocr_ms:.0f}ms (full image)")
+            logger.debug(f"OCR took {ocr_ms:.0f}ms")
 
-            if not text or len(text.strip()) < 10:
+            if not text:
                 continue
 
-            # Check for cancel/withdraw keywords in latest message
+            # Check for cancel/withdraw and SL-hit keywords BEFORE length filter.
+            # Short messages like "撤" (1 char) or "SL" (2 chars) must be caught
+            # even when the OCR text is very short.
             if self._check_cancel_keywords(text, frame.source_name):
                 continue
 
-            # Check for duplicate (same text within dedup window)
+            if self._check_sl_hit(text, frame.source_name):
+                continue
+
+            # Now apply length filter for signal parsing (signals need at least 10 chars)
+            if len(text.strip()) < 10:
+                continue
+
+            # Check for duplicate (exact hash + fuzzy text comparison)
             text_hash = self._compute_text_hash(text)
             if self._is_hash_active(text_hash):
-                logger.debug("Duplicate signal detected, skipping")
+                logger.debug("Duplicate (exact hash), skipping")
+                continue
+
+            # Fuzzy text dedup: catch OCR variations of the same content
+            is_fuzzy_dup = False
+            for prev_text in self._recent_ocr_texts:
+                if self._is_text_similar(text, prev_text):
+                    is_fuzzy_dup = True
+                    break
+            if is_fuzzy_dup:
+                logger.debug("Duplicate (fuzzy match), skipping")
+                self._add_hash_with_ttl(text_hash, 30)
+                continue
+            # Keep rolling window of recent texts (max 10)
+            self._recent_ocr_texts.append(text)
+            if len(self._recent_ocr_texts) > 10:
+                self._recent_ocr_texts.pop(0)
+
+            # MT5 TRADE HISTORY FILTER — skip completed trade screenshots
+            if self._is_mt5_trade_history(text):
+                logger.info("MT5 trade history screenshot detected, skipping")
+                self._add_hash_with_ttl(text_hash, 120)
                 continue
 
             # KEYWORD FILTER - quick local check
@@ -296,6 +378,23 @@ class CopyTrader:
 
             t_signal_start = time.time()
             logger.info(f"Potential signal detected: {filter_reason}")
+
+            # === MULTI-SIGNAL CHECK — detect if OCR contains 2+ signals ===
+            all_regex_signals = self.signal_parser.parse_all_latest(text)
+            extra_signals = []
+            if len(all_regex_signals) > 1:
+                # Multiple signals found (e.g. 乘 posting Sell+BUY at same time)
+                # Check which are complete and non-duplicate
+                complete_extras = []
+                for sig in all_regex_signals:
+                    if sig.is_valid and sig.stop_loss and sig.take_profit and len(sig.take_profit) > 0:
+                        sk = str(self._signal_key(sig))
+                        if sk not in self._processed_signals:
+                            complete_extras.append(sig)
+                if len(complete_extras) > 1:
+                    logger.info(f"Multi-signal: found {len(complete_extras)} complete signals in one capture")
+                    # Process extras after the primary signal
+                    extra_signals = complete_extras[1:]  # first one goes through normal flow
 
             # === REGEX FIRST — always use regex parse_latest (timestamp-based) ===
             regex_signal = self.signal_parser.parse_latest(text)
@@ -355,10 +454,12 @@ class CopyTrader:
                 signal = None
                 self._api_calls_today += 1
 
-                # Tier 1: Gemini
+                # Tier 1: Gemini (run in executor to avoid blocking event loop)
+                loop = asyncio.get_event_loop()
                 if self.gemini_parser and self.gemini_parser.is_available:
                     logger.info("Sending screenshot to Gemini...")
-                    signal = self.gemini_parser.parse_image(frame.image_path)
+                    signal = await loop.run_in_executor(
+                        None, self.gemini_parser.parse_image, frame.image_path)
                     if signal.is_valid:
                         logger.info(f"Gemini result: {signal}")
                     elif signal.error:
@@ -367,10 +468,11 @@ class CopyTrader:
                     else:
                         signal = None
 
-                # Tier 2: Groq
+                # Tier 2: Groq (run in executor)
                 if signal is None and self.groq_parser and self.groq_parser.is_available:
                     logger.info("Sending screenshot to Groq Vision...")
-                    signal = self.groq_parser.parse_image(frame.image_path)
+                    signal = await loop.run_in_executor(
+                        None, self.groq_parser.parse_image, frame.image_path)
                     if signal.is_valid:
                         logger.info(f"Groq result: {signal}")
                     elif signal.error:
@@ -457,6 +559,11 @@ class CopyTrader:
                         f"⏳ 缺少 {', '.join(missing)} — 等待後續訊息... "
                         f"(已有: {', '.join(have_parts)})"
                     )
+                    self._write_trade_journal(
+                        "PENDING_SIGNAL", signal=signal, source=source_display,
+                        details=f"缺少: {', '.join(missing)} | 已有: {', '.join(have_parts)}",
+                        ocr_text=text,
+                    )
                     self._add_hash_with_ttl(text_hash, 15)
                 else:
                     # Same signal still incomplete — long TTL to avoid re-sending Vision
@@ -468,8 +575,12 @@ class CopyTrader:
             source = frame.source_name or "default"
             if source in self._pending_signals:
                 pending_time = self._pending_signals[source]["time"]
-                logger.info(
-                    f"✅ 跨訊息信號收齊！等待了 {time.time() - pending_time:.1f}秒 | {signal}"
+                wait_secs = time.time() - pending_time
+                logger.info(f"✅ 跨訊息信號收齊！等待了 {wait_secs:.1f}秒 | {signal}")
+                self._write_trade_journal(
+                    "MULTI_MSG_COMPLETE", signal=signal, source=source_display,
+                    details=f"等待了 {wait_secs:.1f}秒",
+                    ocr_text=text,
                 )
                 self._pending_signals.pop(source, None)
 
@@ -516,10 +627,28 @@ class CopyTrader:
 
             # Submit to trade manager (include source window name)
             source_window = self._window_display_names.get(frame.source_name, frame.source_name)
+
+            # Journal: record everything for post-day audit
+            lot = self.trade_manager.get_martingale_lot_size(source_window)
+            mg_level = self.trade_manager.current_martingale_level
+            if self.trade_manager.martingale_per_source:
+                src_state = self.trade_manager._source_martingale.get(source_window, {})
+                mg_level = src_state.get("level", 0)
+            self._write_trade_journal(
+                "ORDER_SUBMITTED", signal=signal, source=source_window,
+                details=(
+                    f"method={getattr(signal, 'parse_method', 'regex')}"
+                    f" | 手數={lot} | 馬丁層級={mg_level}"
+                    f" | signal_key={self._signal_key(signal)}"
+                ),
+                ocr_text=text,
+            )
+
             signal_id = self.trade_manager.submit_signal(
                 signal,
                 auto_execute=self.config.auto_execute,
                 cancel_after_seconds=self.config.cancel_pending_after_seconds,
+                cancel_if_price_beyond=self.config.cancel_if_price_beyond_percent,
                 source_window=source_window
             )
 
@@ -529,8 +658,46 @@ class CopyTrader:
 
             self._emit_event("trade_submitted", {"signal_id": signal_id})
 
+            # === PROCESS EXTRA SIGNALS (from multi-signal detection) ===
+            for extra_sig in extra_signals:
+                extra_key = str(self._signal_key(extra_sig))
+                if extra_key in self._processed_signals:
+                    continue
+                # Skip vision confirmation for extras — they came from same OCR capture
+                if not self._validate_signal(extra_sig):
+                    continue
+                self._processed_signals.add(extra_key)
+                self._save_persisted_signals()
+                lot_e = self.trade_manager.get_martingale_lot_size(source_window)
+                mg_level_e = self.trade_manager.current_martingale_level
+                if self.trade_manager.martingale_per_source:
+                    src_state_e = self.trade_manager._source_martingale.get(source_window, {})
+                    mg_level_e = src_state_e.get("level", 0)
+                self._write_trade_journal(
+                    "ORDER_SUBMITTED", signal=extra_sig, source=source_window,
+                    details=(
+                        f"method={getattr(extra_sig, 'parse_method', 'regex')}"
+                        f" | 手數={lot_e} | 馬丁層級={mg_level_e}"
+                        f" | signal_key={self._signal_key(extra_sig)}"
+                        f" | multi_signal=True"
+                    ),
+                    ocr_text=text,
+                )
+                extra_id = self.trade_manager.submit_signal(
+                    extra_sig,
+                    auto_execute=self.config.auto_execute,
+                    cancel_after_seconds=self.config.cancel_pending_after_seconds,
+                    cancel_if_price_beyond=self.config.cancel_if_price_beyond_percent,
+                    source_window=source_window
+                )
+                logger.info(f"Extra signal submitted: {extra_id}")
+                self._daily_trades += 1
+                self._emit_event("trade_submitted", {"signal_id": extra_id})
+
             # Clean up screenshot
             Path(frame.image_path).unlink(missing_ok=True)
+
+        return True
 
     async def _confirm_signal_vision(self, first_signal, first_frame) -> bool:
         """
@@ -561,23 +728,13 @@ class CopyTrader:
                 logger.warning(f"Confirm {i+1}: capture failed")
                 continue
 
-            # Parse with same 3-tier chain
+            # Confirm with bubble OCR + regex (same method as primary parse)
             retry_signal = None
-            self._api_calls_today += 1
-            if self.gemini_parser and self.gemini_parser.is_available:
-                retry_signal = self.gemini_parser.parse_image(frame.image_path)
-                if retry_signal and not retry_signal.is_valid and retry_signal.error:
-                    retry_signal = None
-            if retry_signal is None and self.groq_parser and self.groq_parser.is_available:
-                retry_signal = self.groq_parser.parse_image(frame.image_path)
-                if retry_signal and not retry_signal.is_valid and retry_signal.error:
-                    retry_signal = None
-            if retry_signal is None:
-                text = self.ocr_service.extract_text(frame.image_path)
-                if text and len(text.strip()) >= 10:
-                    is_sig, _ = is_potential_signal(text)
-                    if is_sig:
-                        retry_signal = self.signal_parser.parse_latest(text)
+            text = self.ocr_service.extract_newest_bubble_text(frame.image_path)
+            if text and len(text.strip()) >= 10:
+                is_sig, _ = is_potential_signal(text)
+                if is_sig:
+                    retry_signal = self.signal_parser.parse_latest(text)
 
             Path(frame.image_path).unlink(missing_ok=True)
 
@@ -597,7 +754,14 @@ class CopyTrader:
                 matches += 1
                 logger.info(f"  -> MATCH ({matches}/{confirm_count-1})")
             else:
-                logger.warning(f"  -> MISMATCH (expected {first_key})")
+                logger.warning(f"  -> MISMATCH (expected {first_key}, got {retry_key})")
+                # Journal: record mismatch details for debugging
+                source_display = self._window_display_names.get(first_frame.source_name or "", first_frame.source_name or "")
+                self._write_trade_journal(
+                    "CONFIRM_MISMATCH", source=source_display,
+                    details=f"第一次={first_key} | 確認={retry_key} | 確認信號={retry_signal}",
+                    ocr_text=text if text else "",
+                )
 
         required = confirm_count - 1
         if matches >= required:
@@ -606,98 +770,28 @@ class CopyTrader:
             logger.warning(f"Only {matches}/{required} confirmations matched")
             return False
 
-    async def _confirm_signal_with_retries(self, first_signal, first_frame) -> bool:
-        """
-        Re-capture and re-OCR the same window multiple times to confirm the signal.
-        Returns True only if the key fields (direction, entry, SL, TP) are consistent.
-        Uses cropped images (bottom 50%) for faster OCR during confirmation.
-        """
-        confirm_count = self.config.ocr_confirm_count
-        confirm_delay = self.config.ocr_confirm_delay
-
-        if confirm_count <= 1:
-            return True  # No confirmation needed
-
-        # Extract key fields from first signal for comparison
-        first_key = self._signal_key(first_signal)
-        logger.info(f"Confirming signal: {first_key} ({confirm_count - 1} more OCR reads needed)")
-
-        matches = 0
-        for i in range(confirm_count - 1):
-            await asyncio.sleep(confirm_delay)
-
-            # Re-capture the SAME window that produced the original signal
-            source = first_frame.source_name
-            if source:
-                frame = self.capture_service.capture_single_window(source)
-            else:
-                frames = self.capture_service.capture_all_regions(deduplicate=False)
-                frame = frames[0] if frames else None
-            if not frame:
-                logger.warning(f"Confirmation {i+1}/{confirm_count-1}: capture failed")
-                continue
-            # Use cropped image (bottom 50%) for faster confirmation OCR
-            t_ocr = time.time()
-            text = self.ocr_service.extract_text(frame.image_path, crop_bottom_ratio=0.5)
-            ocr_ms = (time.time() - t_ocr) * 1000
-            logger.info(f"Confirmation OCR took {ocr_ms:.0f}ms (cropped 50%)")
-
-            # Parse (use parse_latest to handle multi-message screenshots)
-            retry_signal = None
-            if text and len(text.strip()) >= 10:
-                is_signal, _ = is_potential_signal(text)
-                if is_signal:
-                    self._api_calls_today += 1
-                    retry_signal = self.signal_parser.parse_latest(text)
-
-            # Fallback: if cropped parse failed, try full image
-            if (retry_signal is None or not retry_signal.is_valid) and frame.image_path:
-                t_ocr2 = time.time()
-                text_full = self.ocr_service.extract_text(frame.image_path)
-                ocr_ms2 = (time.time() - t_ocr2) * 1000
-                logger.info(f"Confirmation OCR fallback to full image: {ocr_ms2:.0f}ms")
-                if text_full and len(text_full.strip()) >= 10:
-                    is_signal2, _ = is_potential_signal(text_full)
-                    if is_signal2:
-                        self._api_calls_today += 1
-                        retry_signal = self.signal_parser.parse_latest(text_full)
-
-            Path(frame.image_path).unlink(missing_ok=True)
-
-            if retry_signal is None or not retry_signal.is_valid:
-                logger.warning(f"Confirmation {i+1}/{confirm_count-1}: could not parse signal")
-                continue
-
-            if not retry_signal.entry_price:
-                logger.warning(f"Confirmation {i+1}/{confirm_count-1}: missing entry price")
-                continue
-            if not retry_signal.stop_loss:
-                logger.warning(f"Confirmation {i+1}/{confirm_count-1}: missing SL")
-                continue
-            if not retry_signal.take_profit or len(retry_signal.take_profit) == 0 or retry_signal.take_profit[0] is None:
-                logger.warning(f"Confirmation {i+1}/{confirm_count-1}: missing TP")
-                continue
-
-            retry_key = self._signal_key(retry_signal)
-            logger.info(f"Confirmation {i+1}/{confirm_count-1}: {retry_key}")
-
-            if retry_key == first_key:
-                matches += 1
-                logger.info(f"  -> MATCH ({matches}/{confirm_count-1} needed)")
-            else:
-                logger.warning(f"  -> MISMATCH (expected {first_key})")
-
-        # Require ALL confirmation reads to match
-        required = confirm_count - 1
-        if matches >= required:
-            return True
-        else:
-            logger.warning(f"Only {matches}/{required} confirmations matched")
-            return False
-
-    # Cancel keywords that trigger deletion of all pending orders
+    # Cancel keywords that trigger deletion of pending orders
     # Multi-char keywords first (more specific), single-char last (prone to false positives)
     CANCEL_KEYWORDS = ['撤單', '撤单', '刪單', '删单', '測單', '测单', '測掉', '撤掉', '撒掉', '取消', '撤', '撒']
+
+    # Phrases that CONTAIN cancel keywords but are NOT cancel commands.
+    # "直到取消" = MT5 GTC order expiry type, not a cancel instruction.
+    # "就取消/會取消/就撤單" = discussing future actions, not cancelling now.
+    CANCEL_EXCLUSION_PHRASES = [
+        '直到取消', '到取消',           # MT5 GTC
+        '就取消', '會取消', '再取消',    # future tense: "I will cancel"
+        '就撤單', '會撤單', '可能撤單',  # future tense: "I will withdraw"
+        '就撤单', '會撤单',
+        '我會撤', '我就撤',             # "I will withdraw"
+    ]
+
+    # "SL hit" keywords — signal provider says their SL was triggered
+    # This means the signal is no longer valid, cancel any pending order from this source
+    SL_HIT_KEYWORDS = ['SL', 'sl', '觸損', '止損了', '損了']
+
+    # Phrases that CONTAIN SL keywords but are NOT SL-hit notifications.
+    # "SL抓到15" = adjusting SL to 15 points, not SL triggered.
+    SL_NOT_HIT_PHRASES = ['SL抓', 'sl抓', 'SL調', 'SL移', 'SL上移', 'SL設', 'SL到', 'sl調', 'sl移']
 
     # Blocks containing these patterns are likely UI elements (title bar, tabs, ads),
     # not actual chat messages. Skip them to avoid false cancel triggers.
@@ -724,17 +818,17 @@ class CopyTrader:
         # This prevents old cancel messages from blocking newer signals
         blocks = self._regex_parser._split_by_timestamps(text)
 
-        # Collect last 3 non-trivial blocks, skipping UI noise
+        # Only check the LAST non-trivial block (newest message)
+        # This prevents old cancel messages from blocking newer signals after them
         recent_blocks = []
         for block in reversed(blocks):
             block_text = block.strip()
             if len(block_text) < 1:
                 continue
-            # Skip blocks that look like UI elements (title bar, ads, tabs)
             if any(noise in block_text for noise in self.UI_NOISE_PATTERNS):
                 continue
             recent_blocks.append(block_text)
-            if len(recent_blocks) >= 3:
+            if len(recent_blocks) >= 1:  # Only the latest block
                 break
 
         if not recent_blocks:
@@ -755,12 +849,20 @@ class CopyTrader:
         if not found_keyword:
             return False
 
+        # Check if the cancel keyword is part of an exclusion phrase (e.g. "直到取消" from MT5 UI)
+        for excl in self.CANCEL_EXCLUSION_PHRASES:
+            if found_keyword in excl and excl in matched_block:
+                logger.debug(f"Cancel keyword '{found_keyword}' ignored — part of exclusion phrase '{excl}'")
+                return False
+
         # Extra validation for single-char keywords (high false positive risk):
-        # Block must be SHORT (< 30 chars) — real cancel messages are brief like "撤" or "撤 🙈"
-        # Long blocks containing "撤" are likely OCR noise from UI elements
-        if len(found_keyword) == 1 and len(matched_block) > 30:
-            logger.debug(f"Cancel keyword '{found_keyword}' ignored — block too long ({len(matched_block)} chars), likely UI noise")
-            return False
+        # The keyword must appear in the LAST 20 chars of the block (newest message).
+        # This handles cases where "撤" is at the end of a longer OCR block.
+        if len(found_keyword) == 1:
+            tail = matched_block[-20:] if len(matched_block) > 20 else matched_block
+            if found_keyword not in tail:
+                logger.debug(f"Cancel keyword '{found_keyword}' ignored — not in tail of block")
+                return False
 
         # Dedup: don't process the same cancel text twice
         cancel_hash = hashlib.md5(matched_block.encode('utf-8')).hexdigest()[:12]
@@ -780,8 +882,22 @@ class CopyTrader:
                 continue
             # Check if this order came from the same source
             order_source = self.trade_manager._signal_sources.get(str(ticket), "")
-            if source_display and order_source and order_source != source_display:
-                continue  # Different source, skip
+            # Fallback: look up source from ManagedOrders by ticket
+            if not order_source:
+                for mo in self.trade_manager.orders.values():
+                    if mo.ticket == ticket and mo.source_window:
+                        order_source = mo.source_window
+                        break
+            # Source isolation: only delete if same source, or if source unknown and
+            # there's only one monitored group (backward compat for single-group setups)
+            if source_display and order_source:
+                if order_source != source_display:
+                    logger.debug(f"撤單跳過: ticket={ticket} 來源={order_source} != {source_display}")
+                    continue  # Different source, skip
+            elif source_display and not order_source:
+                # Source unknown — don't delete to prevent cross-group interference
+                logger.warning(f"撤單跳過: ticket={ticket} 來源未知，不刪除以避免跨群誤刪")
+                continue
             self.trade_manager._delete_pending_order(ticket)
             logger.info(f"撤單: 刪除掛單 ticket={ticket} price={order.get('price')} (來源: {order_source or '未知'})")
             cancelled += 1
@@ -789,7 +905,128 @@ class CopyTrader:
         # Note: 已成交的持倉不平倉，撤單只影響尚未成交的掛單
 
         logger.warning(f"撤單結果 [{source_display}]: 刪除 {cancelled} 筆掛單")
+        self._write_trade_journal(
+            "CANCEL_TRIGGERED", source=source_display,
+            details=f"關鍵字='{found_keyword}' | 刪除 {cancelled} 筆掛單 | 原文: {matched_block[:100]}",
+        )
         return True
+
+    def _check_sl_hit(self, text: str, source_name: str = "") -> bool:
+        """
+        Check if the latest message indicates the signal provider's SL was hit.
+        Short messages like "SL" or "sl" mean the signal is expired.
+        Cancel pending orders from this source.
+        """
+        blocks = self._regex_parser._split_by_timestamps(text)
+        latest_block = ""
+        for block in reversed(blocks):
+            bt = block.strip()
+            if len(bt) >= 1 and not any(n in bt for n in self.UI_NOISE_PATTERNS):
+                latest_block = bt
+                break
+
+        if not latest_block:
+            return False
+
+        # Check if the block ENDS with an SL-hit keyword
+        # Take the last 10 chars — SL hit messages are at the very end
+        import re
+        tail = latest_block[-10:].strip() if len(latest_block) > 10 else latest_block.strip()
+
+        # If tail contains a price after SL (like "Sl 4540"), it's a signal definition, not SL-hit
+        if re.search(r'(?:sl)\s*[：:=]?\s*\d{3,5}', tail, re.IGNORECASE):
+            return False
+
+        # If tail contains SL adjustment phrases (not SL triggered), skip
+        for excl in self.SL_NOT_HIT_PHRASES:
+            if excl.lower() in tail.lower():
+                logger.debug(f"SL keyword ignored — matches exclusion '{excl}' in: {tail}")
+                return False
+
+        for kw in self.SL_HIT_KEYWORDS:
+            # Case-insensitive match on the tail
+            if kw.lower() in tail.lower():
+
+                source_display = self._window_display_names.get(source_name, source_name)
+
+                # Dedup
+                sl_hash = hashlib.md5(f"sl_hit_{latest_block}".encode()).hexdigest()[:12]
+                if sl_hash in self._cancel_processed:
+                    return False
+                self._cancel_processed.add(sl_hash)
+
+                logger.warning(f"信號觸損通知 '{kw}' [{source_display}]: {latest_block}")
+
+                # Cancel pending orders from this source only
+                pending = self.trade_manager._get_pending_orders()
+                cancelled = 0
+                for order in pending:
+                    ticket = order.get('ticket')
+                    if not ticket:
+                        continue
+                    order_source = self.trade_manager._signal_sources.get(str(ticket), "")
+                    if not order_source:
+                        for mo in self.trade_manager.orders.values():
+                            if mo.ticket == ticket and mo.source_window:
+                                order_source = mo.source_window
+                                break
+                    if source_display and order_source:
+                        if order_source != source_display:
+                            continue  # Different source, skip
+                    elif source_display and not order_source:
+                        continue  # Source unknown, don't delete
+                    self.trade_manager._delete_pending_order(ticket)
+                    cancelled += 1
+
+                self._write_trade_journal(
+                    "SL_HIT_DETECTED", source=source_display,
+                    details=f"關鍵字='{kw}' | 刪除 {cancelled} 筆掛單 | 原文: {latest_block}",
+                )
+                return True
+
+        return False
+
+    def _is_mt5_trade_history(self, text: str) -> bool:
+        """
+        Detect if OCR text is from an MT5 trade completion/history screenshot.
+
+        These screenshots show completed trades (TP HIT, SL, etc.) and should NOT
+        be parsed as new trading signals. They contain distinctive patterns like
+        price arrows (4449.83→4438.20), MT5 timestamps, [tp]/[sl] result indicators.
+
+        Returns True if 2+ indicators are found.
+        """
+        import re
+        indicators = 0
+
+        # Price movement arrow: 4449.83→4438.20
+        if re.search(r'\d{4,5}(?:\.\d+)?\s*[→⟶]\s*\d{4,5}(?:\.\d+)?', text):
+            indicators += 1
+
+        # MT5 timestamp: 2026.03.26 11:03:03 or 2026.03.2611:03:03
+        if re.search(r'\d{4}\.\d{2}\.\d{2}\s*\d{2}:\d{2}:\d{2}', text):
+            indicators += 1
+
+        # Result indicator: [tp] or [sl] or ,tp] or ,sl]
+        if re.search(r'[,\[]\s*(?:tp|sl)\s*\]', text, re.IGNORECASE):
+            indicators += 1
+
+        # Ticket ID: ID followed by 6+ digit number
+        if re.search(r'\bID\s*\d{6,}', text):
+            indicators += 1
+
+        # "placed" keyword (MT5 order placement confirmation)
+        if re.search(r'\bplaced\b', text, re.IGNORECASE):
+            indicators += 1
+
+        # "手續費" or "手绿费" (commission field in trade history)
+        if '手續費' in text or '手绿费' in text or '手续费' in text:
+            indicators += 1
+
+        if indicators >= 2:
+            logger.debug(f"MT5 trade history detected ({indicators} indicators), skipping signal parse")
+            return True
+        return False
 
     def _signal_key(self, signal) -> tuple:
         """Exact key: direction + entry + SL. All from the SAME parser result."""
@@ -840,7 +1077,8 @@ class CopyTrader:
         positions_file = Path(self.config.mt5_files_dir) / "positions.json"
         count = 0
 
-        # Check pending orders
+        # Check pending orders — restore them for tracking (auto-cancel, source mapping)
+        pending_restored = 0
         try:
             if orders_file.exists():
                 with open(orders_file, 'r') as f:
@@ -854,8 +1092,50 @@ class CopyTrader:
                         key = str((direction, entry, sl, tp))
                         self._processed_signals.add(key)
                         count += 1
+
+                        # Create ManagedOrder so pending order is tracked for auto-cancel
+                        ticket = order.get('ticket')
+                        if ticket:
+                            from signal_parser import ParsedSignal
+                            signal_id = f"restored_{ticket}"
+                            # Look up source from persisted signal_sources
+                            source = self.trade_manager._signal_sources.get(
+                                str(ticket), self.trade_manager._signal_sources.get(signal_id, "")
+                            )
+                            dummy_signal = ParsedSignal(
+                                is_valid=True,
+                                symbol=order.get('symbol', 'XAUUSD'),
+                                direction=direction,
+                                entry_price=order.get('price'),
+                                stop_loss=sl,
+                                take_profit=[tp] if tp else [],
+                                lot_size=order.get('volume_current'),
+                                confidence=1.0,
+                                raw_text="restored_from_mt5",
+                                raw_text_summary="restored_from_mt5",
+                            )
+                            managed = ManagedOrder(
+                                signal_id=signal_id,
+                                signal=dummy_signal,
+                                status=OrderStatus.SENT,
+                                ticket=ticket,
+                                remaining_volume=order.get('volume_current', 0),
+                                source_window=source,
+                                cancel_after_seconds=self.config.cancel_pending_after_seconds,
+                            )
+                            self.trade_manager.orders[signal_id] = managed
+                            # Ensure source mapping exists for cancel-by-source
+                            if source:
+                                self.trade_manager._signal_sources[str(ticket)] = source
+                            pending_restored += 1
+                            logger.info(
+                                f"Restored pending order: {signal_id} "
+                                f"ticket={ticket} {direction} @ {entry} source={source or '未知'}"
+                            )
         except Exception as e:
             logger.warning(f"Failed to read MT5 orders for dedup: {e}")
+        if pending_restored > 0:
+            logger.info(f"Tracking {pending_restored} restored pending orders")
 
         # Check open positions — also register them in trade_manager for close detection
         tracked_count = 0
@@ -879,6 +1159,10 @@ class CopyTrader:
                         if ticket:
                             from signal_parser import ParsedSignal
                             signal_id = f"restored_{ticket}"
+                            # Look up source from persisted signal_sources
+                            source = self.trade_manager._signal_sources.get(
+                                str(ticket), self.trade_manager._signal_sources.get(signal_id, "")
+                            )
                             dummy_signal = ParsedSignal(
                                 is_valid=True,
                                 symbol=pos.get('symbol', 'XAUUSD'),
@@ -900,12 +1184,13 @@ class CopyTrader:
                                 entry_time=time.time(),
                                 remaining_volume=pos.get('volume', 0),
                                 last_known_profit=pos.get('profit', 0),
+                                source_window=source,
                             )
                             self.trade_manager.orders[signal_id] = managed
                             tracked_count += 1
                             logger.info(
                                 f"Restored position for tracking: {signal_id} "
-                                f"ticket={ticket} {direction} profit={pos.get('profit', 0)}"
+                                f"ticket={ticket} {direction} profit={pos.get('profit', 0)} source={source or '未知'}"
                             )
         except Exception as e:
             logger.warning(f"Failed to read MT5 positions for dedup: {e}")
@@ -953,7 +1238,112 @@ class CopyTrader:
                     )
                     return False
 
+        # Check SL makes sense for the direction
+        if signal.entry_price and signal.stop_loss:
+            if signal.direction == "buy" and signal.stop_loss >= signal.entry_price:
+                self._log_signal_skip(
+                    "止損方向錯誤（BUY 的 SL 應低於入場價）",
+                    signal=signal,
+                    details=f"入場={signal.entry_price}, SL={signal.stop_loss}"
+                )
+                return False
+            if signal.direction == "sell" and signal.stop_loss <= signal.entry_price:
+                self._log_signal_skip(
+                    "止損方向錯誤（SELL 的 SL 應高於入場價）",
+                    signal=signal,
+                    details=f"入場={signal.entry_price}, SL={signal.stop_loss}"
+                )
+                return False
+
+        # Check SL is not too close to entry (min 3 points)
+        if signal.entry_price and signal.stop_loss:
+            sl_distance = abs(signal.entry_price - signal.stop_loss)
+            if sl_distance < 3:
+                self._log_signal_skip(
+                    "止損距離太近（<3 點，可能解析錯誤）",
+                    signal=signal,
+                    details=f"入場={signal.entry_price}, SL={signal.stop_loss}, 距離={sl_distance:.1f}"
+                )
+                return False
+
+        # Check SL ≠ TP (nonsensical)
+        if signal.stop_loss and signal.take_profit:
+            if signal.stop_loss in signal.take_profit:
+                self._log_signal_skip(
+                    "止損等於止盈（解析錯誤）",
+                    signal=signal,
+                    details=f"SL={signal.stop_loss} 出現在 TP={signal.take_profit} 中"
+                )
+                return False
+
         return True
+
+    def _update_daily_loss(self):
+        """Update daily loss from MT5 closed trades file."""
+        try:
+            from datetime import datetime, timedelta
+            closed_file = Path(self.config.mt5_files_dir) / "closed_trades.json"
+            if not closed_file.exists():
+                return
+            with open(closed_file, 'r') as f:
+                data = json.load(f)
+
+            today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            total_loss = 0.0
+            for trade in data.get("trades", []):
+                try:
+                    close_ts = int(trade.get("close_timestamp", 0))
+                    if close_ts <= 0:
+                        continue
+                    close_time = datetime.fromtimestamp(close_ts)
+                    if close_time >= today_start:
+                        profit = float(trade.get("profit", 0))
+                        if profit < 0:
+                            total_loss += abs(profit)
+                except (TypeError, ValueError):
+                    continue
+            self._daily_loss = total_loss
+        except Exception:
+            pass  # Don't crash the main loop over stats
+
+    # ── Trade Journal: persistent record of every trading decision ──
+
+    def _write_trade_journal(self, action: str, signal=None, source: str = "",
+                              details: str = "", ocr_text: str = ""):
+        """
+        Write a trade decision record to a persistent text file.
+        This survives app restarts and provides a complete audit trail.
+
+        Actions: SIGNAL_DETECTED, ORDER_SUBMITTED, ORDER_SKIPPED, CANCEL_TRIGGERED
+        """
+        try:
+            from datetime import datetime
+            journal_file = DATA_DIR / "trade_journal.txt"
+
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            lines = [f"\n{'='*60}"]
+            lines.append(f"[{timestamp}] {action}")
+            if source:
+                lines.append(f"  來源: {source}")
+            if signal:
+                lines.append(f"  信號: {signal}")
+                if hasattr(signal, 'entry_price'):
+                    lines.append(f"  入場: {signal.entry_price}")
+                    lines.append(f"  止損: {signal.stop_loss}")
+                    lines.append(f"  止盈: {signal.take_profit}")
+                    lines.append(f"  方向: {signal.direction}")
+                    lines.append(f"  方法: {getattr(signal, 'parse_method', 'regex')}")
+            if details:
+                lines.append(f"  詳情: {details}")
+            if ocr_text:
+                # Save first 300 chars of OCR text for debugging
+                lines.append(f"  OCR原文: {ocr_text[:300]}")
+
+            with open(journal_file, 'a', encoding='utf-8') as f:
+                f.write('\n'.join(lines) + '\n')
+
+        except Exception as e:
+            logger.debug(f"Failed to write trade journal: {e}")
 
     def _log_signal_skip(self, reason: str, signal=None, source: str = "", details: str = ""):
         """Log a structured signal skip event for debugging.
@@ -976,15 +1366,35 @@ class CopyTrader:
             "source": source,
             "details": details,
         })
+        # Also write to trade journal
+        self._write_trade_journal("ORDER_SKIPPED", signal=signal, source=source, details=f"{reason} | {details}")
+
+    def _normalize_ocr_text(self, text: str) -> str:
+        """Normalize OCR text for dedup — strip noise, whitespace, common phrases."""
+        import re
+        normalized = text.strip().lower()
+        # Remove all whitespace variations
+        normalized = re.sub(r'\s+', '', normalized)
+        # Remove common noise phrases
+        for word in ['純粹', '個人', '投資', '分享', '僅供參考', '不構成', '計畫', '建議']:
+            normalized = normalized.replace(word, '')
+        # Remove emoji and special chars
+        normalized = re.sub(r'[✨🫧◐‿◑﻿]+', '', normalized)
+        return normalized
 
     def _compute_text_hash(self, text: str) -> str:
-        """Compute hash of text for deduplication."""
-        # Normalize text before hashing
-        normalized = text.strip().lower()
-        # Remove common noise
-        for word in ['純粹', '個人', '投資', '分享', '僅供參考']:
-            normalized = normalized.replace(word, '')
+        """Compute hash of normalized text for deduplication."""
+        normalized = self._normalize_ocr_text(text)
         return hashlib.md5(normalized.encode()).hexdigest()[:16]
+
+    def _is_text_similar(self, text1: str, text2: str, threshold: float = 0.85) -> bool:
+        """Fuzzy text comparison using sequence matcher (no extra deps)."""
+        from difflib import SequenceMatcher
+        n1 = self._normalize_ocr_text(text1)
+        n2 = self._normalize_ocr_text(text2)
+        if not n1 or not n2:
+            return False
+        return SequenceMatcher(None, n1, n2).ratio() >= threshold
 
     def _add_hash_with_ttl(self, hash_value: str, ttl_seconds: float):
         """Add a hash with an expiry timestamp (no asyncio task needed)."""
@@ -1013,6 +1423,16 @@ class CopyTrader:
         now = time.time()
         if now - self._last_cleanup_time < 60:  # Run at most once per minute
             return
+
+        # Heartbeat log every 30 minutes for monitoring gaps
+        if not hasattr(self, '_last_heartbeat'):
+            self._last_heartbeat = now
+        if now - self._last_heartbeat >= 1800:  # 30 min
+            self._last_heartbeat = now
+            self._write_trade_journal(
+                "HEARTBEAT",
+                details=f"系統運行中 | API呼叫={self._api_calls_today} | 日交易={self._daily_trades} | 日虧損=${self._daily_loss:.2f}",
+            )
         self._last_cleanup_time = now
 
         # Clean expired hashes
@@ -1038,6 +1458,13 @@ class CopyTrader:
         expired_vision = [k for k, exp in self._vision_sent_cache.items() if now >= exp]
         for k in expired_vision:
             del self._vision_sent_cache[k]
+
+        # Clean processed signals set (keep max 200)
+        if len(self._processed_signals) > 200:
+            # Remove oldest half to prevent unbounded growth
+            keep = list(self._processed_signals)[-100:]
+            self._processed_signals = set(keep)
+            logger.debug("Trimmed _processed_signals to 100 entries")
 
         # Clean up temp screenshot files
         self.capture_service.cleanup_old_files(max_age_seconds=300)

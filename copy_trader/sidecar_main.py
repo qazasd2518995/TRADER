@@ -470,7 +470,8 @@ class JsonRpcSidecar:
         for key in [
             "default_lot_size", "symbol_name", "auto_execute",
             "cancel_pending_after_seconds", "use_martingale",
-            "martingale_lots", "martingale_max_level",
+            "martingale_lots", "martingale_max_level", "martingale_per_source",
+            "martingale_source_lots",
             "parser_mode",
             "capture_interval", "ocr_confirm_count", "ocr_confirm_delay",
             "min_confidence", "max_price_deviation", "signal_dedup_minutes",
@@ -500,6 +501,8 @@ class JsonRpcSidecar:
             "use_martingale": c.use_martingale,
             "martingale_lots": c.martingale_lots,
             "martingale_max_level": c.martingale_max_level,
+            "martingale_per_source": getattr(c, 'martingale_per_source', False),
+            "martingale_source_lots": getattr(c, 'martingale_source_lots', {}),
             "parser_mode": c.parser_mode,
             "capture_interval": c.capture_interval,
             "capture_windows": [

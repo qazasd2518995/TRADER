@@ -197,6 +197,43 @@ class OCRService:
 
         return np.asarray(img, dtype=np.uint8)
 
+    def extract_newest_bubble_text(self, image_path: str) -> str:
+        """
+        OCR the full image, then use Y-coordinates to keep only the
+        newest (bottom-most) text lines. This avoids reading old signals
+        at the top of the chat without needing OpenCV shape detection.
+
+        Falls back to full text if position filtering fails.
+        """
+        if self.engine != "rapid":
+            return self.extract_text(image_path)
+
+        try:
+            from PIL import Image as PILImage
+            from .bubble_detector import BubbleDetector
+
+            ocr = self._get_rapid_ocr()
+            input_data = self._prepare_image_array(image_path)
+            result = ocr(input_data)
+
+            # Use the PROCESSED image height (after downscale), not original
+            img_h = input_data.shape[0]
+
+            # Use BubbleDetector to filter to newest lines by Y position
+            detector = BubbleDetector()
+            texts, line_infos = detector.get_newest_lines_from_ocr(result, img_h)
+
+            if texts:
+                text = " ".join(texts).strip()
+                logger.debug(f"Newest lines OCR: {len(line_infos)}/{len(getattr(result, 'txts', []))} lines → {len(text)} chars")
+                return text
+
+        except Exception as e:
+            logger.debug(f"Newest-line extraction failed: {e}")
+
+        # Fallback: return all text
+        return self.extract_text(image_path)
+
     def extract_text(self, image_path: str, crop_bottom_ratio: float = 1.0) -> str:
         """
         Extract text from image.

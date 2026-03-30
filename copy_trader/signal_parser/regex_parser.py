@@ -40,6 +40,7 @@ class RegexSignalParser:
     # NOTE: Do NOT use \b around Chinese characters — Python \b doesn't fire
     # between \w classes (digits and CJK are both \w), so "5180多" won't match \b多\b.
     BUY_PATTERNS = [
+        r'\b(?:buy)\s+(?:limit|stop)\b',  # MT5: Buy Limit, Buy Stop
         r'\b(?:buy|long)\b',
         r'(?:做多|買入|买入)',
         r'(?<![a-zA-Z])(?:多|買)(?![a-zA-Z])',  # standalone 多/買 (not inside English words)
@@ -48,6 +49,7 @@ class RegexSignalParser:
     ]
 
     SELL_PATTERNS = [
+        r'\b(?:sell)\s+(?:limit|stop)\b',  # MT5: Sell Limit, Sell Stop
         r'\b(?:sell|short)\b',
         r'(?:做空|賣出|卖出)',
         r'(?<![a-zA-Z])(?:空|賣)(?![a-zA-Z])',  # standalone 空/賣 (not inside English words)
@@ -58,9 +60,11 @@ class RegexSignalParser:
     # Price patterns
     ENTRY_PATTERNS = [
         r'(?:buy|sell|買|賣)\s*[：:\s]\s*(\d{4,5}(?:\.\d+)?)',  # Buy：5110 or Buy 5110
-        r'(?:進場|入場|entry|價格|price)\s*[：:=]?\s*(\d{4,5}(?:\.\d+)?)',
+        r'(?:進場|入場|entry|價格|价格|price)\s*[-：:=]?\s*(\d{4,5}(?:\.\d+)?)',  # MT5: 價格 4458.86
         r'(\d{4,5}(?:\.\d+)?)\s*[-~]\s*(\d{4,5}(?:\.\d+)?)\s*(?:多|空)',  # Range entry: 4884-4885多
         r'(\d{4,5}(?:\.\d+)?)\s*(?:多|空)',  # 5180多 or 5180空 (price before direction)
+        r'(\d{4,5}(?:\.\d+)?)\s*附近',  # wayne: 4430附近 (nearby price as entry)
+        r'[（(]\s*(\d{4,5}(?:\.\d+)?)\s*[）)]',  # Noir: 輕倉空（4584）(parenthesized entry)
     ]
     # Fallback: OCR sometimes truncates entry price to 2-3 digits (e.g. "5080" → "50")
     ENTRY_PARTIAL_PATTERNS = [
@@ -78,16 +82,16 @@ class RegexSignalParser:
 
     TP_PATTERNS = [
         # Multiple TPs: "Tp 4889 4894 4899" or "止盈 4889 4894 4899"
-        r'(?:止盈|止赢|止贏|止嬴|止營|止瑩|」\s*三|tp|take\s*profit|盈)\s*[：:=]?\s*((?:\d{4,5}(?:\.\d+)?\s*)+)',
+        r'(?:止盈|止赢|止贏|止嬴|止營|止瑩|獲利|覆利|获利|」\s*三|tp|take\s*profit|盈)\s*[：:=]?\s*((?:\d{4,5}(?:\.\d+)?\s*)+)',
         # TP with number: TP1 4920, TP2 4950
-        r'(?:止盈|止赢|止贏|止營|止瑩|」\s*三|tp)\s*\d\s*[：:=]?\s*(\d{4,5}(?:\.\d+)?)',
+        r'(?:止盈|止赢|止贏|止營|止瑩|獲利|覆利|获利|」\s*三|tp)\s*\d\s*[：:=]?\s*(\d{4,5}(?:\.\d+)?)',
         # Single TP with label
-        r'(?:止盈|止赢|止贏|止營|止瑩|」\s*三|tp)\s*[：:=]?\s*(\d{4,5}(?:\.\d+)?)',
+        r'(?:止盈|止赢|止贏|止營|止瑩|獲利|覆利|获利|」\s*三|tp)\s*[：:=]?\s*(\d{4,5}(?:\.\d+)?)',
         # Fallback: number right after SL pattern on sell signals (lower price = TP for sell)
     ]
     # Fallback TP: OCR truncates to 2-3 digits (e.g. "止盈 49 昍" instead of "止盈 4983")
     TP_PARTIAL_PATTERNS = [
-        r'(?:止盈|止赢|止贏|止嬴|止營|止瑩|」\s*三|tp|take\s*profit|盈)\s*[：:=]?\s*(\d{2,3})(?:\s|$|\D)',
+        r'(?:止盈|止赢|止贏|止嬴|止營|止瑩|獲利|覆利|获利|」\s*三|tp|take\s*profit|盈)\s*[：:=]?\s*(\d{2,3})(?:\s|$|\D)',
     ]
 
     MARKET_ORDER_PATTERNS = [
@@ -129,12 +133,16 @@ class RegexSignalParser:
             "止盈": " TP ",
             "止贏": " TP ",
             "止赢": " TP ",
+            "獲利": " TP ",
+            "覆利": " TP ",  # OCR misread of 獲利
+            "获利": " TP ",
             "買入": " BUY ",
             "买入": " BUY ",
             "做多": " BUY ",
             "做空": " SELL ",
             "賣出": " SELL ",
             "卖出": " SELL ",
+            "\U0001f233": " SELL ",  # 🈳 emoji (squared 空), used by wayne
             "市價": " MARKET ",
             "市价": " MARKET ",
         }
@@ -202,6 +210,97 @@ class RegexSignalParser:
         logger.debug("No valid signal in individual blocks, parsing full text")
         return self.parse(text)
 
+    def parse_all_latest(self, text: str) -> List[ParsedSignal]:
+        """
+        Parse ALL valid signals from the latest timestamp block.
+
+        When a single OCR capture contains multiple signals (e.g. 乘 posts
+        Sell 4460 and BUY 4425 at the same time), this returns all of them.
+
+        Returns:
+            List of ParsedSignal objects (may be empty or have 1+ items)
+        """
+        blocks = self._split_by_timestamps(text)
+
+        if not blocks:
+            return [self.parse(text)] if self.parse(text).is_valid else []
+
+        # Find the newest non-trivial block(s) with signals
+        results = []
+
+        for block in reversed(blocks):
+            block_text = block.strip()
+            if len(block_text) < 10:
+                continue
+
+            # Try to split this block into multiple signals by direction keywords
+            sub_signals = self._split_block_by_directions(block_text)
+
+            if len(sub_signals) > 1:
+                # Multiple signals found in one block
+                for sub_text in sub_signals:
+                    sig = self.parse(sub_text)
+                    if sig.is_valid:
+                        results.append(sig)
+                if results:
+                    logger.info(f"Found {len(results)} signals in same block")
+                    return results
+
+            # Single signal in this block
+            sig = self.parse(block_text)
+            if sig.is_valid:
+                return [sig]
+
+        # Fallback: parse entire text
+        sig = self.parse(text)
+        return [sig] if sig.is_valid else []
+
+    def _split_block_by_directions(self, text: str) -> List[str]:
+        """
+        Split a text block into sub-blocks at each direction keyword boundary.
+
+        For example, when 乘 posts two signals at once:
+        "乘XAUUSD黃金 Sell：4460 止損：4475 止盈：4440 ... 乘XAUUSD黃金 BUY：4425 止損：4416 止盈：4442"
+        → ["Sell：4460 止損：4475 止盈：4440 ...", "BUY：4425 止損：4416 止盈：4442"]
+        """
+        # Find all direction keyword positions
+        direction_patterns = [
+            r'\bbuy\s+(?:limit|stop)\b', r'\bsell\s+(?:limit|stop)\b',
+            r'\bbuy\b', r'\bsell\b', r'\blong\b', r'\bshort\b',
+            r'(?<![a-zA-Z])多(?![a-zA-Z])', r'(?<![a-zA-Z])空(?![a-zA-Z])',
+            r'(?<![a-zA-Z])買(?![a-zA-Z])', r'(?<![a-zA-Z])賣(?![a-zA-Z])',
+        ]
+
+        positions = []
+        for pat in direction_patterns:
+            for m in re.finditer(pat, text, re.IGNORECASE):
+                positions.append(m.start())
+
+        positions = sorted(set(positions))
+
+        if len(positions) <= 1:
+            return [text]
+
+        # Check if these are truly separate signals (each has its own SL/TP area)
+        # Only split if positions are far enough apart (>30 chars)
+        split_points = [positions[0]]
+        for pos in positions[1:]:
+            if pos - split_points[-1] >= 30:
+                split_points.append(pos)
+
+        if len(split_points) <= 1:
+            return [text]
+
+        # Split text at these positions
+        sub_blocks = []
+        for i, start in enumerate(split_points):
+            end = split_points[i + 1] if i + 1 < len(split_points) else len(text)
+            sub_text = text[start:end].strip()
+            if len(sub_text) >= 10:
+                sub_blocks.append(sub_text)
+
+        return sub_blocks if len(sub_blocks) > 1 else [text]
+
     def _has_explicit_direction(self, text: str) -> bool:
         """Check if text contains an explicit buy/sell direction keyword."""
         # Quick check for common keywords first (avoid compiled pattern overhead)
@@ -222,17 +321,21 @@ class RegexSignalParser:
 
     def _split_by_timestamps(self, text: str) -> List[str]:
         """
-        Split OCR text into message blocks using LINE timestamps and date headers.
+        Split OCR text into message blocks using LINE timestamps, date headers,
+        and Y-position gap markers (|MSG|) from BubbleDetector.
 
         LINE timestamps appear AFTER each message: "...message content... 下午 2:30"
-        So splitting by timestamps gives us individual message blocks.
+        |MSG| markers are inserted by BubbleDetector when a Y-position gap indicates
+        a different chat bubble (different sender/message).
         """
-        # Combined pattern: timestamps OR date headers
-        split_pattern = f'(?:{self.LINE_TIMESTAMP_PATTERN}|{self.LINE_DATE_PATTERN})'
+        # Combined pattern: timestamps OR date headers OR message boundary marker
+        split_pattern = f'(?:{self.LINE_TIMESTAMP_PATTERN}|{self.LINE_DATE_PATTERN}|\\|MSG\\|)'
         parts = re.split(split_pattern, text)
 
-        # Filter out empty/whitespace-only blocks
-        blocks = [p for p in parts if p and len(p.strip()) >= 5]
+        # Filter out empty/whitespace-only blocks.
+        # Keep blocks >= 1 char so short cancel keywords ("撤", "SL") survive the split.
+        # Signal parsing has its own length check in parse() so this is safe.
+        blocks = [p for p in parts if p and len(p.strip()) >= 1]
         return blocks
 
     def parse(self, text: str) -> ParsedSignal:
@@ -247,6 +350,16 @@ class RegexSignalParser:
         """
         if not text or len(text.strip()) < 5:
             return ParsedSignal(is_valid=False, error="Text too short")
+
+        # Pre-normalization: extract parenthesized entry before （） get replaced by spaces
+        # e.g. Noir: "輕倉空（4584）" → capture 4584 as candidate entry
+        _paren_entry = None
+        _paren_match = re.search(r'[（(]\s*(\d{4,5}(?:\.\d+)?)\s*[）)]', text)
+        if _paren_match:
+            try:
+                _paren_entry = float(_paren_match.group(1))
+            except Exception:
+                pass
 
         # Normalize text
         text_clean = self._normalize_text(text)
@@ -271,6 +384,13 @@ class RegexSignalParser:
                 ref_prices = [p for p in [stop_loss] + (take_profits or []) if p]
 
         entry_price, is_market = self._extract_entry(signal_text, ref_prices=ref_prices)
+
+        # Fallback: use parenthesized entry captured before normalization
+        # e.g. Noir "輕倉空（4584）" → entry=4584
+        if entry_price is None and _paren_entry is not None:
+            entry_price = _paren_entry
+            is_market = False
+            logger.info(f"Using parenthesized entry: {_paren_entry}")
 
         # 2. Detect direction (can infer from SL/TP if not explicit)
         direction = self._detect_direction(signal_text)
@@ -346,22 +466,37 @@ class RegexSignalParser:
                     last_pos = m.start()
 
         if last_pos > 0:
-            # Look backward from the direction keyword for an adjacent entry price
-            # e.g. "4695-4696 空" or "4695 空" — include the price(s) in the result
+            # Look backward from the direction keyword for an adjacent entry price.
+            # e.g. "4695-4696 空" or "4695 空" — include the price(s) in the result.
+            # Also handle "4430附近可進場多" and "輕倉空（4584）" where the price is
+            # separated from the direction keyword by Chinese words or punctuation.
             prefix = text[:last_pos]
+
+            # Try range first: "4695-4696 空"
             price_prefix_match = re.search(
                 r'(\d{4,5}(?:\.\d+)?\s*[-~]\s*\d{4,5}(?:\.\d+)?\s*)$',
                 prefix,
             )
+            # Then direct: "4695 空"
             if not price_prefix_match:
                 price_prefix_match = re.search(
                     r'(\d{4,5}(?:\.\d+)?\s*)$',
                     prefix,
                 )
+            # Then with Chinese filler: "4430附近可進場多", "4430 附近 多"
+            if not price_prefix_match:
+                price_prefix_match = re.search(
+                    r'(\d{4,5}(?:\.\d+)?(?:\s*附近)?[\s\S]{0,10})$',
+                    prefix,
+                )
             if price_prefix_match:
                 # Expand start to include the entry price
                 return text[price_prefix_match.start():]
-            return text[last_pos:]
+
+            # Also check AFTER the direction keyword for parenthesized entry:
+            # "輕倉空（4584）sl4600" → direction at "空", entry "(4584)" is after
+            suffix = text[last_pos:]
+            return suffix
         return text
 
     def _detect_direction(self, text: str) -> Optional[str]:
@@ -584,7 +719,7 @@ class RegexSignalParser:
         take_profits = []
 
         simple_matches = re.findall(
-            r'(?:\btp\b\d*|take\s*profit|\u6b62\u76c8|\u6b62\u8d0f|\u6b62\u8d62)\s*[^\d]{0,6}(\d{4,5}(?:\.\d+)?)',
+            r'(?:\btp\b\d*|take\s*profit|\u6b62\u76c8|\u6b62\u8d0f|\u6b62\u8d62|\u7372\u5229|\u8986\u5229|\u83b7\u5229)\s*[^\d]{0,6}(\d{4,5}(?:\.\d+)?)',
             text,
             re.IGNORECASE,
         )
@@ -611,7 +746,7 @@ class RegexSignalParser:
                         pass
 
         # Also look for "TP1 XXXX TP2 XXXX" pattern
-        tp_numbered = re.findall(r'(?:tp|止盈|止營|止瑩)\s*\d?\s*[：:=]?\s*(\d{4,5}(?:\.\d+)?)', text, re.IGNORECASE)
+        tp_numbered = re.findall(r'(?:tp|止盈|止營|止瑩|獲利|覆利|获利)\s*\d?\s*[：:=]?\s*(\d{4,5}(?:\.\d+)?)', text, re.IGNORECASE)
         for tp_str in tp_numbered:
             try:
                 tp = float(tp_str)

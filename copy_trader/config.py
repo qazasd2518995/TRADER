@@ -88,7 +88,9 @@ class Config:
     use_martingale: bool = True
     martingale_multiplier: float = 2.0
     martingale_max_level: int = 4
-    martingale_lots: List[float] = field(default_factory=list)  # 自訂每層手數，空=用 multiplier 計算
+    martingale_lots: List[float] = field(default_factory=list)  # 全域自訂每層手數
+    martingale_per_source: bool = False  # True=每群各自馬丁, False=全域共用
+    martingale_source_lots: dict = field(default_factory=dict)  # 各群自訂手數 {"群名": [0.01, 0.02, ...]}
 
     # OCR Confirmation Settings
     ocr_confirm_count: int = 2       # Number of OCR reads to confirm a signal (2 = 1 initial + 1 confirmation)
@@ -187,6 +189,8 @@ def save_config(config: Config, path: Path = CONFIG_FILE):
         "martingale_multiplier": config.martingale_multiplier,
         "martingale_max_level": config.martingale_max_level,
         "martingale_lots": config.martingale_lots,
+        "martingale_per_source": config.martingale_per_source,
+        "martingale_source_lots": config.martingale_source_lots,
         "ocr_confirm_count": config.ocr_confirm_count,
         "ocr_confirm_delay": config.ocr_confirm_delay,
         "min_confidence": config.min_confidence,

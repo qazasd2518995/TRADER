@@ -1,5 +1,8 @@
+import { useState } from "react";
 import { S } from "../lib/constants";
 import { useTradingStore } from "../stores/tradingStore";
+import { useAuthStore } from "../stores/authStore";
+import { getMaxWindows } from "../lib/auth";
 import { sidecarCommands } from "../hooks/useSidecar";
 
 export default function Dashboard() {
@@ -133,6 +136,9 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* Capture Windows */}
+      <CaptureWindowsCard />
 
       {/* Account row */}
       <div className="section stagger-2">
@@ -277,6 +283,133 @@ function MiniStat({ label, value, color }: { label: string; value: string; color
     <div style={{ padding: "10px 0", borderBottom: "1px solid var(--border-hairline)" }}>
       <div style={{ fontSize: "10px", color: "var(--color-ink-muted)", letterSpacing: "0.04em", marginBottom: "4px" }}>{label}</div>
       <div className="num-md" style={{ color: color || "var(--color-ink)", fontSize: "14px" }}>{value}</div>
+    </div>
+  );
+}
+
+function CaptureWindowsCard() {
+  const config = useTradingStore((s) => s.config);
+  const setConfig = useTradingStore((s) => s.setConfig);
+  const userPlan = useAuthStore((s) => s.user?.plan ?? "trial");
+  const maxWindows = getMaxWindows(userPlan);
+
+  const [showModal, setShowModal] = useState(false);
+  const [detecting, setDetecting] = useState(false);
+  const [detectedWindows, setDetectedWindows] = useState<string[]>([]);
+  const [manualName, setManualName] = useState("");
+
+  if (!config) return null;
+  const windows = config.capture_windows ?? [];
+
+  function addWindow(title: string) {
+    if (!config) return;
+    if (windows.some((w) => w.window_name === title)) return;
+    if (windows.length >= maxWindows) {
+      alert(`您的方案最多可監控 ${maxWindows} 個群組，請升級方案。`);
+      return;
+    }
+    const newWindows = [...windows, { window_name: title, app_name: "LINE", name: `win_${windows.length}` }];
+    const updated = { ...config, capture_windows: newWindows };
+    setConfig(updated as import("../lib/types").TradingConfig);
+  }
+
+  function removeWindow(idx: number) {
+    if (!config) return;
+    const newWindows = windows.filter((_, i) => i !== idx);
+    const updated = { ...config, capture_windows: newWindows };
+    setConfig(updated as import("../lib/types").TradingConfig);
+  }
+
+  async function openPicker() {
+    setShowModal(true);
+    setDetecting(true);
+    setDetectedWindows([]);
+    try {
+      const res = await sidecarCommands.detectWindows();
+      setDetectedWindows(res.windows ?? []);
+    } catch { /* empty */ } finally {
+      setDetecting(false);
+    }
+  }
+
+  return (
+    <div className="section stagger-2">
+      <div className="flex items-center justify-between" style={{ marginBottom: "16px" }}>
+        <span className="heading-md" style={{ fontFamily: "var(--font-serif)" }}>
+          監控群組
+        </span>
+        <span className="num-sm" style={{ color: "var(--color-ink-muted)" }}>
+          {windows.length}/{maxWindows === Infinity ? "∞" : maxWindows}
+        </span>
+      </div>
+
+      {windows.length === 0 ? (
+        <div style={{ padding: "20px 0", color: "var(--color-ink-ghost)", fontSize: "13px", fontStyle: "italic", textAlign: "center" }}>
+          尚未選擇任何監控群組
+        </div>
+      ) : (
+        <div style={{ border: "1px solid var(--border-hairline)", borderRadius: "6px", overflow: "hidden", marginBottom: "12px" }}>
+          {windows.map((w, i) => (
+            <div key={i} className="flex items-center justify-between"
+              style={{ padding: "10px 14px", fontSize: "13px", borderBottom: i < windows.length - 1 ? "1px solid var(--border-hairline)" : undefined }}>
+              <div className="flex items-center gap-3">
+                <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--color-profit)", display: "inline-block" }} />
+                <span style={{ color: "var(--color-ink-light)" }}>{w.window_name}</span>
+              </div>
+              <button onClick={() => removeWindow(i)}
+                style={{ background: "none", border: "none", color: "var(--color-loss)", cursor: "pointer", fontSize: "14px" }}>
+                &times;
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <button onClick={openPicker} className="btn-outline" style={{ fontSize: "12px" }}>
+        + 新增監控群組
+      </button>
+
+      {/* Modal */}
+      {showModal && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={(e) => { if (e.target === e.currentTarget) setShowModal(false); }}>
+          <div style={{ background: "var(--bg-card, #111)", border: "1px solid var(--border-hairline)", borderRadius: "10px", width: 480, maxHeight: "70vh", display: "flex", flexDirection: "column", boxShadow: "0 20px 60px rgba(0,0,0,0.5)" }}>
+            <div className="flex items-center justify-between" style={{ padding: "16px 20px", borderBottom: "1px solid var(--border-hairline)" }}>
+              <span style={{ fontSize: "15px", fontWeight: 600 }}>選取監控群組</span>
+              <button onClick={() => setShowModal(false)} style={{ background: "none", border: "none", color: "var(--color-ink-muted)", cursor: "pointer", fontSize: "18px" }}>&times;</button>
+            </div>
+            <div className="flex gap-2" style={{ padding: "12px 20px", borderBottom: "1px solid var(--border-hairline)" }}>
+              <input type="text" className="form-input" style={{ flex: 1 }} placeholder="手動輸入視窗名稱" value={manualName}
+                onChange={(e) => setManualName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && manualName.trim()) { addWindow(manualName.trim()); setManualName(""); }}} />
+              <button onClick={() => { if (manualName.trim()) { addWindow(manualName.trim()); setManualName(""); }}} className="btn-outline" disabled={!manualName.trim()}>加入</button>
+            </div>
+            <div style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}>
+              {detecting ? (
+                <div style={{ padding: "30px 0", textAlign: "center", color: "var(--color-ink-muted)", fontSize: "13px" }}>偵測中...</div>
+              ) : detectedWindows.length === 0 ? (
+                <div style={{ padding: "30px 0", textAlign: "center", color: "var(--color-ink-ghost)", fontSize: "13px" }}>未偵測到視窗，請手動輸入</div>
+              ) : (
+                <>
+                  <div style={{ padding: "4px 20px 8px", fontSize: "11px", color: "var(--color-ink-ghost)" }}>偵測到 {detectedWindows.length} 個視窗</div>
+                  {detectedWindows.map((title, i) => {
+                    const already = windows.some((w) => w.window_name === title);
+                    return (
+                      <div key={i} onClick={() => { if (!already) addWindow(title); }}
+                        style={{ padding: "9px 20px", fontSize: "13px", cursor: already ? "default" : "pointer", opacity: already ? 0.4 : 1, color: "var(--color-ink-light)" }}
+                        onMouseEnter={(e) => { if (!already) e.currentTarget.style.background = "rgba(255,255,255,0.04)"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
+                        <span>{title}</span>
+                        {already && <span style={{ marginLeft: "8px", fontSize: "11px", color: "var(--color-ink-ghost)" }}>已加入</span>}
+                      </div>
+                    );
+                  })}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

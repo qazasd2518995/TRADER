@@ -75,6 +75,7 @@ a = Analysis(
         # copy_trader 內部模組
         'config', 'app', 'mt5_reader',
         'signal_capture', 'signal_capture.screen_capture', 'signal_capture.ocr',
+        'signal_capture.bubble_detector',
         'signal_parser', 'signal_parser.keyword_filter', 'signal_parser.groq_parser',
         'signal_parser.groq_vision_parser', 'signal_parser.gemini_vision_parser',
         # google-genai SDK

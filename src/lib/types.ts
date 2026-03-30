@@ -80,6 +80,8 @@ export interface TradingConfig {
   use_martingale: boolean;
   martingale_lots: number[];
   martingale_max_level: number;
+  martingale_per_source: boolean;
+  martingale_source_lots: Record<string, number[]>;
   parser_mode: string;
   capture_interval: number;
   capture_windows: CaptureWindow[];

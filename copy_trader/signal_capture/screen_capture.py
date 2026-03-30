@@ -146,8 +146,9 @@ class ScreenCaptureService:
         self.windows = windows or []
         self.temp_dir = temp_dir or tempfile.mkdtemp(prefix="copy_trader_")
         self._last_hashes: Dict[str, str] = {}
+        self._last_frames: Dict[str, str] = {}  # window_name -> last image path (for diff)
         self._last_force_refresh: float = 0.0
-        self.FORCE_REFRESH_INTERVAL: float = 300.0  # Force OCR every 5 minutes (was 60s — too aggressive)
+        self.FORCE_REFRESH_INTERVAL: float = 60.0  # Force OCR every 60s to catch short messages (撤/SL)
 
         Path(self.temp_dir).mkdir(parents=True, exist_ok=True)
         logger.info(f"ScreenCaptureService initialized with {len(self.regions)} regions, {len(self.windows)} windows")
@@ -179,53 +180,50 @@ class ScreenCaptureService:
             raise RuntimeError(f"Screen capture failed: {e}")
 
     # Throttle scroll: track last scroll time per window
-    _last_scroll_times: Dict[int, float] = {}
-    SCROLL_INTERVAL = 30  # seconds between scrolls per window
+    SCROLL_INTERVAL = 15  # seconds between scrolls per window (was 30, reduced to catch new messages faster)
+
+    def __init_scroll_times(self):
+        if not hasattr(self, '_scroll_times'):
+            self._scroll_times: Dict[int, float] = {}
 
     def _send_scroll_to_bottom(self, hwnd: int):
         """
         Scroll LINE window to bottom to ensure latest messages are visible.
-        Throttled to every 30 seconds per window to avoid disrupting user.
-        Uses focus + End key (the only method that works for LINE's CEF rendering).
+        Uses brief focus switch + keybd_event because PostMessage doesn't work
+        with LINE's CEF/Chromium rendering engine.
         """
-        import ctypes
+        self.__init_scroll_times()
 
         now = time.time()
-        last_scroll = self._last_scroll_times.get(hwnd, 0)
-        if now - last_scroll < self.SCROLL_INTERVAL:
+        if now - self._scroll_times.get(hwnd, 0) < self.SCROLL_INTERVAL:
             return
-
-        self._last_scroll_times[hwnd] = now
+        self._scroll_times[hwnd] = now
 
         try:
-            # Briefly set focus, send Ctrl+End then End x3, restore previous window
-            old_fg = win32gui.GetForegroundWindow()
-            ctypes.windll.user32.SetForegroundWindow(hwnd)
-            time.sleep(0.08)
-
+            import ctypes
             VK_END = 0x23
             VK_CONTROL = 0x11
             KEYEVENTF_EXTENDEDKEY = 0x01
             KEYEVENTF_KEYUP = 0x02
 
-            # Ctrl+End: jump to absolute bottom
-            # Must use KEYEVENTF_EXTENDEDKEY for End key, otherwise it sends
-            # Numpad 1 instead of End when NumLock is on.
+            # Save current foreground window
+            old_fg = win32gui.GetForegroundWindow()
+
+            # Briefly focus the LINE window (required for CEF)
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+            time.sleep(0.05)
+
+            # Ctrl+End: jump to bottom
             ctypes.windll.user32.keybd_event(VK_CONTROL, 0, 0, 0)
             ctypes.windll.user32.keybd_event(VK_END, 0, KEYEVENTF_EXTENDEDKEY, 0)
             ctypes.windll.user32.keybd_event(VK_END, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
             ctypes.windll.user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
             time.sleep(0.05)
 
-            # Extra End key presses to ensure we're at the very bottom
-            for _ in range(3):
-                ctypes.windll.user32.keybd_event(VK_END, 0, KEYEVENTF_EXTENDEDKEY, 0)
-                ctypes.windll.user32.keybd_event(VK_END, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
-                time.sleep(0.03)
-
-            time.sleep(0.05)
-            if old_fg:
+            # Restore previous foreground window
+            if old_fg and old_fg != hwnd:
                 ctypes.windll.user32.SetForegroundWindow(old_fg)
+
             logger.debug(f"Scrolled window {hwnd} to bottom")
         except Exception as e:
             logger.debug(f"Failed to scroll window {hwnd}: {e}")
@@ -257,6 +255,14 @@ class ScreenCaptureService:
         bitmap = None
 
         try:
+            # Restore minimized windows — PrintWindow cannot capture minimized windows
+            import ctypes
+            if win32gui.IsIconic(hwnd):
+                # SW_SHOWNOACTIVATE (4): restore without stealing focus
+                ctypes.windll.user32.ShowWindow(hwnd, 4)
+                time.sleep(0.3)  # Wait for window to restore
+                logger.debug(f"Restored minimized window: {window.name}")
+
             # Get window dimensions
             left, top, right, bottom = win32gui.GetWindowRect(hwnd)
             width = right - left
@@ -275,9 +281,14 @@ class ScreenCaptureService:
             bitmap.CreateCompatibleBitmap(mfc_dc, width, height)
             save_dc.SelectObject(bitmap)
 
-            # Use PrintWindow to capture (works for background windows)
+            # Use PrintWindow to capture (works for background/occluded windows)
+            # Flag 2 = PW_RENDERFULLCONTENT: captures even hardware-accelerated content
+            # Flag 3 = PW_RENDERFULLCONTENT | PW_CLIENTONLY: client area only (no title bar)
             import ctypes
-            ctypes.windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), 2)
+            result = ctypes.windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), 3)
+            if not result:
+                # Retry with flag=2 (include title bar)
+                ctypes.windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), 2)
 
             # Convert to PIL Image and save
             bmp_info = bitmap.GetInfo()
@@ -288,6 +299,12 @@ class ScreenCaptureService:
                 bmp_str, 'raw', 'BGRX', 0, 1
             )
             img.save(filepath)
+
+            # Check for black/empty capture (PrintWindow failure)
+            import numpy as np
+            arr = np.array(img)
+            if arr.mean() < 5:
+                logger.warning(f"PrintWindow returned black image for '{window.name}', window may need to be visible")
 
             img_hash = self._compute_file_hash(filepath)
             dummy_region = CaptureRegion(x=0, y=0, width=width, height=height, name=window.name)
@@ -388,8 +405,8 @@ class ScreenCaptureService:
                     # Use perceptual hash for better dedup (tolerates minor rendering differences)
                     phash = self._compute_perceptual_hash(frame.image_path)
                     last_hash = self._last_hashes.get(window.name)
-                    if last_hash and self._phash_similar(phash, last_hash, threshold=10):
-                        logger.debug(f"Window '{window.name}' unchanged (phash distance < 10), skipping")
+                    if last_hash and self._phash_similar(phash, last_hash, threshold=5):
+                        logger.debug(f"Window '{window.name}' unchanged (phash distance < 5), skipping")
                         Path(frame.image_path).unlink(missing_ok=True)
                         continue
                     if last_hash:
@@ -419,18 +436,76 @@ class ScreenCaptureService:
                 hasher.update(chunk)
         return hasher.hexdigest()
 
+    def compute_diff_region(self, window_name: str, new_image_path: str) -> Optional[str]:
+        """
+        Compare new frame with previous frame, crop to changed region only.
+        Returns path to cropped diff image, or None to use full image.
+        """
+        prev_path = self._last_frames.get(window_name)
+        self._last_frames[window_name] = new_image_path
+
+        if not prev_path or not Path(prev_path).exists():
+            return None  # No previous frame, use full image
+
+        try:
+            import cv2
+            import numpy as np
+
+            prev = cv2.imread(prev_path, cv2.IMREAD_GRAYSCALE)
+            curr = cv2.imread(new_image_path, cv2.IMREAD_GRAYSCALE)
+
+            if prev is None or curr is None:
+                return None
+            if prev.shape != curr.shape:
+                return None  # Different sizes, can't diff
+
+            # Compute absolute difference
+            diff = cv2.absdiff(prev, curr)
+            _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
+
+            # Find bounding box of all changed pixels
+            coords = cv2.findNonZero(thresh)
+            if coords is None:
+                return None  # No changes
+
+            x, y, w, h = cv2.boundingRect(coords)
+
+            # Skip tiny changes (cursor blink, timestamp update)
+            if w * h < 2000:
+                return None
+
+            # Expand region with padding
+            img = cv2.imread(new_image_path)
+            img_h, img_w = img.shape[:2]
+            pad = 20
+            x1 = max(0, x - pad)
+            y1 = max(0, y - pad)
+            x2 = min(img_w, x + w + pad)
+            y2 = min(img_h, y + h + pad)
+
+            cropped = img[y1:y2, x1:x2]
+            diff_path = new_image_path.replace('.png', '_diff.png')
+            cv2.imwrite(diff_path, cropped)
+
+            logger.debug(f"Diff region: ({x1},{y1})-({x2},{y2}) = {x2-x1}x{y2-y1} from {img_w}x{img_h}")
+            return diff_path
+
+        except Exception as e:
+            logger.debug(f"Diff detection failed: {e}")
+            return None
+
     def _compute_perceptual_hash(self, filepath: str) -> str:
-        """Compute perceptual hash of an image."""
+        """Compute dHash (difference hash) — faster than pHash, good for chat dedup."""
         try:
             import imagehash
             from PIL import Image
             with Image.open(filepath) as img:
-                return str(imagehash.phash(img))
+                return str(imagehash.dhash(img))  # dHash: ~2x faster than pHash
         except ImportError:
             return self._compute_file_hash(filepath)
 
     def _phash_similar(self, hash1: str, hash2: str, threshold: int = 3) -> bool:
-        """Check if two perceptual hashes are similar (Hamming distance)."""
+        """Check if two hashes are similar (Hamming distance)."""
         try:
             import imagehash
             h1 = imagehash.hex_to_hash(hash1)

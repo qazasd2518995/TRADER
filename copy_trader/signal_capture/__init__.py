@@ -7,6 +7,7 @@ from .screen_capture import (
     list_app_windows,
 )
 from .ocr import OCRService
+from .bubble_detector import BubbleDetector
 
 __all__ = [
     "ScreenCaptureService",
