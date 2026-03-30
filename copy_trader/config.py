@@ -12,16 +12,15 @@ from pathlib import Path
 
 
 def _get_data_dir() -> Path:
-    """資料目錄：config.json、signals、logs 都存這裡。
-
-    - PyInstaller 打包環境 → %APPDATA%/黃金跟單系統/
-    - 開發環境 → 專案根目錄
-    """
-    if getattr(sys, 'frozen', False):
-        # PyInstaller onefile 解壓到 _MEIPASS 臨時目錄，不適合寫入
-        # 改用 AppData 讓資料持久保存
-        return Path(os.environ.get('APPDATA', '~')) / '黃金跟單系統'
-    else:
+    """資料目錄：config.json、signals、logs 都存這裡。"""
+    try:
+        from copy_trader.platform import PlatformConfig
+        return PlatformConfig().get_app_data_path()
+    except ImportError:
+        if getattr(sys, 'frozen', False):
+            if sys.platform == "darwin":
+                return Path.home() / "Library" / "Application Support" / "黃金跟單系統"
+            return Path(os.environ.get('APPDATA', '~')) / '黃金跟單系統'
         return Path(__file__).parent.parent
 
 
@@ -102,8 +101,8 @@ class Config:
     signal_dedup_minutes: int = 10
     max_daily_loss: float = 500.0
 
-    # MT5 Bridge Settings (Windows - auto detect)
-    mt5_files_dir: str = r"C:\Program Files\MetaTrader 5\MQL5\Files"
+    # MT5 Bridge Settings (auto detect)
+    mt5_files_dir: str = ""
 
     # Logging
     log_level: str = "INFO"
@@ -144,24 +143,29 @@ class Config:
                 ]
 
     def _find_mt5_files_dir(self) -> str:
-        """Auto-detect MT5 Files directory on Windows."""
-        search_paths = [
-            r"C:\Program Files\MetaTrader 5\MQL5\Files",
-            r"C:\Program Files (x86)\MetaTrader 5\MQL5\Files",
-            r"C:\Program Files\*MetaTrader*\MQL5\Files",
-            r"C:\Program Files (x86)\*MetaTrader*\MQL5\Files",
-        ]
-        appdata = os.environ.get("APPDATA", "")
-        if appdata:
-            search_paths.append(os.path.join(appdata, "MetaQuotes", "Terminal", "*", "MQL5", "Files"))
+        """Auto-detect MT5 Files directory using platform layer."""
+        try:
+            from copy_trader.platform import PlatformConfig
+            path = PlatformConfig().get_mt5_files_path()
+            if path and path.is_dir():
+                return str(path)
+        except ImportError:
+            pass
 
-        for pattern in search_paths:
-            matches = glob.glob(pattern)
-            for match in matches:
-                if os.path.isdir(match):
-                    return match
-
-        return r"C:\Program Files\MetaTrader 5\MQL5\Files"
+        # Fallback: platform-specific hardcoded paths
+        if sys.platform == "darwin":
+            mac_path = Path.home() / "Library" / "Application Support" / \
+                "net.metaquotes.wine.metatrader5" / "drive_c" / "Program Files" / "MetaTrader 5" / "MQL5" / "Files"
+            return str(mac_path)
+        else:
+            search_paths = [
+                r"C:\Program Files\MetaTrader 5\MQL5\Files",
+                r"C:\Program Files (x86)\MetaTrader 5\MQL5\Files",
+            ]
+            for p in search_paths:
+                if os.path.isdir(p):
+                    return p
+            return r"C:\Program Files\MetaTrader 5\MQL5\Files"
 
 
 def save_config(config: Config, path: Path = CONFIG_FILE):
