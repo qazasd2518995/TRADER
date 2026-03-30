@@ -1,8 +1,9 @@
 """
-OCR Service for Windows
-Supports RapidOCR (recommended), PaddleOCR, WinRT, and Tesseract.
+OCR Service (cross-platform)
+Supports RapidOCR (recommended), PaddleOCR, native platform OCR, and Tesseract.
 Optimized for Chinese/English mixed text recognition.
 """
+import sys
 import logging
 from pathlib import Path
 
@@ -26,17 +27,25 @@ try:
 except ImportError:
     pass
 
-# Try Windows native OCR (WinRT)
-WINRT_AVAILABLE = False
-try:
-    import asyncio
-    from winsdk.windows.media.ocr import OcrEngine
-    from winsdk.windows.globalization import Language
-    from winsdk.windows.graphics.imaging import BitmapDecoder
-    from winsdk.windows.storage import StorageFile, FileAccessMode
-    WINRT_AVAILABLE = True
-except ImportError:
-    pass
+# Try platform-native OCR
+NATIVE_OCR_AVAILABLE = False
+if sys.platform == "win32":
+    try:
+        import asyncio
+        from winsdk.windows.media.ocr import OcrEngine
+        from winsdk.windows.globalization import Language
+        from winsdk.windows.graphics.imaging import BitmapDecoder
+        from winsdk.windows.storage import StorageFile, FileAccessMode
+        NATIVE_OCR_AVAILABLE = True
+    except ImportError:
+        pass
+elif sys.platform == "darwin":
+    try:
+        import Vision
+        import Quartz
+        NATIVE_OCR_AVAILABLE = True
+    except ImportError:
+        pass
 
 # Fallback to Tesseract
 TESSERACT_AVAILABLE = False
@@ -49,7 +58,7 @@ except ImportError:
 
 
 class OCRService:
-    """OCR service with RapidOCR as primary, PaddleOCR/WinRT/Tesseract as fallbacks."""
+    """OCR service with RapidOCR as primary, PaddleOCR/native/Tesseract as fallbacks."""
 
     def __init__(self, languages: list = None):
         self.languages = languages or ["zh-Hant-TW", "zh-Hans-CN", "en-US"]
@@ -63,9 +72,12 @@ class OCRService:
         elif PADDLE_AVAILABLE:
             self.engine = "paddle"
             logger.info("Using PaddleOCR (best Chinese accuracy)")
-        elif WINRT_AVAILABLE:
-            self.engine = "winrt"
-            logger.info("Using Windows native OCR (WinRT)")
+        elif NATIVE_OCR_AVAILABLE:
+            self.engine = "native"
+            if sys.platform == "darwin":
+                logger.info("Using macOS Vision Framework OCR")
+            else:
+                logger.info("Using Windows native OCR (WinRT)")
         elif TESSERACT_AVAILABLE:
             self._tesseract_ready = self._setup_tesseract()
             if self._tesseract_ready:
@@ -73,7 +85,7 @@ class OCRService:
                 logger.info("Using Tesseract for OCR")
             else:
                 raise RuntimeError(
-                    "pytesseract is installed, but tesseract.exe was not found.\n"
+                    "pytesseract is installed, but tesseract was not found.\n"
                     "Install Tesseract-OCR or enable another OCR engine."
                 )
         else:
@@ -82,7 +94,8 @@ class OCRService:
                 "Install one of:\n"
                 "  1. pip install rapidocr onnxruntime  (RapidOCR - recommended)\n"
                 "  2. pip install paddlepaddle paddleocr  (PaddleOCR)\n"
-                "  3. pip install winsdk  (Windows native OCR)\n"
+                "  3. pip install pyobjc-framework-Vision  (macOS native OCR)\n"
+                "     or pip install winsdk  (Windows native OCR)\n"
                 "  4. pip install pytesseract Pillow  (+ install Tesseract-OCR)"
             )
 
@@ -139,36 +152,27 @@ class OCRService:
         return self._paddle_ocr
 
     def _setup_tesseract(self):
-        """Setup Tesseract path on Windows."""
+        """Setup Tesseract path (cross-platform)."""
         import shutil
-        import os
 
+        # Try platform layer first
+        try:
+            from copy_trader.platform import PlatformConfig
+            path = PlatformConfig().get_tesseract_path()
+            if path:
+                pytesseract.pytesseract.tesseract_cmd = path
+                logger.info(f"Tesseract found at: {path}")
+                return True
+        except ImportError:
+            pass
+
+        # Fallback: shutil.which
         tesseract_path = shutil.which("tesseract")
         if tesseract_path:
             pytesseract.pytesseract.tesseract_cmd = tesseract_path
             return True
 
-        common_paths = [
-            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-        ]
-        username = os.getenv("USERNAME", "")
-        if username:
-            common_paths.append(
-                rf"C:\Users\{username}\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
-            )
-
-        for path in common_paths:
-            if Path(path).exists():
-                pytesseract.pytesseract.tesseract_cmd = path
-                logger.info(f"Tesseract found at: {path}")
-                return True
-
-        logger.warning(
-            "Tesseract not found in common locations.\n"
-            "Download from: https://github.com/UB-Mannheim/tesseract/wiki\n"
-            "Make sure to install Chinese language packs."
-        )
+        logger.warning("Tesseract not found.")
         return False
 
     def _prepare_image_array(self, image_path: str, crop_bottom_ratio: float = 1.0):
@@ -251,8 +255,11 @@ class OCRService:
             return self._extract_with_rapid(image_path, crop_bottom_ratio)
         elif self.engine == "paddle":
             return self._extract_with_paddle(image_path, crop_bottom_ratio)
-        elif self.engine == "winrt":
-            return self._extract_with_winrt(image_path)
+        elif self.engine == "native":
+            if sys.platform == "darwin":
+                return self._extract_with_vision(image_path)
+            else:
+                return self._extract_with_winrt(image_path)
         else:
             return self._extract_with_tesseract(image_path)
 
@@ -276,8 +283,10 @@ class OCRService:
             if PADDLE_AVAILABLE:
                 logger.info("Falling back to PaddleOCR")
                 return self._extract_with_paddle(image_path, crop_bottom_ratio)
-            elif WINRT_AVAILABLE:
-                logger.info("Falling back to WinRT OCR")
+            elif NATIVE_OCR_AVAILABLE:
+                logger.info("Falling back to native OCR")
+                if sys.platform == "darwin":
+                    return self._extract_with_vision(image_path)
                 return self._extract_with_winrt(image_path)
             elif TESSERACT_AVAILABLE and self._tesseract_ready:
                 logger.info("Falling back to Tesseract")
@@ -312,8 +321,10 @@ class OCRService:
         except Exception as e:
             logger.error(f"PaddleOCR error: {e}", exc_info=True)
             # Fallback
-            if WINRT_AVAILABLE:
-                logger.info("Falling back to WinRT OCR")
+            if NATIVE_OCR_AVAILABLE:
+                logger.info("Falling back to native OCR")
+                if sys.platform == "darwin":
+                    return self._extract_with_vision(image_path)
                 return self._extract_with_winrt(image_path)
             elif TESSERACT_AVAILABLE and self._tesseract_ready:
                 logger.info("Falling back to Tesseract")
@@ -374,6 +385,62 @@ class OCRService:
 
         except Exception as e:
             logger.error(f"WinRT OCR error: {e}")
+            if TESSERACT_AVAILABLE and self._tesseract_ready:
+                logger.info("Falling back to Tesseract")
+                return self._extract_with_tesseract(image_path)
+            return ""
+
+    def _extract_with_vision(self, image_path: str) -> str:
+        """Extract text using macOS Vision Framework."""
+        try:
+            from Foundation import NSURL
+            from Quartz import (
+                CGImageSourceCreateWithURL,
+                CGImageSourceCreateImageAtIndex,
+            )
+            from Vision import (
+                VNRecognizeTextRequest,
+                VNImageRequestHandler,
+            )
+
+            file_url = NSURL.fileURLWithPath_(str(Path(image_path).resolve()))
+            image_source = CGImageSourceCreateWithURL(file_url, None)
+            if image_source is None:
+                logger.error(f"Failed to load image: {image_path}")
+                return ""
+
+            cg_image = CGImageSourceCreateImageAtIndex(image_source, 0, None)
+            if cg_image is None:
+                return ""
+
+            handler = VNImageRequestHandler.alloc().initWithCGImage_options_(cg_image, None)
+            request = VNRecognizeTextRequest.alloc().init()
+            request.setRecognitionLanguages_(["zh-Hant", "zh-Hans", "en"])
+            request.setRecognitionLevel_(1)  # VNRequestTextRecognitionLevelAccurate
+            request.setUsesLanguageCorrection_(True)
+
+            success, error = handler.performRequests_error_([request], None)
+            if not success or error:
+                logger.error(f"Vision OCR error: {error}")
+                return ""
+
+            results = request.results()
+            if not results:
+                return ""
+
+            lines = []
+            for observation in results:
+                candidate = observation.topCandidates_(1)
+                if candidate and len(candidate) > 0:
+                    text = candidate[0].string()
+                    confidence = candidate[0].confidence()
+                    if confidence >= 0.3:
+                        lines.append(text)
+
+            return " ".join(lines).strip()
+
+        except Exception as e:
+            logger.error(f"Vision Framework OCR error: {e}")
             if TESSERACT_AVAILABLE and self._tesseract_ready:
                 logger.info("Falling back to Tesseract")
                 return self._extract_with_tesseract(image_path)
