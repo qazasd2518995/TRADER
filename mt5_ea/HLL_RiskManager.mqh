@@ -211,17 +211,18 @@ void FillSignalSLTP(SignalInfo &signals[], int signalCnt,
 //| CheckBreakeven - Move SL to entry after N profitable bars        |
 //| Pine lines 1305-1321 (Sell), 1613-1629 (Buy)                    |
 //+------------------------------------------------------------------+
-bool CheckBreakevenCondition(int signalBar, double entryPrice, bool isBuy,
+bool CheckBreakevenCondition(double entryPrice, bool isBuy,
                              int bevenBars, const double &close[], int totalBars)
 {
-    if(signalBar - bevenBars < 0) return false;
+    // Check if the last N closed bars are all profitable
+    // close[1] = last closed bar, close[2] = 2 bars ago, etc.
+    if(bevenBars + 1 > totalBars) return false;
 
     for(int pb = 1; pb <= bevenBars; pb++)
     {
-        int idx = signalBar - pb;
-        if(idx < 0 || idx >= totalBars) return false;
-        if(isBuy && close[idx] < entryPrice) return false;
-        if(!isBuy && close[idx] > entryPrice) return false;
+        if(pb >= totalBars) return false;
+        if(isBuy && close[pb] < entryPrice) return false;
+        if(!isBuy && close[pb] > entryPrice) return false;
     }
     return true;
 }

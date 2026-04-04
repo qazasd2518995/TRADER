@@ -285,29 +285,22 @@ void ManagePositions(const int &hB[], const double &hP[], int hCnt,
         {
             if(isBuy)
             {
-                // Find latest L pivot
-                for(int k = 0; k < lCnt; k++)
+                // Check most recent L pivot — move SL up only
+                if(lCnt > 0)
                 {
-                    double newSL = lP[k] * (1.0 - InpBuySLOffset);
+                    double newSL = lP[0] * (1.0 - InpBuySLOffset);
                     if(newSL > curSL)
-                    {
                         g_trade.PositionModify(ticket, newSL, PositionGetDouble(POSITION_TP));
-                        break;
-                    }
-                    break; // Only check most recent
                 }
             }
             else
             {
-                for(int k = 0; k < hCnt; k++)
+                // Check most recent H pivot — move SL down only
+                if(hCnt > 0)
                 {
-                    double newSL = hP[k] * (1.0 + InpSellSLOffset);
+                    double newSL = hP[0] * (1.0 + InpSellSLOffset);
                     if(newSL < curSL)
-                    {
                         g_trade.PositionModify(ticket, newSL, PositionGetDouble(POSITION_TP));
-                        break;
-                    }
-                    break;
                 }
             }
         }
@@ -318,7 +311,7 @@ void ManagePositions(const int &hB[], const double &hP[], int hCnt,
         // 3. Breakeven
         if(InpBreakeven && curSL != 0)
         {
-            if(CheckBreakevenCondition(0, entryPrice, isBuy, InpBevenBars, close, totalBars))
+            if(CheckBreakevenCondition(entryPrice, isBuy, InpBevenBars, close, totalBars))
             {
                 if((isBuy && entryPrice > curSL) || (!isBuy && entryPrice < curSL))
                 {
