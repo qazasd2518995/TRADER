@@ -23,19 +23,24 @@ if sys.stdout.encoding != 'utf-8':
 if sys.stdin.encoding != 'utf-8':
     sys.stdin = open(sys.stdin.fileno(), mode='r', encoding='utf-8', errors='replace')
 
-# Ensure copy_trader package is importable (both dev and PyInstaller)
+# Ensure copy_trader package is importable without shadowing stdlib modules.
 _this_dir = os.path.dirname(os.path.abspath(__file__))
 _parent_dir = os.path.dirname(_this_dir)
-for p in [_this_dir, _parent_dir]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
+while _this_dir in sys.path:
+    sys.path.remove(_this_dir)
+sys.path.append(_this_dir)
+if _parent_dir not in sys.path:
+    sys.path.insert(0, _parent_dir)
 
 try:
-    from copy_trader.config import Config, CaptureWindow, load_config, save_config as _save_config, DATA_DIR
+    from copy_trader.config import Config, CaptureWindow, load_config, save_config as _save_config, DATA_DIR, DEFAULT_SYMBOL
     from copy_trader.mt5_reader import MT5DataReader
     from copy_trader.auth_handler import AuthHandler
-except ImportError:
-    from config import Config, CaptureWindow, load_config, save_config as _save_config, DATA_DIR
+except ModuleNotFoundError as exc:
+    # Dev fallback: allow running sidecar_main.py directly from copy_trader/.
+    if exc.name not in {"copy_trader", "copy_trader.config", "copy_trader.mt5_reader", "copy_trader.auth_handler"}:
+        raise
+    from config import Config, CaptureWindow, load_config, save_config as _save_config, DATA_DIR, DEFAULT_SYMBOL
     from mt5_reader import MT5DataReader
     from auth_handler import AuthHandler
 
@@ -89,6 +94,8 @@ class JsonRpcSidecar:
         self._stdin_executor = ThreadPoolExecutor(max_workers=1)
         self._auth: AuthHandler | None = None
         self._user_plan: str = "trial"  # current logged-in user's plan
+        self._status: str = "stopped"
+        self._start_seq: int = 0
 
     def _get_auth(self) -> AuthHandler:
         """Lazy-init AuthHandler (so boto3 import doesn't block startup)."""
@@ -97,11 +104,11 @@ class JsonRpcSidecar:
         return self._auth
 
     def _price_file_candidates(self) -> list[Path]:
-        symbol_name = getattr(self.config, "symbol_name", "XAUUSD.s")
+        symbol_name = getattr(self.config, "symbol_name", DEFAULT_SYMBOL)
         candidates = []
         if symbol_name:
             candidates.append(Path(self.config.mt5_files_dir) / f"{symbol_name}_price.json")
-        candidates.append(Path(self.config.mt5_files_dir) / "XAUUSD_price.json")
+        candidates.append(Path(self.config.mt5_files_dir) / f"{DEFAULT_SYMBOL}_price.json")
         unique: list[Path] = []
         seen = set()
         for path in candidates:
@@ -163,12 +170,78 @@ class JsonRpcSidecar:
             resp["result"] = result if result is not None else {"status": "ok"}
         self._write(resp)
 
+    def _build_copy_trader(self):
+        """Import and construct CopyTrader off the main event loop."""
+        try:
+            from copy_trader.app import CopyTrader
+        except ModuleNotFoundError as exc:
+            if exc.name not in {"copy_trader", "copy_trader.app"}:
+                raise
+            from app import CopyTrader
+        return CopyTrader(self.config, event_callback=self._backend_event)
+
+    def _request_macos_permissions(self) -> dict:
+        """Trigger macOS permission prompts for screen capture/accessibility."""
+        if sys.platform != "darwin":
+            return {}
+
+        try:
+            from copy_trader.platform.macos import get_macos_permission_status
+        except ImportError:
+            return {}
+
+        try:
+            return get_macos_permission_status(prompt=True)
+        except Exception as e:
+            logger.debug(f"Unable to request macOS permissions: {e}")
+            return {}
+
+    async def _run_trading_lifecycle(self, start_seq: int):
+        """Build CopyTrader in a worker thread, then run it on the event loop."""
+        try:
+            logger.info("Initializing CopyTrader in background...")
+            loop = asyncio.get_running_loop()
+            trader = await loop.run_in_executor(None, self._build_copy_trader)
+
+            if start_seq != self._start_seq or self._status != "starting":
+                try:
+                    trader.stop()
+                except Exception:
+                    pass
+                return
+
+            self.trader = trader
+            self._status = "running"
+            self._emit_event("status", {"status": "running"})
+            logger.info("Trading started via sidecar RPC")
+            await trader.start()
+
+            if start_seq == self._start_seq and self._status == "running":
+                self._status = "stopped"
+                self._emit_event("status", {"status": "stopped"})
+                logger.info("Trading loop exited")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to start trading: {e}", exc_info=True)
+            if start_seq == self._start_seq:
+                self._status = "error"
+                self._emit_event("status", {"status": "error"})
+        finally:
+            if start_seq == self._start_seq:
+                self.trader = None
+                self._trading_task = None
+
     # ── Command handlers ────────────────────────────────────
 
     # Plan limits: max capture windows per plan
     PLAN_MAX_WINDOWS = {"trial": 1, "standard": 1, "premium": 999}
 
     async def handle_start_trading(self, req_id: int, params: dict):
+        if self._status in {"starting", "running"}:
+            self._respond(req_id, result={"status": self._status})
+            return
+
         try:
             # Merge incoming params into config
             self._apply_params_to_config(params)
@@ -183,28 +256,27 @@ class JsonRpcSidecar:
             # Update MT5 reader path
             if self.mt5_reader:
                 self.mt5_reader.set_mt5_dir(self.config.mt5_files_dir)
-                self.mt5_reader.set_symbol_name(getattr(self.config, "symbol_name", "XAUUSD.s"))
+                self.mt5_reader.set_symbol_name(getattr(self.config, "symbol_name", DEFAULT_SYMBOL))
 
-            # Start CopyTrader
-            try:
-                from copy_trader.app import CopyTrader
-            except ImportError:
-                from app import CopyTrader
-            self.trader = CopyTrader(self.config, event_callback=self._backend_event)
-            self._trading_task = asyncio.create_task(self.trader.start())
-
-            self._emit_event("status", {"status": "running"})
-            self._respond(req_id)
-            logger.info("Trading started via sidecar RPC")
+            self._start_seq += 1
+            start_seq = self._start_seq
+            self._status = "starting"
+            self._emit_event("status", {"status": "starting"})
+            self._trading_task = asyncio.create_task(self._run_trading_lifecycle(start_seq))
+            self._respond(req_id, result={"status": "starting"})
         except Exception as e:
             logger.error(f"Failed to start trading: {e}", exc_info=True)
+            self._status = "error"
             self._emit_event("status", {"status": "error"})
             self._respond(req_id, error={"code": -1, "message": str(e)})
 
     async def handle_stop_trading(self, req_id: int, _params: dict):
+        self._start_seq += 1
+        self._status = "stopped"
         if self.trader:
             self.trader.stop()
             self.trader = None
+        self._trading_task = None
         self._emit_event("status", {"status": "stopped"})
         self._respond(req_id)
         logger.info("Trading stopped via sidecar RPC")
@@ -256,11 +328,49 @@ class JsonRpcSidecar:
             except ImportError:
                 from signal_capture.screen_capture import list_app_windows
             raw = list_app_windows("")
-            return [w["name"] for w in raw if w.get("name") and len(w["name"]) > 1]
+            return [
+                {
+                    "window_id": w.get("window_id") or w.get("id"),
+                    "window_name": w.get("window_name") or w.get("name") or "",
+                    "owner": w.get("owner") or "",
+                    "label": w.get("label") or w.get("window_name") or w.get("name") or "",
+                    "bounds": w.get("bounds") or {},
+                }
+                for w in raw
+                if (w.get("label") or w.get("window_name") or w.get("name"))
+            ]
         try:
             loop = asyncio.get_event_loop()
-            titles = await loop.run_in_executor(None, _detect)
-            self._respond(req_id, result={"windows": titles})
+            await loop.run_in_executor(None, self._request_macos_permissions)
+            windows = await loop.run_in_executor(None, _detect)
+            self._respond(req_id, result={"windows": windows})
+        except Exception as e:
+            self._respond(req_id, error={"code": -1, "message": str(e)})
+
+    async def handle_preview_window(self, req_id: int, params: dict):
+        def _preview():
+            try:
+                from copy_trader.signal_capture.screen_capture import capture_window_preview
+            except ImportError:
+                from signal_capture.screen_capture import capture_window_preview
+
+            return capture_window_preview(
+                window_id=params.get("window_id"),
+                window_name=params.get("window_name"),
+                app_name=params.get("app_name", "LINE"),
+            )
+
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self._request_macos_permissions)
+            result = await loop.run_in_executor(None, _preview)
+            if not result:
+                self._respond(req_id, error={"code": -1, "message": "Unable to capture preview"})
+                return
+            if not result.get("ok", True):
+                self._respond(req_id, error={"code": -1, "message": result.get("message", "Unable to capture preview")})
+                return
+            self._respond(req_id, result=result)
         except Exception as e:
             self._respond(req_id, error={"code": -1, "message": str(e)})
 
@@ -487,6 +597,8 @@ class JsonRpcSidecar:
                     window_name=w.get("window_name", ""),
                     app_name=w.get("app_name", "LINE"),
                     name=w.get("name", f"win_{i}"),
+                    window_id=w.get("window_id"),
+                    display_name=w.get("display_name", w.get("window_name", "")),
                 )
                 for i, w in enumerate(params["capture_windows"])
             ]
@@ -495,7 +607,7 @@ class JsonRpcSidecar:
         c = self.config
         return {
             "default_lot_size": c.default_lot_size,
-            "symbol_name": getattr(c, "symbol_name", "XAUUSD.s"),
+            "symbol_name": getattr(c, "symbol_name", DEFAULT_SYMBOL),
             "auto_execute": c.auto_execute,
             "cancel_pending_after_seconds": c.cancel_pending_after_seconds,
             "use_martingale": c.use_martingale,
@@ -506,7 +618,13 @@ class JsonRpcSidecar:
             "parser_mode": c.parser_mode,
             "capture_interval": c.capture_interval,
             "capture_windows": [
-                {"window_name": w.window_name, "app_name": w.app_name, "name": w.name}
+                {
+                    "window_name": w.window_name,
+                    "app_name": w.app_name,
+                    "name": w.name,
+                    "window_id": w.window_id,
+                    "display_name": getattr(w, "display_name", w.window_name),
+                }
                 for w in c.capture_windows
             ],
             "ocr_confirm_count": c.ocr_confirm_count,
@@ -561,6 +679,7 @@ class JsonRpcSidecar:
                 "get_config": self.handle_get_config,
                 "test_mt5_connection": self.handle_test_mt5_connection,
                 "detect_windows": self.handle_detect_windows,
+                "preview_window": self.handle_preview_window,
                 "detect_mt5_dir": self.handle_detect_mt5_dir,
                 # Auth
                 "login": self.handle_login,
@@ -609,7 +728,7 @@ class JsonRpcSidecar:
         self.mt5_reader = MT5DataReader(
             self.config.mt5_files_dir,
             self._emit_event,
-            getattr(self.config, "symbol_name", "XAUUSD.s"),
+            getattr(self.config, "symbol_name", DEFAULT_SYMBOL),
         )
         mt5_task = asyncio.create_task(self.mt5_reader.start())
         self._periodic_task = asyncio.create_task(self._periodic_updates())

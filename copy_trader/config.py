@@ -6,6 +6,7 @@ import os
 import sys
 import json
 import glob
+import logging
 from dataclasses import dataclass, field
 from typing import List, Optional
 from pathlib import Path
@@ -29,6 +30,60 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # 設定檔路徑
 CONFIG_FILE = DATA_DIR / "config.json"
+DEFAULT_SYMBOL = "XAUUSD"
+
+logger = logging.getLogger(__name__)
+
+
+def _is_valid_symbol_name(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    symbol = value.strip()
+    if not symbol:
+        return False
+    return all(ch.isalnum() or ch in "._-" for ch in symbol)
+
+
+def _read_json_dict(path: Path) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError, PermissionError, OSError):
+        return {}
+
+
+def detect_mt5_symbol(mt5_files_dir: str) -> str:
+    """Infer the broker's gold symbol from MT5 bridge files."""
+    mt5_dir = Path(mt5_files_dir or "")
+    if not mt5_dir.is_dir():
+        return DEFAULT_SYMBOL
+
+    symbol_info = _read_json_dict(mt5_dir / "symbol_info.json")
+    symbol = str(symbol_info.get("symbol", "")).strip()
+    if _is_valid_symbol_name(symbol):
+        return symbol
+
+    try:
+        price_files = sorted(
+            mt5_dir.glob("*_price.json"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        price_files = []
+
+    for path in price_files:
+        price_data = _read_json_dict(path)
+        symbol = str(price_data.get("symbol", "")).strip()
+        if _is_valid_symbol_name(symbol):
+            return symbol
+
+        inferred = path.name.removesuffix("_price.json")
+        if _is_valid_symbol_name(inferred):
+            return inferred
+
+    return DEFAULT_SYMBOL
 
 
 @dataclass
@@ -44,9 +99,11 @@ class CaptureRegion:
 @dataclass
 class CaptureWindow:
     """Window capture definition (works in background)."""
-    window_name: str          # Part of window title to match
-    app_name: str = "LINE"    # Application name
-    name: str = "default"     # Identifier for this capture source
+    window_name: str                # Raw window title / matching keyword
+    app_name: str = "LINE"          # Application name
+    name: str = "default"           # Identifier for this capture source
+    window_id: Optional[int] = None # Stable while the source app window stays alive
+    display_name: str = ""          # UI label shown to users
 
 
 @dataclass
@@ -73,12 +130,12 @@ class Config:
     # Trading Settings
     auto_execute: bool = True
     default_lot_size: float = 0.01
-    symbol_name: str = "XAUUSD.s"
+    symbol_name: str = DEFAULT_SYMBOL
     max_open_positions: int = 10
 
     # Cancellation Rules
     cancel_pending_after_seconds: int = 7200
-    cancel_if_price_beyond_percent: float = 1.0
+    cancel_if_price_beyond_percent: float = 1.0  # Percent away from entry before auto-cancel
 
     # Multiple TP Settings
     partial_close_ratios: List[float] = field(default_factory=lambda: [0.5, 0.3, 0.2])
@@ -120,6 +177,7 @@ class Config:
         # Auto-detect MT5 Files directory
         if not os.path.exists(self.mt5_files_dir):
             self.mt5_files_dir = self._find_mt5_files_dir()
+        self.symbol_name = self._resolve_symbol_name(self.symbol_name)
 
         # Default capture windows
         if self.capture_mode == "window":
@@ -128,12 +186,14 @@ class Config:
                     CaptureWindow(
                         window_name="黃金報單🈲言群",
                         app_name="LINE",
-                        name="gold_signal_1"
+                        name="gold_signal_1",
+                        display_name="黃金報單🈲言群"
                     ),
                     CaptureWindow(
                         window_name="鄭",
                         app_name="LINE",
-                        name="gold_signal_2"
+                        name="gold_signal_2",
+                        display_name="鄭"
                     ),
                 ]
         else:
@@ -167,6 +227,24 @@ class Config:
                     return p
             return r"C:\Program Files\MetaTrader 5\MQL5\Files"
 
+    def _resolve_symbol_name(self, configured_symbol: str) -> str:
+        configured = (configured_symbol or "").strip()
+        detected = detect_mt5_symbol(self.mt5_files_dir)
+
+        if configured:
+            configured_price_file = Path(self.mt5_files_dir) / f"{configured}_price.json"
+            if configured_price_file.exists():
+                return configured
+
+        if configured and configured != detected:
+            logger.info(
+                "Resolved MT5 symbol from %s to %s based on broker files",
+                configured,
+                detected,
+            )
+
+        return detected or configured or DEFAULT_SYMBOL
+
 
 def save_config(config: Config, path: Path = CONFIG_FILE):
     """Save config to JSON file."""
@@ -174,7 +252,13 @@ def save_config(config: Config, path: Path = CONFIG_FILE):
         "signal_source": config.signal_source,
         "capture_mode": config.capture_mode,
         "capture_windows": [
-            {"window_name": w.window_name, "app_name": w.app_name, "name": w.name}
+            {
+                "window_name": w.window_name,
+                "app_name": w.app_name,
+                "name": w.name,
+                "window_id": w.window_id,
+                "display_name": w.display_name,
+            }
             for w in config.capture_windows
         ],
         "capture_regions": [
@@ -228,7 +312,14 @@ def load_config(path: Path = CONFIG_FILE) -> Config:
             # 還原擷取視窗
             if windows_data:
                 config.capture_windows = [
-                    CaptureWindow(**w) for w in windows_data
+                    CaptureWindow(
+                        window_name=w.get("window_name", ""),
+                        app_name=w.get("app_name", "LINE"),
+                        name=w.get("name", "default"),
+                        window_id=w.get("window_id"),
+                        display_name=w.get("display_name", w.get("window_name", "")),
+                    )
+                    for w in windows_data
                 ]
             # 還原擷取區域
             if regions_data:

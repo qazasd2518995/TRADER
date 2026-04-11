@@ -84,7 +84,7 @@ class TradeManager:
         self.default_lot_size = 0.01
         self.partial_close_ratios = [0.5, 0.3, 0.2]
         self.magic_number = 999999  # Unique ID for copy trader orders
-        self.symbol_name = "XAUUSD.s"  # MT5 symbol name (broker-specific)
+        self.symbol_name = "XAUUSD"  # MT5 symbol name (broker-specific)
         self.price_file = self.mt5_files_dir / f"{self.symbol_name}_price.json"
 
         # Martingale Settings
@@ -132,7 +132,7 @@ class TradeManager:
             pass
 
     def set_symbol_name(self, symbol_name: str):
-        self.symbol_name = symbol_name or "XAUUSD.s"
+        self.symbol_name = symbol_name or "XAUUSD"
         self.price_file = self.mt5_files_dir / f"{self.symbol_name}_price.json"
 
     def start(self):
@@ -168,7 +168,7 @@ class TradeManager:
             signal: Parsed trading signal
             auto_execute: If True, execute immediately
             cancel_after_seconds: Cancel pending order after this time
-            cancel_if_price_beyond: Cancel if price moves beyond this level
+            cancel_if_price_beyond: Cancel if price moves beyond this percent from entry
             source_window: Display name of the window that produced this signal
 
         Returns:
@@ -990,16 +990,30 @@ class TradeManager:
                         cancel_reason = f"timeout ({elapsed:.0f}s)"
 
                 # Price-based cancellation
-                if not should_cancel and order.cancel_if_price_beyond and current_price:
+                if (
+                    not should_cancel
+                    and order.cancel_if_price_beyond
+                    and current_price
+                    and order.signal.entry_price
+                ):
                     signal = order.signal
-                    beyond = order.cancel_if_price_beyond
+                    percent = float(order.cancel_if_price_beyond)
+                    entry_price = float(signal.entry_price)
+                    upper_bound = entry_price * (1 + percent / 100.0)
+                    lower_bound = entry_price * (1 - percent / 100.0)
 
-                    if signal.direction == 'buy' and current_price > beyond:
+                    if signal.direction == 'buy' and current_price > upper_bound:
                         should_cancel = True
-                        cancel_reason = f"price {current_price} beyond {beyond}"
-                    elif signal.direction == 'sell' and current_price < beyond:
+                        cancel_reason = (
+                            f"price {current_price} beyond +{percent}% "
+                            f"(>{upper_bound:.3f}) from entry {entry_price}"
+                        )
+                    elif signal.direction == 'sell' and current_price < lower_bound:
                         should_cancel = True
-                        cancel_reason = f"price {current_price} beyond {beyond}"
+                        cancel_reason = (
+                            f"price {current_price} beyond -{percent}% "
+                            f"(<{lower_bound:.3f}) from entry {entry_price}"
+                        )
 
                 if should_cancel:
                     order.status = OrderStatus.CANCELLED

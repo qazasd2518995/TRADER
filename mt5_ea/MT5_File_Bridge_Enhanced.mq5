@@ -680,11 +680,13 @@ bool ParseTradeCommand(string json, TradeCommand &cmd)
    return true;
 }
 
-bool ExecuteBuySellCommand(TradeCommand &cmd)
+bool ExecuteBuySellCommand(TradeCommand &cmd, long &retcode, string &detail)
 {
    MqlTradeRequest req;
    MqlTradeResult  res;
    ZeroMemory(req); ZeroMemory(res);
+   retcode = 0;
+   detail = "";
 
    req.symbol       = cmd.symbol;
    req.volume       = NormalizeDouble(cmd.lot_size, 2);
@@ -696,7 +698,8 @@ bool ExecuteBuySellCommand(TradeCommand &cmd)
    int digits = (int)SymbolInfoInteger(cmd.symbol, SYMBOL_DIGITS);
    if(cmd.price <= 0)
    {
-      Print("Error: entry price required - no market orders allowed");
+      detail = "entry price required - no market orders allowed";
+      Print("Error: ", detail);
       return false;
    }
 
@@ -749,6 +752,8 @@ bool ExecuteBuySellCommand(TradeCommand &cmd)
             " [PENDING]");
 
    bool sent = OrderSend(req, res);
+   retcode = (long)res.retcode;
+   detail = res.comment;
    if(DetailedLogging)
       Print("Order result - Sent: ", sent, " RetCode: ", res.retcode,
             " Deal: ", res.deal, " Order: ", res.order);
@@ -756,10 +761,13 @@ bool ExecuteBuySellCommand(TradeCommand &cmd)
    return (sent && (res.retcode == TRADE_RETCODE_DONE || res.retcode == TRADE_RETCODE_PLACED));
 }
 
-bool ExecuteModifyCommand(TradeCommand &cmd)
+bool ExecuteModifyCommand(TradeCommand &cmd, long &retcode, string &detail)
 {
+   retcode = 0;
+   detail = "";
    if(!PositionSelectByTicket(cmd.ticket))
    {
+      detail = "position ticket not found";
       Print("Error: Position ticket ", cmd.ticket, " not found");
       return false;
    }
@@ -780,14 +788,19 @@ bool ExecuteModifyCommand(TradeCommand &cmd)
    if(DetailedLogging) Print("Modifying position ", cmd.ticket, " - New SL: ", req.sl, " New TP: ", req.tp);
 
    bool sent = OrderSend(req, res);
+   retcode = (long)res.retcode;
+   detail = res.comment;
    if(DetailedLogging) Print("Modify result - Sent: ", sent, " RetCode: ", res.retcode);
    return(sent && res.retcode == TRADE_RETCODE_DONE);
 }
 
-bool ExecuteCloseCommand(TradeCommand &cmd)
+bool ExecuteCloseCommand(TradeCommand &cmd, long &retcode, string &detail)
 {
+   retcode = 0;
+   detail = "";
    if(!PositionSelectByTicket(cmd.ticket))
    {
+      detail = "position ticket not found";
       Print("Error: Position ticket ", cmd.ticket, " not found");
       return false;
    }
@@ -819,6 +832,7 @@ bool ExecuteCloseCommand(TradeCommand &cmd)
    desired_volume = MathFloor(desired_volume / vstep) * vstep;
    if(desired_volume <= 0)
    {
+      detail = "desired close volume invalid";
       Print("Error: desired close volume invalid: ", desired_volume);
       return false;
    }
@@ -842,15 +856,19 @@ bool ExecuteCloseCommand(TradeCommand &cmd)
    if(DetailedLogging) Print("Closing position ", cmd.ticket, " - Volume: ", req.volume, " @ ", req.price);
 
    bool sent = OrderSend(req, res);
+   retcode = (long)res.retcode;
+   detail = res.comment;
    if(DetailedLogging) Print("Close result - Sent: ", sent, " RetCode: ", res.retcode, " Deal: ", res.deal);
    return(sent && res.retcode == TRADE_RETCODE_DONE);
 }
 
-bool ExecuteDeleteCommand(TradeCommand &cmd)
+bool ExecuteDeleteCommand(TradeCommand &cmd, long &retcode, string &detail)
 {
    MqlTradeRequest req;
    MqlTradeResult  res;
    ZeroMemory(req); ZeroMemory(res);
+   retcode = 0;
+   detail = "";
 
    req.action = TRADE_ACTION_REMOVE;
    req.order  = cmd.ticket;
@@ -858,12 +876,14 @@ bool ExecuteDeleteCommand(TradeCommand &cmd)
    if(DetailedLogging) Print("Deleting pending order ", cmd.ticket);
 
    bool sent = OrderSend(req, res);
+   retcode = (long)res.retcode;
+   detail = res.comment;
    if(DetailedLogging) Print("Delete result - Sent: ", sent, " RetCode: ", res.retcode);
    return(sent && res.retcode == TRADE_RETCODE_DONE);
 }
 
 // --------------------------- Logging & commands -------------------
-void LogTradeAction(string action, bool result, TradeCommand &cmd)
+void LogTradeAction(string action, bool result, TradeCommand &cmd, long retcode, string detail)
 {
    int handle = FileOpen("trade_results.txt", FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_READ);
    if(handle != INVALID_HANDLE)
@@ -872,12 +892,13 @@ void LogTradeAction(string action, bool result, TradeCommand &cmd)
       string msg = TimeToString(TimeCurrent()) + " | " + action + " | " + (result ? "SUCCESS" : "FAIL") + " | ";
       if(action == "modify" || action == "close") msg += "ticket:" + IntegerToString(cmd.ticket) + " | ";
       else msg += DoubleToString(cmd.lot_size, 2) + " | ";
-      msg += cmd.symbol + " | " + cmd.trade_id;
+      msg += cmd.symbol + " | " + cmd.trade_id + " | retcode:" + IntegerToString((int)retcode);
+      if(detail != "") msg += " | " + detail;
       FileWrite(handle, msg);
       FileClose(handle);
    }
    if(DetailedLogging)
-      Print("Trade logged: ", action, " ", (result ? "SUCCESS" : "FAIL"), " Symbol: ", cmd.symbol, " TradeID: ", cmd.trade_id);
+      Print("Trade logged: ", action, " ", (result ? "SUCCESS" : "FAIL"), " Symbol: ", cmd.symbol, " TradeID: ", cmd.trade_id, " RetCode: ", retcode, " Detail: ", detail);
 }
 
 void CheckTradeCommands()
@@ -901,12 +922,14 @@ void CheckTradeCommands()
    if(ParseTradeCommand(cmd, trade_cmd))
    {
       bool result = false;
-      if(trade_cmd.action=="buy" || trade_cmd.action=="sell") result = ExecuteBuySellCommand(trade_cmd);
-      else if(trade_cmd.action=="modify") result = ExecuteModifyCommand(trade_cmd);
-      else if(trade_cmd.action=="close")  result = ExecuteCloseCommand(trade_cmd);
-      else if(trade_cmd.action=="delete") result = ExecuteDeleteCommand(trade_cmd);
+      long retcode = 0;
+      string detail = "";
+      if(trade_cmd.action=="buy" || trade_cmd.action=="sell") result = ExecuteBuySellCommand(trade_cmd, retcode, detail);
+      else if(trade_cmd.action=="modify") result = ExecuteModifyCommand(trade_cmd, retcode, detail);
+      else if(trade_cmd.action=="close")  result = ExecuteCloseCommand(trade_cmd, retcode, detail);
+      else if(trade_cmd.action=="delete") result = ExecuteDeleteCommand(trade_cmd, retcode, detail);
 
-      LogTradeAction(trade_cmd.action, result, trade_cmd);
+      LogTradeAction(trade_cmd.action, result, trade_cmd, retcode, detail);
 
       int h = FileOpen("commands.json", FILE_WRITE|FILE_TXT|FILE_ANSI);
       if(h != INVALID_HANDLE) { FileWrite(h, "{}"); FileClose(h); }

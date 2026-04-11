@@ -522,7 +522,7 @@ class SettingsPanel(QWidget):
     def _load_from_config(self, config):
         """從 Config 載入到 UI"""
         self.spin_lot.setValue(config.default_lot_size)
-        self.edit_symbol.setText(getattr(config, 'symbol_name', 'XAUUSD.s'))
+        self.edit_symbol.setText(getattr(config, 'symbol_name', 'XAUUSD'))
         self.chk_auto_execute.setChecked(config.auto_execute)
         self.spin_cancel_timeout.setValue(config.cancel_pending_after_seconds)
 

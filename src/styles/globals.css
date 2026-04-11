@@ -31,6 +31,7 @@
   --color-loss: #C75050;
   --color-loss-bg: rgba(199, 80, 80, 0.06);
   --color-warning: #C49A2E;
+  --color-warning-bg: rgba(196, 154, 46, 0.08);
 
   /* Typography */
   --font-serif: 'Cormorant Garamond', 'Noto Serif TC', Georgia, serif;

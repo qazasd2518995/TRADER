@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useTradingStore } from "../stores/tradingStore";
-import type { SidecarEvent, JsonRpcRequest, TradingConfig } from "../lib/types";
+import type { SidecarEvent, JsonRpcRequest, TradingConfig, DetectedWindow, WindowPreview } from "../lib/types";
 import type { LoginResult, VerifyResult, UserData, CreateUserData } from "../lib/auth";
 
 /*
@@ -11,6 +11,8 @@ import type { LoginResult, VerifyResult, UserData, CreateUserData } from "../lib
  */
 
 let _rpcId = 0;
+const DEFAULT_RPC_TIMEOUT_MS = 15000;
+const AUTH_RPC_TIMEOUT_MS = 45000;
 
 /** Check if we're running inside Tauri v2 webview */
 function isTauri(): boolean {
@@ -35,7 +37,15 @@ const _invokeReady: Promise<void> = isTauri()
  * Send a JSON-RPC command to the sidecar, then poll Rust buffer for the response.
  * This bypasses Tauri's event system for responses — 100% reliable.
  */
-async function sendRpc<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
+interface RpcOptions {
+  timeoutMs?: number;
+}
+
+async function sendRpc<T = unknown>(
+  method: string,
+  params?: Record<string, unknown>,
+  options?: RpcOptions,
+): Promise<T> {
   await _invokeReady;
   if (!_invoke) throw new Error("Not running in Tauri environment");
 
@@ -53,7 +63,7 @@ async function sendRpc<T = unknown>(method: string, params?: Record<string, unkn
 
   // Poll Rust-side buffer for the response
   const startTime = Date.now();
-  const timeout = 15000; // 15s timeout
+  const timeout = options?.timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
   const pollInterval = 100; // poll every 100ms
 
   while (Date.now() - startTime < timeout) {
@@ -94,26 +104,32 @@ export const sidecarCommands = {
     sendRpc("save_config", config as unknown as Record<string, unknown>),
   getConfig: () => sendRpc<Record<string, unknown>>("get_config"),
   testMt5Connection: () => sendRpc<{ connected: boolean; age: number }>("test_mt5_connection"),
-  detectWindows: () => sendRpc<{ windows: string[] }>("detect_windows"),
+  detectWindows: () => sendRpc<{ windows: DetectedWindow[] }>("detect_windows"),
+  previewWindow: (window: Pick<DetectedWindow, "window_id" | "window_name" | "owner">) =>
+    sendRpc<WindowPreview>("preview_window", {
+      window_id: window.window_id,
+      window_name: window.window_name,
+      app_name: window.owner || "LINE",
+    }),
   detectMt5Dir: () => sendRpc<{ path: string; exists: boolean }>("detect_mt5_dir"),
 
   // Auth
   login: (email: string, password: string) =>
-    sendRpc<LoginResult>("login", { email, password }),
+    sendRpc<LoginResult>("login", { email, password }, { timeoutMs: AUTH_RPC_TIMEOUT_MS }),
   verifySubscription: (email: string) =>
-    sendRpc<VerifyResult>("verify_subscription", { email }),
+    sendRpc<VerifyResult>("verify_subscription", { email }, { timeoutMs: AUTH_RPC_TIMEOUT_MS }),
   changePassword: (email: string, oldPassword: string, newPassword: string) =>
-    sendRpc("change_password", { email, old_password: oldPassword, new_password: newPassword }),
+    sendRpc("change_password", { email, old_password: oldPassword, new_password: newPassword }, { timeoutMs: AUTH_RPC_TIMEOUT_MS }),
 
   // Admin
   adminListUsers: (adminEmail: string) =>
-    sendRpc<{ users: UserData[] }>("admin_list_users", { admin_email: adminEmail }),
+    sendRpc<{ users: UserData[] }>("admin_list_users", { admin_email: adminEmail }, { timeoutMs: AUTH_RPC_TIMEOUT_MS }),
   adminCreateUser: (adminEmail: string, userData: CreateUserData) =>
-    sendRpc("admin_create_user", { admin_email: adminEmail, ...userData }),
+    sendRpc("admin_create_user", { admin_email: adminEmail, ...userData }, { timeoutMs: AUTH_RPC_TIMEOUT_MS }),
   adminUpdateUser: (adminEmail: string, email: string, updates: Partial<UserData>) =>
-    sendRpc("admin_update_user", { admin_email: adminEmail, email, ...updates }),
+    sendRpc("admin_update_user", { admin_email: adminEmail, email, ...updates }, { timeoutMs: AUTH_RPC_TIMEOUT_MS }),
   adminDeleteUser: (adminEmail: string, email: string) =>
-    sendRpc("admin_delete_user", { admin_email: adminEmail, target_email: email }),
+    sendRpc("admin_delete_user", { admin_email: adminEmail, target_email: email }, { timeoutMs: AUTH_RPC_TIMEOUT_MS }),
 };
 
 /** React hook — wire Tauri sidecar push events to Zustand */

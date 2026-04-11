@@ -212,14 +212,40 @@ class WindowsKeyboardControl(KeyboardControlBase):
 
     VK_CONTROL = 0x11
     VK_END = 0x23
+    VK_NEXT = 0x22
     KEYEVENTF_EXTENDEDKEY = 0x01
     KEYEVENTF_KEYUP = 0x02
+
+    def _tap_key(self, vk_code: int, extended: bool = False):
+        flags = self.KEYEVENTF_EXTENDEDKEY if extended else 0
+        ctypes.windll.user32.keybd_event(vk_code, 0, flags, 0)
+        ctypes.windll.user32.keybd_event(vk_code, 0, flags | self.KEYEVENTF_KEYUP, 0)
+
+    def _activate_window_best_effort(self, window_id: int) -> bool:
+        """Restore and foreground the target window with a few Win32 fallbacks."""
+        try:
+            if win32gui.IsIconic(window_id):
+                ctypes.windll.user32.ShowWindow(window_id, 9)  # SW_RESTORE
+                time.sleep(0.12)
+            else:
+                ctypes.windll.user32.ShowWindow(window_id, 5)  # SW_SHOW
+
+            ctypes.windll.user32.BringWindowToTop(window_id)
+            ctypes.windll.user32.SetActiveWindow(window_id)
+            ctypes.windll.user32.SetForegroundWindow(window_id)
+            time.sleep(0.08)
+
+            return win32gui.GetForegroundWindow() == window_id
+        except Exception as e:
+            logger.debug(f"_activate_window_best_effort failed for hwnd={window_id}: {e}")
+            return False
 
     def activate_window(self, window_id: int) -> bool:
         """Bring window to foreground using SetForegroundWindow."""
         try:
-            ctypes.windll.user32.SetForegroundWindow(window_id)
-            return True
+            if not WIN32_AVAILABLE:
+                return False
+            return self._activate_window_best_effort(window_id)
         except Exception as e:
             logger.error(f"SetForegroundWindow failed for hwnd={window_id}: {e}")
             return False
@@ -240,19 +266,26 @@ class WindowsKeyboardControl(KeyboardControlBase):
             old_fg = win32gui.GetForegroundWindow()
 
             # Briefly focus the target window (required for CEF)
-            ctypes.windll.user32.SetForegroundWindow(window_id)
-            time.sleep(0.05)
+            self._activate_window_best_effort(window_id)
 
-            # Ctrl+End: jump to bottom
+            # Ctrl+End: preferred shortcut for jumping to the latest messages
             ctypes.windll.user32.keybd_event(self.VK_CONTROL, 0, 0, 0)
-            ctypes.windll.user32.keybd_event(self.VK_END, 0, self.KEYEVENTF_EXTENDEDKEY, 0)
-            ctypes.windll.user32.keybd_event(self.VK_END, 0, self.KEYEVENTF_EXTENDEDKEY | self.KEYEVENTF_KEYUP, 0)
+            self._tap_key(self.VK_END, extended=True)
             ctypes.windll.user32.keybd_event(self.VK_CONTROL, 0, self.KEYEVENTF_KEYUP, 0)
-            time.sleep(0.05)
+
+            # LINE/CEF sometimes misses Ctrl+End even when the window has focus.
+            # Follow with End and PageDown bursts as fallbacks so the visible chat
+            # is more likely to land on the newest message area.
+            time.sleep(0.06)
+            self._tap_key(self.VK_END, extended=True)
+            time.sleep(0.04)
+            for _ in range(3):
+                self._tap_key(self.VK_NEXT, extended=True)
+                time.sleep(0.04)
 
             # Restore previous foreground window
             if old_fg and old_fg != window_id:
-                ctypes.windll.user32.SetForegroundWindow(old_fg)
+                self._activate_window_best_effort(old_fg)
 
             logger.debug(f"Scrolled window {window_id} to bottom")
             return True

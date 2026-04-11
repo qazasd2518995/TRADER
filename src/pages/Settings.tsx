@@ -4,14 +4,21 @@ import { useTradingStore } from "../stores/tradingStore";
 import { useAuthStore } from "../stores/authStore";
 import { getMaxWindows } from "../lib/auth";
 import { sidecarCommands } from "../hooks/useSidecar";
-import type { TradingConfig } from "../lib/types";
+import type { TradingConfig, DetectedWindow } from "../lib/types";
+import {
+  buildCaptureWindowFromDetected,
+  buildManualCaptureWindow,
+  captureWindowMatchesDetected,
+  getDetectedWindowKey,
+  getCaptureWindowLabel,
+} from "../lib/windows";
 
 const TABS = [S.SETTINGS_TRADING, S.SETTINGS_CAPTURE, S.SETTINGS_SAFETY, S.SETTINGS_MT5] as const;
 
 function defaultConfig(): TradingConfig {
   return {
     default_lot_size: 0.01,
-    symbol_name: "XAUUSD.s",
+    symbol_name: "XAUUSD",
     auto_execute: true,
     cancel_pending_after_seconds: 1800,
     use_martingale: true,
@@ -110,14 +117,20 @@ export default function Settings() {
   }
 
   const [showWindowModal, setShowWindowModal] = useState(false);
-  const [detectedWindows, setDetectedWindows] = useState<string[]>([]);
+  const [detectedWindows, setDetectedWindows] = useState<DetectedWindow[]>([]);
   const [detecting, setDetecting] = useState(false);
   const [manualWindowName, setManualWindowName] = useState("");
+  const [previewingKey, setPreviewingKey] = useState<string | null>(null);
+  const [windowPreviews, setWindowPreviews] = useState<Record<string, string>>({});
+  const [previewErrors, setPreviewErrors] = useState<Record<string, string>>({});
 
   async function openWindowPicker() {
     setShowWindowModal(true);
     setDetecting(true);
     setDetectedWindows([]);
+    setPreviewingKey(null);
+    setWindowPreviews({});
+    setPreviewErrors({});
     try {
       const res = await sidecarCommands.detectWindows();
       setDetectedWindows(res.windows ?? []);
@@ -128,19 +141,48 @@ export default function Settings() {
     }
   }
 
+  async function previewWindow(target: DetectedWindow) {
+    const key = getDetectedWindowKey(target);
+    setPreviewingKey(key);
+    setPreviewErrors((prev) => ({ ...prev, [key]: "" }));
+    try {
+      const res = await sidecarCommands.previewWindow(target);
+      setWindowPreviews((prev) => ({ ...prev, [key]: res.data_url }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "無法取得預覽";
+      setPreviewErrors((prev) => ({ ...prev, [key]: message }));
+    } finally {
+      setPreviewingKey((prev) => (prev === key ? null : prev));
+    }
+  }
+
   const userPlan = useAuthStore((s) => s.user?.plan ?? "trial");
   const maxWindows = getMaxWindows(userPlan);
 
-  function addWindow(title: string) {
-    if (cfg.capture_windows.some((w) => w.window_name === title)) return;
+  function addWindow(target: string | DetectedWindow) {
+    const candidate =
+      typeof target === "string"
+        ? buildManualCaptureWindow(target.trim(), cfg.capture_windows.length)
+        : buildCaptureWindowFromDetected(target, cfg.capture_windows.length);
+
+    if (!candidate.window_name && !candidate.display_name) return;
+    if (
+      cfg.capture_windows.some((w) =>
+        captureWindowMatchesDetected(w, {
+          window_id: candidate.window_id,
+          window_name: candidate.window_name,
+          owner: candidate.app_name,
+          label: candidate.display_name || candidate.window_name,
+        }),
+      )
+    ) {
+      return;
+    }
     if (cfg.capture_windows.length >= maxWindows) {
       alert(`您的方案（${userPlan}）最多可監控 ${maxWindows} 個群組，請升級方案以新增更多群組。`);
       return;
     }
-    const newWindows = [
-      ...cfg.capture_windows,
-      { window_name: title, app_name: "LINE", name: `win_${cfg.capture_windows.length}` },
-    ];
+    const newWindows = [...cfg.capture_windows, candidate];
     const updated = { ...cfg, capture_windows: newWindows };
     setCfg(updated);
     setConfig(updated); // persist to store so it survives navigation
@@ -306,11 +348,16 @@ export default function Settings() {
                 {cfg.martingale_per_source && cfg.capture_windows.length > 0 && (
                   <>
                     {cfg.capture_windows.map((w) => {
-                      const sourceLots: number[] = (cfg.martingale_source_lots ?? {})[w.window_name] ?? [];
+                      const sourceKey = getCaptureWindowLabel(w);
+                      const sourceLots: number[] =
+                        (cfg.martingale_source_lots ?? {})[sourceKey]
+                        ?? (cfg.martingale_source_lots ?? {})[w.window_name]
+                        ?? [];
                       const updateSourceLot = (idx: number, val: number) => {
                         const newLots = [...sourceLots];
                         newLots[idx] = val;
-                        const newMap = { ...(cfg.martingale_source_lots ?? {}), [w.window_name]: newLots };
+                        const newMap = { ...(cfg.martingale_source_lots ?? {}), [sourceKey]: newLots };
+                        if (sourceKey !== w.window_name) delete newMap[w.window_name];
                         const updated = { ...cfg, martingale_source_lots: newMap };
                         setCfg(updated);
                         setConfig(updated);
@@ -319,7 +366,8 @@ export default function Settings() {
                       const addSourceLevel = () => {
                         const last = sourceLots.length > 0 ? sourceLots[sourceLots.length - 1] * 2 : 0.01;
                         const newLots = [...sourceLots, Math.round(last * 100) / 100];
-                        const newMap = { ...(cfg.martingale_source_lots ?? {}), [w.window_name]: newLots };
+                        const newMap = { ...(cfg.martingale_source_lots ?? {}), [sourceKey]: newLots };
+                        if (sourceKey !== w.window_name) delete newMap[w.window_name];
                         const updated = { ...cfg, martingale_source_lots: newMap };
                         setCfg(updated);
                         setConfig(updated);
@@ -328,7 +376,8 @@ export default function Settings() {
                       const removeSourceLevel = () => {
                         if (sourceLots.length <= 0) return;
                         const newLots = sourceLots.slice(0, -1);
-                        const newMap = { ...(cfg.martingale_source_lots ?? {}), [w.window_name]: newLots };
+                        const newMap = { ...(cfg.martingale_source_lots ?? {}), [sourceKey]: newLots };
+                        if (sourceKey !== w.window_name) delete newMap[w.window_name];
                         const updated = { ...cfg, martingale_source_lots: newMap };
                         setCfg(updated);
                         setConfig(updated);
@@ -336,9 +385,9 @@ export default function Settings() {
                       };
 
                       return (
-                        <div key={w.window_name} style={{ marginTop: "16px", padding: "12px", border: "1px solid var(--border-hairline)", borderRadius: "8px" }}>
+                        <div key={w.name} style={{ marginTop: "16px", padding: "12px", border: "1px solid var(--border-hairline)", borderRadius: "8px" }}>
                           <div style={{ fontSize: "12px", color: "var(--color-ink-muted)", marginBottom: "8px" }}>
-                            {w.window_name} {sourceLots.length === 0 && "（使用全域預設）"}
+                            {sourceKey} {sourceLots.length === 0 && "（使用全域預設）"}
                           </div>
                           {sourceLots.length > 0 && (
                             <table className="data-table" style={{ maxWidth: 280 }}>
@@ -493,7 +542,7 @@ export default function Settings() {
                       borderBottom: i < cfg.capture_windows.length - 1 ? "1px solid var(--border-hairline)" : undefined,
                     }}
                   >
-                    <span style={{ color: "var(--color-ink-light)" }}>{w.window_name} | {w.app_name}</span>
+                    <span style={{ color: "var(--color-ink-light)" }}>{getCaptureWindowLabel(w)}</span>
                     <button
                       onClick={() => {
                         const newWindows = cfg.capture_windows.filter((_, j) => j !== i);
@@ -567,28 +616,57 @@ export default function Settings() {
                         <div style={{ padding: "4px 20px 8px", fontSize: "11px", color: "var(--color-ink-ghost)" }}>
                           偵測到 {detectedWindows.length} 個視窗 — 點擊加入
                         </div>
-                        {detectedWindows.map((title, i) => {
-                          const already = cfg.capture_windows.some((w) => w.window_name === title);
+                        {detectedWindows.map((detected) => {
+                          const already = cfg.capture_windows.some((w) => captureWindowMatchesDetected(w, detected));
+                          const key = getDetectedWindowKey(detected);
+                          const preview = windowPreviews[key];
+                          const previewError = previewErrors[key];
+                          const isPreviewing = previewingKey === key;
                           return (
                             <div
-                              key={i}
-                              onClick={() => { if (!already) { addWindow(title); } }}
-                              className="flex items-center justify-between"
+                              key={key}
                               style={{
                                 padding: "9px 20px", fontSize: "13px",
-                                cursor: already ? "default" : "pointer",
                                 opacity: already ? 0.4 : 1,
                                 color: "var(--color-ink-light)",
-                                transition: "background 0.1s",
                               }}
-                              onMouseEnter={(e) => { if (!already) (e.currentTarget.style.background = "rgba(255,255,255,0.04)"); }}
-                              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
                             >
-                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, marginRight: "12px" }}>{title}</span>
-                              {already
-                                ? <span style={{ fontSize: "11px", color: "var(--color-ink-ghost)", flexShrink: 0 }}>已加入</span>
-                                : <span style={{ fontSize: "11px", color: "var(--color-teal)", flexShrink: 0 }}>+ 加入</span>
-                              }
+                              <div className="flex items-center justify-between gap-3">
+                                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, marginRight: "12px" }}>{detected.label}</span>
+                                <div className="flex items-center gap-2" style={{ flexShrink: 0 }}>
+                                  <button
+                                    onClick={() => { void previewWindow(detected); }}
+                                    className="btn-outline"
+                                    style={{ padding: "4px 10px", fontSize: "11px" }}
+                                  >
+                                    {isPreviewing ? "讀取中..." : preview ? "重看" : "預覽"}
+                                  </button>
+                                  {already
+                                    ? <span style={{ fontSize: "11px", color: "var(--color-ink-ghost)", flexShrink: 0 }}>已加入</span>
+                                    : (
+                                      <button
+                                        onClick={() => { addWindow(detected); }}
+                                        className="btn-outline"
+                                        style={{ padding: "4px 10px", fontSize: "11px", color: "var(--color-teal)", borderColor: "rgba(114, 214, 194, 0.35)" }}
+                                      >
+                                        加入
+                                      </button>
+                                    )
+                                  }
+                                </div>
+                              </div>
+                              {preview && (
+                                <div style={{ marginTop: "10px", padding: "10px", borderRadius: "8px", background: "rgba(255,255,255,0.03)", border: "1px solid var(--border-hairline)" }}>
+                                  <img
+                                    src={preview}
+                                    alt={detected.label}
+                                    style={{ width: "100%", maxHeight: "220px", objectFit: "contain", borderRadius: "6px", display: "block" }}
+                                  />
+                                </div>
+                              )}
+                              {!preview && previewError && (
+                                <div style={{ marginTop: "8px", fontSize: "11px", color: "var(--color-loss)" }}>{previewError}</div>
+                              )}
                             </div>
                           );
                         })}

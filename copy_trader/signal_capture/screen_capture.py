@@ -7,6 +7,10 @@ import subprocess
 import tempfile
 import time
 import hashlib
+import io
+import base64
+import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 from pathlib import Path
@@ -52,19 +56,124 @@ def get_window_id_by_name(window_name: str, app_name: str = "LINE") -> Optional[
 
 
 def list_app_windows(app_name: str = "LINE") -> List[Dict]:
-    """List all visible windows (optionally filter by app name in title)."""
+    """List visible windows with stable IDs and user-friendly labels."""
     if not PLATFORM_AVAILABLE:
         return []
 
     try:
         sc = ScreenCapture()
         windows = sc.enumerate_windows(app_name)
-        return [
-            {'id': w.window_id, 'name': w.title, 'owner': w.owner_name or app_name}
+        counts = Counter(
+            ((w.owner_name or app_name or "").strip(), (w.title or w.owner_name or app_name or "").strip())
             for w in windows
-        ]
+        )
+
+        items = []
+        for w in windows:
+            owner = (w.owner_name or app_name or "").strip()
+            name = (w.title or owner).strip()
+            x, y, width, height = w.bounds
+
+            label = name or f"Window {w.window_id}"
+            if owner and name and owner.lower() != name.lower():
+                label = f"{name} | {owner}"
+
+            is_generic = not name or (owner and name.lower() == owner.lower())
+            if is_generic or counts[(owner, name)] > 1:
+                label = f"{label} [{x},{y} {width}×{height}]"
+
+            items.append({
+                "id": w.window_id,
+                "window_id": w.window_id,
+                "name": name,
+                "window_name": name,
+                "owner": owner,
+                "label": label,
+                "bounds": {
+                    "x": x,
+                    "y": y,
+                    "width": width,
+                    "height": height,
+                },
+            })
+
+        return items
     except Exception:
         return []
+
+
+def capture_window_preview(
+    window_id: Optional[int] = None,
+    window_name: Optional[str] = None,
+    app_name: str = "LINE",
+    max_width: int = 360,
+    jpeg_quality: int = 70,
+) -> Optional[Dict]:
+    """Capture a lightweight preview image for a detected window."""
+    if not PLATFORM_AVAILABLE or not PIL_AVAILABLE:
+        return {"ok": False, "message": "Platform capture layer not available"}
+
+    try:
+        target_id = window_id or get_window_id_by_name(window_name or "", app_name)
+        if not target_id:
+            target_name = window_name or app_name or "unknown window"
+            return {"ok": False, "message": f"找不到視窗：{target_name}"}
+
+        sc = ScreenCapture()
+        rect = None
+        visible = None
+        screen_access = None
+        try:
+            rect = sc.get_window_rect(target_id)
+        except Exception:
+            rect = None
+        try:
+            visible = sc.is_window_visible(target_id)
+        except Exception:
+            visible = None
+
+        if sys.platform == "darwin":
+            try:
+                from Quartz import CGPreflightScreenCaptureAccess
+                screen_access = bool(CGPreflightScreenCaptureAccess())
+            except Exception:
+                screen_access = None
+
+        img = sc.capture_window(target_id)
+        if img is None:
+            reasons = []
+            if screen_access is False:
+                reasons.append("螢幕錄製權限尚未對目前這個 App 生效")
+            if visible is False:
+                reasons.append("視窗目前不在可擷取狀態，可能已最小化、切到其他桌面或已關閉")
+            if rect:
+                reasons.append(f"視窗尺寸 {rect[2]}×{rect[3]}")
+            else:
+                reasons.append("macOS 沒有回傳可用的視窗影像")
+            return {"ok": False, "message": "；".join(reasons)}
+
+        width, height = img.size
+        if width <= 0 or height <= 0:
+            return {"ok": False, "message": "視窗影像尺寸為 0，macOS 沒有提供可讀畫面"}
+
+        preview = img.copy()
+        if width > max_width:
+            ratio = max_width / float(width)
+            preview = preview.resize((max_width, max(1, int(height * ratio))))
+
+        buf = io.BytesIO()
+        preview.save(buf, format="JPEG", quality=jpeg_quality, optimize=True)
+        data_url = f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
+        return {
+            "ok": True,
+            "data_url": data_url,
+            "width": preview.size[0],
+            "height": preview.size[1],
+            "window_id": target_id,
+        }
+    except Exception as e:
+        logger.error(f"Failed to capture window preview: {e}")
+        return {"ok": False, "message": f"預覽擷取失敗：{e}"}
 
 
 @dataclass
@@ -119,7 +228,9 @@ class ScreenCaptureService:
         self._last_hashes: Dict[str, str] = {}
         self._last_frames: Dict[str, str] = {}  # window_name -> last image path (for diff)
         self._last_force_refresh: float = 0.0
-        self.FORCE_REFRESH_INTERVAL: float = 60.0  # Force OCR every 60s to catch short messages (撤/SL)
+        # Force a full OCR refresh more aggressively so subtle chat updates
+        # do not stay hidden behind window-hash dedup for up to a minute.
+        self.FORCE_REFRESH_INTERVAL: float = 10.0
 
         # Initialize platform layer
         self._screen_capture = ScreenCapture() if PLATFORM_AVAILABLE else None
@@ -156,27 +267,43 @@ class ScreenCaptureService:
             raise RuntimeError(f"Screen capture failed: {e}")
 
     # Throttle scroll: track last scroll time per window
-    SCROLL_INTERVAL = 15  # seconds between scrolls per window (was 30, reduced to catch new messages faster)
+    SCROLL_INTERVAL = 5  # seconds between scrolls per window
 
     def __init_scroll_times(self):
         if not hasattr(self, '_scroll_times'):
             self._scroll_times: Dict[int, float] = {}
 
-    def _send_scroll_to_bottom(self, hwnd: int):
+    def _send_scroll_to_bottom(self, hwnd: int, force: bool = False):
         """Scroll window to bottom to ensure latest messages are visible (cross-platform)."""
         self.__init_scroll_times()
 
         now = time.time()
-        if now - self._scroll_times.get(hwnd, 0) < self.SCROLL_INTERVAL:
+        if not force and now - self._scroll_times.get(hwnd, 0) < self.SCROLL_INTERVAL:
             return
         self._scroll_times[hwnd] = now
 
         if self._keyboard:
             try:
-                self._keyboard.send_scroll_to_bottom(hwnd)
+                attempts = 2 if force else 1
+                for attempt in range(attempts):
+                    self._keyboard.send_scroll_to_bottom(hwnd)
+                    if attempt + 1 < attempts:
+                        time.sleep(0.12)
                 logger.debug(f"Scrolled window {hwnd} to bottom")
             except Exception as e:
                 logger.debug(f"Failed to scroll window {hwnd}: {e}")
+
+    def scroll_window_to_bottom(self, source_name: str, force: bool = False) -> bool:
+        """Scroll a configured capture window to the bottom by source name."""
+        for window in self.windows:
+            if window.name != source_name:
+                continue
+            hwnd = window.get_window_id()
+            if not hwnd:
+                return False
+            self._send_scroll_to_bottom(hwnd, force=force)
+            return True
+        return False
 
     def capture_window(self, window: CaptureWindow) -> Optional[CapturedFrame]:
         """Capture a window by its handle. Works even if window is in background (cross-platform)."""
@@ -191,6 +318,7 @@ class ScreenCaptureService:
 
         # Scroll to bottom to ensure latest messages are visible
         self._send_scroll_to_bottom(hwnd)
+        time.sleep(0.12)
 
         timestamp = time.time()
         filename = f"{window.name}_{int(timestamp * 1000)}.png"
@@ -271,11 +399,11 @@ class ScreenCaptureService:
                     continue
 
                 if deduplicate:
-                    # Use perceptual hash for better dedup (tolerates minor rendering differences)
-                    phash = self._compute_perceptual_hash(frame.image_path)
+                    # Dedup on the chat's lower area where the newest messages appear.
+                    phash = self._compute_perceptual_hash(frame.image_path, crop_bottom_ratio=0.45)
                     last_hash = self._last_hashes.get(window.name)
-                    if last_hash and self._phash_similar(phash, last_hash, threshold=5):
-                        logger.debug(f"Window '{window.name}' unchanged (phash distance < 5), skipping")
+                    if last_hash and self._phash_similar(phash, last_hash, threshold=4):
+                        logger.debug(f"Window '{window.name}' unchanged (chat-bottom hash distance < 4), skipping")
                         Path(frame.image_path).unlink(missing_ok=True)
                         continue
                     if last_hash:
@@ -363,12 +491,20 @@ class ScreenCaptureService:
             logger.debug(f"Diff detection failed: {e}")
             return None
 
-    def _compute_perceptual_hash(self, filepath: str) -> str:
-        """Compute dHash (difference hash) — faster than pHash, good for chat dedup."""
+    def _compute_perceptual_hash(self, filepath: str, crop_bottom_ratio: float = 1.0) -> str:
+        """Compute dHash (difference hash), optionally focused on the chat bottom area."""
         try:
             import imagehash
             from PIL import Image
             with Image.open(filepath) as img:
+                if crop_bottom_ratio < 1.0:
+                    top = int(img.height * (1.0 - crop_bottom_ratio))
+                    side_pad = int(img.width * 0.04)
+                    left = max(0, side_pad)
+                    right = max(left + 1, img.width - side_pad)
+                    bottom = img.height
+                    if bottom > top:
+                        img = img.crop((left, top, right, bottom))
                 return str(imagehash.dhash(img))  # dHash: ~2x faster than pHash
         except ImportError:
             return self._compute_file_hash(filepath)

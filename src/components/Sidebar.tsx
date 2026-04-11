@@ -31,28 +31,33 @@ const systemNav = [
 export default function Sidebar() {
   const connected = useTradingStore((s) => s.connected);
   const isTrading = useTradingStore((s) => s.isTrading);
+  const status = useTradingStore((s) => s.status);
   const setIsTrading = useTradingStore((s) => s.setIsTrading);
   const setStartTime = useTradingStore((s) => s.setStartTime);
+  const setStatus = useTradingStore((s) => s.setStatus);
   const config = useTradingStore((s) => s.config);
   const authUser = useAuthStore((s) => s.user);
+  const isStarting = status === "starting";
+  const canStop = isStarting || isTrading;
 
   async function handleStart() {
-    if (isTrading || !config) return;
+    if (isTrading || isStarting || !config) return;
+    setStatus("starting");
     try {
       await sidecarCommands.startTrading(config);
-      setIsTrading(true);
-      setStartTime(Date.now());
     } catch {
+      setStatus("stopped");
       setIsTrading(false);
       setStartTime(null);
     }
   }
 
   async function handleStop() {
-    if (!isTrading) return;
+    if (!canStop) return;
     try {
       await sidecarCommands.stopTrading();
     } finally {
+      setStatus("stopped");
       setIsTrading(false);
       setStartTime(null);
     }
@@ -255,26 +260,26 @@ export default function Sidebar() {
       <div style={{ padding: "12px 16px 16px", display: "flex", flexDirection: "column", gap: "6px" }}>
         <button
           onClick={handleStart}
-          disabled={isTrading}
+          disabled={isTrading || isStarting}
           className="btn-primary flex items-center justify-center gap-2"
           style={{
             width: "100%",
             padding: "11px 0",
-            background: isTrading ? "var(--color-ink)" : "var(--color-profit)",
+            background: isTrading || isStarting ? "var(--color-ink)" : "var(--color-profit)",
           }}
         >
           <Play size={13} strokeWidth={2.5} />
-          {S.BTN_START}
+          {isStarting ? S.BTN_STARTING : S.BTN_START}
         </button>
         <button
           onClick={handleStop}
-          disabled={!isTrading}
+          disabled={!canStop}
           className="btn-outline flex items-center justify-center gap-2"
           style={{
             width: "100%",
             padding: "10px 0",
-            color: !isTrading ? "var(--color-ink-ghost)" : "var(--color-loss)",
-            borderColor: !isTrading ? "var(--border-hairline)" : "var(--color-loss-bg)",
+            color: !canStop ? "var(--color-ink-ghost)" : "var(--color-loss)",
+            borderColor: !canStop ? "var(--border-hairline)" : "var(--color-loss-bg)",
           }}
         >
           <Square size={11} strokeWidth={2.5} />

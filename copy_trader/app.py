@@ -6,17 +6,25 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import time
 import hashlib
+from datetime import datetime, timedelta
 from typing import Dict, Set
 from pathlib import Path
 
-# Ensure imports work regardless of how the script is launched
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Ensure local imports work without shadowing stdlib modules like `platform`.
+_this_dir = os.path.dirname(os.path.abspath(__file__))
+_parent_dir = os.path.dirname(_this_dir)
+while _this_dir in sys.path:
+    sys.path.remove(_this_dir)
+sys.path.append(_this_dir)
+if _parent_dir not in sys.path:
+    sys.path.insert(0, _parent_dir)
 
-from config import Config, CaptureRegion, CaptureWindow, load_config, DATA_DIR
+from config import Config, CaptureRegion, CaptureWindow, load_config, DATA_DIR, DEFAULT_SYMBOL
 from signal_capture import ScreenCaptureService, CaptureWindow as SCWindow, OCRService
 from signal_parser import RegexSignalParser
 from signal_parser.keyword_filter import is_potential_signal, extract_quick_info
@@ -34,6 +42,10 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+
+def _capture_window_label(window: CaptureWindow) -> str:
+    return getattr(window, "display_name", "") or window.window_name
 
 
 class CopyTrader:
@@ -55,6 +67,7 @@ class CopyTrader:
             # Convert config CaptureWindow to screen_capture CaptureWindow
             windows = [
                 SCWindow(
+                    window_id=getattr(w, "window_id", None),
                     window_name=w.window_name,
                     app_name=w.app_name,
                     name=w.name
@@ -62,7 +75,7 @@ class CopyTrader:
                 for w in config.capture_windows
             ]
             self.capture_service = ScreenCaptureService(windows=windows)
-            logger.info(f"Using window capture mode: {[w.window_name for w in config.capture_windows]}")
+            logger.info(f"Using window capture mode: {[_capture_window_label(w) for w in config.capture_windows]}")
         else:
             # Fallback to region-based capture
             from signal_capture.screen_capture import CaptureRegion as SCRegion
@@ -111,7 +124,7 @@ class CopyTrader:
             mt5_files_dir=config.mt5_files_dir
         )
         self.trade_manager.default_lot_size = config.default_lot_size
-        self.trade_manager.set_symbol_name(getattr(config, "symbol_name", "XAUUSD.s"))
+        self.trade_manager.set_symbol_name(getattr(config, "symbol_name", DEFAULT_SYMBOL))
         self.trade_manager.partial_close_ratios = config.partial_close_ratios
 
         # Martingale settings
@@ -126,7 +139,7 @@ class CopyTrader:
         self._window_display_names: Dict[str, str] = {}
         if config.capture_mode == "window" and config.capture_windows:
             for w in config.capture_windows:
-                self._window_display_names[w.name] = w.window_name
+                self._window_display_names[w.name] = _capture_window_label(w)
 
         # State
         self._running = False
@@ -145,6 +158,7 @@ class CopyTrader:
         # Vision dedup: prevent sending the same incomplete signal to Vision repeatedly
         # Key: (source, direction, tp_tuple) -> expiry timestamp
         self._vision_sent_cache: Dict[str, float] = {}
+        self._stale_capture_logged_at: Dict[str, float] = {}
 
         # Stats
         self._api_calls_today = 0
@@ -157,7 +171,7 @@ class CopyTrader:
         logger.info("CopyTrader initialized")
 
         # Create trade journal on startup
-        windows_str = ", ".join([w.window_name for w in config.capture_windows]) or "無"
+        windows_str = ", ".join([_capture_window_label(w) for w in config.capture_windows]) or "無"
         self._write_trade_journal(
             "SYSTEM_START",
             details=f"監控群組=[{windows_str}] | 馬丁={'各群獨立' if config.martingale_per_source else '全域共用'} | 自動下單={config.auto_execute}",
@@ -266,10 +280,10 @@ class CopyTrader:
 
     def _verify_mt5_connection(self) -> bool:
         """Verify MT5 bridge is running."""
-        symbol_name = getattr(self.config, "symbol_name", "XAUUSD.s")
+        symbol_name = getattr(self.config, "symbol_name", DEFAULT_SYMBOL)
         candidate_files = [
             Path(self.config.mt5_files_dir) / f"{symbol_name}_price.json",
-            Path(self.config.mt5_files_dir) / "XAUUSD_price.json",
+            Path(self.config.mt5_files_dir) / f"{DEFAULT_SYMBOL}_price.json",
         ]
         price_file = next((path for path in candidate_files if path.exists()), None)
 
@@ -323,17 +337,37 @@ class CopyTrader:
             if not text:
                 continue
 
+            raw_text = text
+
+            stale_reason = self._detect_stale_chat_capture(raw_text)
+            if stale_reason:
+                recovered = await self._recover_latest_chat_capture(
+                    frame.source_name or "",
+                    source_display,
+                    raw_text,
+                    stale_reason,
+                )
+                Path(frame.image_path).unlink(missing_ok=True)
+                if not recovered:
+                    continue
+                frame, raw_text, text = recovered
+            else:
+                text = self._sanitize_chat_text(raw_text)
+
             # Check for cancel/withdraw and SL-hit keywords BEFORE length filter.
             # Short messages like "撤" (1 char) or "SL" (2 chars) must be caught
             # even when the OCR text is very short.
-            if self._check_cancel_keywords(text, frame.source_name):
+            if self._check_cancel_keywords(raw_text, frame.source_name):
+                Path(frame.image_path).unlink(missing_ok=True)
                 continue
 
-            if self._check_sl_hit(text, frame.source_name):
+            if self._check_sl_hit(raw_text, frame.source_name):
+                Path(frame.image_path).unlink(missing_ok=True)
                 continue
 
             # Now apply length filter for signal parsing (signals need at least 10 chars)
             if len(text.strip()) < 10:
+                Path(frame.image_path).unlink(missing_ok=True)
                 continue
 
             # Check for duplicate (exact hash + fuzzy text comparison)
@@ -562,7 +596,7 @@ class CopyTrader:
                     self._write_trade_journal(
                         "PENDING_SIGNAL", signal=signal, source=source_display,
                         details=f"缺少: {', '.join(missing)} | 已有: {', '.join(have_parts)}",
-                        ocr_text=text,
+                        ocr_text=raw_text,
                     )
                     self._add_hash_with_ttl(text_hash, 15)
                 else:
@@ -580,7 +614,7 @@ class CopyTrader:
                 self._write_trade_journal(
                     "MULTI_MSG_COMPLETE", signal=signal, source=source_display,
                     details=f"等待了 {wait_secs:.1f}秒",
-                    ocr_text=text,
+                    ocr_text=raw_text,
                 )
                 self._pending_signals.pop(source, None)
 
@@ -588,7 +622,7 @@ class CopyTrader:
             confirmed = await self._confirm_signal_vision(signal, frame)
             if not confirmed:
                 self._log_signal_skip(
-                    "二次確認失敗（Vision 重新解析結果不一致）",
+                    "二次確認失敗（重抓後關鍵數值差異過大）",
                     signal=signal, source=source_display,
                 )
                 self._add_hash_with_ttl(text_hash, 120)
@@ -641,7 +675,7 @@ class CopyTrader:
                     f" | 手數={lot} | 馬丁層級={mg_level}"
                     f" | signal_key={self._signal_key(signal)}"
                 ),
-                ocr_text=text,
+                ocr_text=raw_text,
             )
 
             signal_id = self.trade_manager.submit_signal(
@@ -681,7 +715,7 @@ class CopyTrader:
                         f" | signal_key={self._signal_key(extra_sig)}"
                         f" | multi_signal=True"
                     ),
-                    ocr_text=text,
+                    ocr_text=raw_text,
                 )
                 extra_id = self.trade_manager.submit_signal(
                     extra_sig,
@@ -730,7 +764,28 @@ class CopyTrader:
 
             # Confirm with bubble OCR + regex (same method as primary parse)
             retry_signal = None
-            text = self.ocr_service.extract_newest_bubble_text(frame.image_path)
+            raw_text = self.ocr_service.extract_newest_bubble_text(frame.image_path)
+            source_display = self._window_display_names.get(first_frame.source_name or "", first_frame.source_name or "")
+
+            if raw_text:
+                stale_reason = self._detect_stale_chat_capture(raw_text)
+                if stale_reason:
+                    recovered = await self._recover_latest_chat_capture(
+                        source or "",
+                        source_display,
+                        raw_text,
+                        stale_reason,
+                    )
+                    Path(frame.image_path).unlink(missing_ok=True)
+                    if not recovered:
+                        logger.warning(f"Confirm {i+1}: chat still stale after recovery")
+                        continue
+                    frame, raw_text, text = recovered
+                else:
+                    text = self._sanitize_chat_text(raw_text)
+            else:
+                text = ""
+
             if text and len(text.strip()) >= 10:
                 is_sig, _ = is_potential_signal(text)
                 if is_sig:
@@ -753,10 +808,15 @@ class CopyTrader:
             if retry_key == first_key:
                 matches += 1
                 logger.info(f"  -> MATCH ({matches}/{confirm_count-1})")
+            elif self._signals_match_for_confirmation(first_signal, retry_signal):
+                matches += 1
+                logger.info(
+                    f"  -> RELAXED MATCH ({matches}/{confirm_count-1}) "
+                    f"(expected {first_key}, got {retry_key})"
+                )
             else:
                 logger.warning(f"  -> MISMATCH (expected {first_key}, got {retry_key})")
                 # Journal: record mismatch details for debugging
-                source_display = self._window_display_names.get(first_frame.source_name or "", first_frame.source_name or "")
                 self._write_trade_journal(
                     "CONFIRM_MISMATCH", source=source_display,
                     details=f"第一次={first_key} | 確認={retry_key} | 確認信號={retry_signal}",
@@ -769,6 +829,46 @@ class CopyTrader:
         else:
             logger.warning(f"Only {matches}/{required} confirmations matched")
             return False
+
+    @staticmethod
+    def _prices_close(price1, price2, tolerance: float) -> bool:
+        """Compare two parsed prices with a small OCR-safe tolerance."""
+        if price1 is None or price2 is None:
+            return False
+        return abs(float(price1) - float(price2)) <= tolerance
+
+    def _take_profit_overlap(self, first_tps, retry_tps, tolerance: float = 2.0) -> bool:
+        """True if the two TP lists share at least one close-enough level."""
+        if not first_tps or not retry_tps:
+            return False
+
+        for first_tp in first_tps:
+            for retry_tp in retry_tps:
+                if self._prices_close(first_tp, retry_tp, tolerance):
+                    return True
+        return False
+
+    def _signals_match_for_confirmation(self, first_signal, retry_signal) -> bool:
+        """Allow small OCR/parser drift when confirming the same signal."""
+        if not first_signal or not retry_signal:
+            return False
+
+        if first_signal.direction != retry_signal.direction:
+            return False
+
+        if not self._prices_close(first_signal.stop_loss, retry_signal.stop_loss, 1.5):
+            return False
+
+        first_entry = first_signal.entry_price
+        retry_entry = retry_signal.entry_price
+        if first_entry is not None and retry_entry is not None:
+            if not self._prices_close(first_entry, retry_entry, 5.0):
+                return False
+
+        if not self._take_profit_overlap(first_signal.take_profit, retry_signal.take_profit):
+            return False
+
+        return True
 
     # Cancel keywords that trigger deletion of pending orders
     # Multi-char keywords first (more specific), single-char last (prone to false positives)
@@ -803,6 +903,185 @@ class CopyTrader:
         '最低一件',
         '立即下載',
     ]
+
+    CHAT_RECENCY_SECONDS = 5 * 60
+    CHAT_STALE_LOG_INTERVAL = 60
+    CHAT_BACKLOG_PATTERNS = [
+        r'以下為尚未[^\s|]{0,6}[訊讯]息',
+        r'\d+\+\s*[则則]\s*[訊讯]息',
+        r'加入聊天',
+        r'Auto-?reply',
+        r'進[來来]的朋友',
+        r'記得到記事本看開單策略',
+        r'還有其他報單群可以加入',
+        r'查看討論串[內内]的訊息',
+        r'傳送至Keep筆記',
+        r'另存新檔',
+        r'儲存\|另存新檔',
+    ]
+    CHAT_CLEANUP_PATTERNS = [
+        (r'以下為尚未[^\s|]{0,6}[訊讯]息', ' |MSG| '),
+        (r'\d+\+\s*[则則]\s*[訊讯]息', ' '),
+        (r'[@●•]\s*\d+', ' '),
+        (r'加入聊天', ' '),
+        (r'Auto-?reply', ' '),
+        (r'進[來来]的朋友', ' '),
+        (r'記得到記事本看開單策略', ' '),
+        (r'還有其他報單群可以加入', ' '),
+        (r'查看討論串[內内]的訊息', ' '),
+        (r'傳送至Keep筆記', ' '),
+        (r'另存新檔', ' '),
+        (r'\b儲存\b', ' '),
+    ]
+    CHAT_TIME_RE = re.compile(
+        r'(?<!\d)(?:(?P<meridiem>[上下]?\s*午)\s*)?(?P<hour>\d{1,2})\s*[:：]\s*(?P<minute>\d{2})(?!\s*[:：]\s*\d{2})'
+    )
+
+    def _sanitize_chat_text(self, text: str) -> str:
+        """Remove LINE UI noise so the parser sees mostly chat content."""
+        cleaned = text or ""
+        for pattern, replacement in self.CHAT_CLEANUP_PATTERNS:
+            cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'(?:\s*\|MSG\|\s*)+', ' |MSG| ', cleaned)
+        cleaned = re.sub(r'\s+', ' ', cleaned)
+        cleaned = cleaned.strip()
+        cleaned = re.sub(r'^(?:\|MSG\|\s*)+', '', cleaned)
+        cleaned = re.sub(r'(?:\s*\|MSG\|)+$', '', cleaned)
+        return cleaned.strip()
+
+    def _extract_latest_visible_chat_time(self, text: str) -> datetime | None:
+        """Infer the newest visible LINE message timestamp from OCR text."""
+        now = datetime.now()
+        best_candidate = None
+        best_age = None
+
+        for match in self.CHAT_TIME_RE.finditer(text or ""):
+            hour = int(match.group("hour"))
+            minute = int(match.group("minute"))
+            meridiem = (match.group("meridiem") or "").replace(" ", "")
+
+            hour_candidates = []
+            if meridiem.startswith("下"):
+                hour_candidates.append((hour % 12) + 12)
+            elif meridiem.startswith("上"):
+                hour_candidates.append(hour % 12)
+            else:
+                hour_candidates.append(hour)
+                if hour < 12:
+                    hour_candidates.append(hour + 12)
+
+            for candidate_hour in hour_candidates:
+                candidate = now.replace(
+                    hour=candidate_hour,
+                    minute=minute,
+                    second=0,
+                    microsecond=0,
+                )
+                if candidate > now + timedelta(minutes=5):
+                    candidate -= timedelta(days=1)
+                age = (now - candidate).total_seconds()
+                if age < 0:
+                    continue
+                if best_age is None or age < best_age:
+                    best_age = age
+                    best_candidate = candidate
+
+        return best_candidate
+
+    def _detect_stale_chat_capture(self, raw_text: str) -> str:
+        """Return a reason when the OCR frame is likely not showing the newest chat."""
+        latest_visible_time = self._extract_latest_visible_chat_time(raw_text)
+        if latest_visible_time is not None:
+            age_seconds = (datetime.now() - latest_visible_time).total_seconds()
+            if age_seconds > self.CHAT_RECENCY_SECONDS:
+                age_minutes = max(1, int(age_seconds // 60))
+                return (
+                    f"最新可見聊天時間 {latest_visible_time.strftime('%H:%M')} "
+                    f"已過 {age_minutes} 分鐘，疑似仍停留在舊訊息"
+                )
+            return ""
+
+        if any(re.search(pattern, raw_text, re.IGNORECASE) for pattern in self.CHAT_BACKLOG_PATTERNS):
+            return "畫面含未讀/加入聊天/分享面板等雜訊，疑似未定位到最新訊息"
+
+        return ""
+
+    def _handle_stale_chat_capture(self, source_name: str, source_display: str, raw_text: str, reason: str):
+        """Force the chat window back to bottom and log the issue with rate limiting."""
+        logger.warning(f"聊天室未對齊最新訊息 [{source_display or source_name or 'default'}]: {reason}")
+        if source_name:
+            try:
+                self.capture_service.scroll_window_to_bottom(source_name, force=True)
+            except Exception as e:
+                logger.debug(f"Failed to recenter chat window '{source_name}': {e}")
+
+        now = time.time()
+        last_logged = self._stale_capture_logged_at.get(source_name or "", 0)
+        if now - last_logged >= self.CHAT_STALE_LOG_INTERVAL:
+            self._stale_capture_logged_at[source_name or ""] = now
+            self._write_trade_journal(
+                "CHAT_NOT_READY",
+                source=source_display,
+                details=reason,
+                ocr_text=raw_text,
+            )
+
+    async def _recover_latest_chat_capture(self, source_name: str, source_display: str, raw_text: str, reason: str):
+        """
+        Try to actively re-align the chat to the newest message and recapture it.
+
+        Returns:
+            tuple(frame, fresh_raw_text, fresh_sanitized_text) if recovery succeeds, else None
+        """
+        if not source_name:
+            self._handle_stale_chat_capture(source_name, source_display, raw_text, reason)
+            return None
+
+        self._handle_stale_chat_capture(source_name, source_display, raw_text, reason)
+
+        for attempt in range(1, 4):
+            try:
+                self.capture_service.scroll_window_to_bottom(source_name, force=True)
+            except Exception as e:
+                logger.debug(f"Failed to force-scroll '{source_name}' on attempt {attempt}: {e}")
+
+            await asyncio.sleep(0.35)
+            fresh_frame = self.capture_service.capture_single_window(source_name)
+            if fresh_frame is None:
+                continue
+
+            fresh_raw_text = self.ocr_service.extract_newest_bubble_text(fresh_frame.image_path)
+            if not fresh_raw_text:
+                Path(fresh_frame.image_path).unlink(missing_ok=True)
+                continue
+
+            fresh_reason = self._detect_stale_chat_capture(fresh_raw_text)
+            if fresh_reason:
+                logger.debug(
+                    f"聊天室校正後仍非最新 [{source_display or source_name}] "
+                    f"(attempt {attempt}/3): {fresh_reason}"
+                )
+                Path(fresh_frame.image_path).unlink(missing_ok=True)
+                continue
+
+            fresh_text = self._sanitize_chat_text(fresh_raw_text)
+            if len(fresh_text.strip()) < 10:
+                Path(fresh_frame.image_path).unlink(missing_ok=True)
+                continue
+
+            logger.info(
+                f"聊天室已重新對齊最新訊息 [{source_display or source_name}] "
+                f"(attempt {attempt}/3)"
+            )
+            self._write_trade_journal(
+                "CHAT_RECOVERED",
+                source=source_display,
+                details=f"聊天室重新對齊成功 | attempt={attempt}/3 | 原因={reason}",
+                ocr_text=fresh_raw_text,
+            )
+            return fresh_frame, fresh_raw_text, fresh_text
+
+        return None
 
     def _check_cancel_keywords(self, text: str, source_name: str = "") -> bool:
         """

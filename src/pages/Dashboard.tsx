@@ -4,6 +4,14 @@ import { useTradingStore } from "../stores/tradingStore";
 import { useAuthStore } from "../stores/authStore";
 import { getMaxWindows } from "../lib/auth";
 import { sidecarCommands } from "../hooks/useSidecar";
+import type { DetectedWindow } from "../lib/types";
+import {
+  buildCaptureWindowFromDetected,
+  buildManualCaptureWindow,
+  captureWindowMatchesDetected,
+  getDetectedWindowKey,
+  getCaptureWindowLabel,
+} from "../lib/windows";
 
 export default function Dashboard() {
   const bid = useTradingStore((s) => s.bid);
@@ -14,10 +22,14 @@ export default function Dashboard() {
   const martingale = useTradingStore((s) => s.martingale);
   const stats = useTradingStore((s) => s.stats);
   const isTrading = useTradingStore((s) => s.isTrading);
+  const status = useTradingStore((s) => s.status);
   const setIsTrading = useTradingStore((s) => s.setIsTrading);
   const setStartTime = useTradingStore((s) => s.setStartTime);
+  const setStatus = useTradingStore((s) => s.setStatus);
   const config = useTradingStore((s) => s.config);
   const symbolName = config?.symbol_name || "XAUUSD";
+  const isStarting = status === "starting";
+  const canStop = isStarting || isTrading;
 
   const spread = bid > 0 ? Math.round((ask - bid) * 100) : 0;
   const profitColor = account.profit >= 0 ? "var(--color-profit)" : "var(--color-loss)";
@@ -35,22 +47,23 @@ export default function Dashboard() {
   const winRate = stats.daily_trades > 0 ? ((stats.wins / stats.daily_trades) * 100).toFixed(1) + "%" : "0%";
 
   async function handleStart() {
-    if (isTrading || !config) return;
+    if (isTrading || isStarting || !config) return;
+    setStatus("starting");
     try {
       await sidecarCommands.startTrading(config);
-      setIsTrading(true);
-      setStartTime(Date.now());
     } catch {
+      setStatus("stopped");
       setIsTrading(false);
       setStartTime(null);
     }
   }
 
   async function handleStop() {
-    if (!isTrading) return;
+    if (!canStop) return;
     try {
       await sidecarCommands.stopTrading();
     } finally {
+      setStatus("stopped");
       setIsTrading(false);
       setStartTime(null);
     }
@@ -74,10 +87,18 @@ export default function Dashboard() {
               style={{
                 fontSize: "12px",
                 fontFamily: "var(--font-mono)",
-                color: isTrading ? "var(--color-profit)" : "var(--color-ink-muted)",
+                color: isStarting
+                  ? "var(--color-warning)"
+                  : isTrading
+                    ? "var(--color-profit)"
+                    : "var(--color-ink-muted)",
                 padding: "5px 14px",
                 borderRadius: "20px",
-                background: isTrading ? "var(--color-profit-bg)" : "var(--color-bg-hover)",
+                background: isStarting
+                  ? "var(--color-warning-bg)"
+                  : isTrading
+                    ? "var(--color-profit-bg)"
+                    : "var(--color-bg-hover)",
               }}
             >
               <span
@@ -85,11 +106,15 @@ export default function Dashboard() {
                   width: 6,
                   height: 6,
                   borderRadius: "50%",
-                  background: isTrading ? "var(--color-profit)" : "var(--color-ink-ghost)",
+                  background: isStarting
+                    ? "var(--color-warning)"
+                    : isTrading
+                      ? "var(--color-profit)"
+                      : "var(--color-ink-ghost)",
                   display: "inline-block",
                 }}
               />
-              {isTrading ? S.STATUS_RUNNING : S.STATUS_STOPPED}
+              {isStarting ? S.STATUS_STARTING : isTrading ? S.STATUS_RUNNING : S.STATUS_STOPPED}
             </span>
 
             {/* Price display */}
@@ -127,10 +152,10 @@ export default function Dashboard() {
 
           {/* Buttons */}
           <div className="flex gap-2">
-            <button onClick={handleStart} disabled={isTrading} className="btn-primary" style={{ padding: "9px 20px", fontSize: "12px" }}>
-              {S.BTN_START}
+            <button onClick={handleStart} disabled={isTrading || isStarting || !config} className="btn-primary" style={{ padding: "9px 20px", fontSize: "12px" }}>
+              {isStarting ? S.BTN_STARTING : S.BTN_START}
             </button>
-            <button onClick={handleStop} disabled={!isTrading} className="btn-danger-outline" style={{ padding: "9px 20px" }}>
+            <button onClick={handleStop} disabled={!canStop} className="btn-danger-outline" style={{ padding: "9px 20px" }}>
               {S.BTN_STOP}
             </button>
           </div>
@@ -295,20 +320,38 @@ function CaptureWindowsCard() {
 
   const [showModal, setShowModal] = useState(false);
   const [detecting, setDetecting] = useState(false);
-  const [detectedWindows, setDetectedWindows] = useState<string[]>([]);
+  const [detectedWindows, setDetectedWindows] = useState<DetectedWindow[]>([]);
   const [manualName, setManualName] = useState("");
+  const [previewingKey, setPreviewingKey] = useState<string | null>(null);
+  const [windowPreviews, setWindowPreviews] = useState<Record<string, string>>({});
+  const [previewErrors, setPreviewErrors] = useState<Record<string, string>>({});
 
   if (!config) return null;
   const windows = config.capture_windows ?? [];
 
-  function addWindow(title: string) {
+  function addWindow(target: string | DetectedWindow) {
     if (!config) return;
-    if (windows.some((w) => w.window_name === title)) return;
+    const candidate =
+      typeof target === "string"
+        ? buildManualCaptureWindow(target.trim(), windows.length)
+        : buildCaptureWindowFromDetected(target, windows.length);
+    if (
+      windows.some((w) =>
+        captureWindowMatchesDetected(w, {
+          window_id: candidate.window_id,
+          window_name: candidate.window_name,
+          owner: candidate.app_name,
+          label: candidate.display_name || candidate.window_name,
+        }),
+      )
+    ) {
+      return;
+    }
     if (windows.length >= maxWindows) {
       alert(`您的方案最多可監控 ${maxWindows} 個群組，請升級方案。`);
       return;
     }
-    const newWindows = [...windows, { window_name: title, app_name: "LINE", name: `win_${windows.length}` }];
+    const newWindows = [...windows, candidate];
     const updated = { ...config, capture_windows: newWindows };
     setConfig(updated as import("../lib/types").TradingConfig);
   }
@@ -324,11 +367,29 @@ function CaptureWindowsCard() {
     setShowModal(true);
     setDetecting(true);
     setDetectedWindows([]);
+    setPreviewingKey(null);
+    setWindowPreviews({});
+    setPreviewErrors({});
     try {
       const res = await sidecarCommands.detectWindows();
       setDetectedWindows(res.windows ?? []);
     } catch { /* empty */ } finally {
       setDetecting(false);
+    }
+  }
+
+  async function previewWindow(target: DetectedWindow) {
+    const key = getDetectedWindowKey(target);
+    setPreviewingKey(key);
+    setPreviewErrors((prev) => ({ ...prev, [key]: "" }));
+    try {
+      const res = await sidecarCommands.previewWindow(target);
+      setWindowPreviews((prev) => ({ ...prev, [key]: res.data_url }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "無法取得預覽";
+      setPreviewErrors((prev) => ({ ...prev, [key]: message }));
+    } finally {
+      setPreviewingKey((prev) => (prev === key ? null : prev));
     }
   }
 
@@ -354,7 +415,7 @@ function CaptureWindowsCard() {
               style={{ padding: "10px 14px", fontSize: "13px", borderBottom: i < windows.length - 1 ? "1px solid var(--border-hairline)" : undefined }}>
               <div className="flex items-center gap-3">
                 <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--color-profit)", display: "inline-block" }} />
-                <span style={{ color: "var(--color-ink-light)" }}>{w.window_name}</span>
+                <span style={{ color: "var(--color-ink-light)" }}>{getCaptureWindowLabel(w)}</span>
               </div>
               <button onClick={() => removeWindow(i)}
                 style={{ background: "none", border: "none", color: "var(--color-loss)", cursor: "pointer", fontSize: "14px" }}>
@@ -392,15 +453,50 @@ function CaptureWindowsCard() {
               ) : (
                 <>
                   <div style={{ padding: "4px 20px 8px", fontSize: "11px", color: "var(--color-ink-ghost)" }}>偵測到 {detectedWindows.length} 個視窗</div>
-                  {detectedWindows.map((title, i) => {
-                    const already = windows.some((w) => w.window_name === title);
+                  {detectedWindows.map((detected, i) => {
+                    const already = windows.some((w) => captureWindowMatchesDetected(w, detected));
+                    const key = getDetectedWindowKey(detected);
+                    const preview = windowPreviews[key];
+                    const previewError = previewErrors[key];
+                    const isPreviewing = previewingKey === key;
                     return (
-                      <div key={i} onClick={() => { if (!already) addWindow(title); }}
-                        style={{ padding: "9px 20px", fontSize: "13px", cursor: already ? "default" : "pointer", opacity: already ? 0.4 : 1, color: "var(--color-ink-light)" }}
-                        onMouseEnter={(e) => { if (!already) e.currentTarget.style.background = "rgba(255,255,255,0.04)"; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
-                        <span>{title}</span>
-                        {already && <span style={{ marginLeft: "8px", fontSize: "11px", color: "var(--color-ink-ghost)" }}>已加入</span>}
+                      <div key={key}
+                        style={{ padding: "9px 20px", fontSize: "13px", opacity: already ? 0.65 : 1, color: "var(--color-ink-light)", borderTop: i === 0 ? "1px solid transparent" : undefined }}>
+                        <div className="flex items-center justify-between gap-3">
+                          <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{detected.label}</span>
+                          <div className="flex items-center gap-2" style={{ flexShrink: 0 }}>
+                            <button
+                              onClick={() => { void previewWindow(detected); }}
+                              className="btn-outline"
+                              style={{ padding: "4px 10px", fontSize: "11px" }}
+                            >
+                              {isPreviewing ? "讀取中..." : preview ? "重看" : "預覽"}
+                            </button>
+                            {already ? (
+                              <span style={{ fontSize: "11px", color: "var(--color-ink-ghost)" }}>已加入</span>
+                            ) : (
+                              <button
+                                onClick={() => addWindow(detected)}
+                                className="btn-outline"
+                                style={{ padding: "4px 10px", fontSize: "11px", color: "var(--color-teal)", borderColor: "rgba(114, 214, 194, 0.35)" }}
+                              >
+                                加入
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        {preview && (
+                          <div style={{ marginTop: "10px", padding: "10px", borderRadius: "8px", background: "rgba(255,255,255,0.03)", border: "1px solid var(--border-hairline)" }}>
+                            <img
+                              src={preview}
+                              alt={detected.label}
+                              style={{ width: "100%", maxHeight: "220px", objectFit: "contain", borderRadius: "6px", display: "block" }}
+                            />
+                          </div>
+                        )}
+                        {!preview && previewError && (
+                          <div style={{ marginTop: "8px", fontSize: "11px", color: "var(--color-loss)" }}>{previewError}</div>
+                        )}
                       </div>
                     );
                   })}

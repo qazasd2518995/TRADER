@@ -9,6 +9,11 @@ import logging
 from pathlib import Path
 from typing import Callable, Optional
 
+try:
+    from copy_trader.config import DEFAULT_SYMBOL
+except ModuleNotFoundError:
+    from config import DEFAULT_SYMBOL
+
 logger = logging.getLogger(__name__)
 
 
@@ -18,10 +23,10 @@ class MT5DataReader:
     Intervals: price 2s, account/positions/orders 5s, history 10s.
     """
 
-    def __init__(self, mt5_dir: str, emit: Callable[[str, object], None], symbol_name: str = "XAUUSD.s"):
+    def __init__(self, mt5_dir: str, emit: Callable[[str, object], None], symbol_name: str = DEFAULT_SYMBOL):
         self._mt5_dir = Path(mt5_dir)
         self._emit = emit  # emit(event_name, data)
-        self._symbol_name = symbol_name or "XAUUSD.s"
+        self._symbol_name = symbol_name or DEFAULT_SYMBOL
         self._running = False
         self._last_connection_state: Optional[bool] = None
 
@@ -29,13 +34,13 @@ class MT5DataReader:
         self._mt5_dir = Path(mt5_dir)
 
     def set_symbol_name(self, symbol_name: str):
-        self._symbol_name = symbol_name or "XAUUSD.s"
+        self._symbol_name = symbol_name or DEFAULT_SYMBOL
 
     def _price_filenames(self) -> list[str]:
         candidates = []
         if self._symbol_name:
             candidates.append(f"{self._symbol_name}_price.json")
-        candidates.append("XAUUSD_price.json")
+        candidates.append(f"{DEFAULT_SYMBOL}_price.json")
         return list(dict.fromkeys(candidates))
 
     def _read_json(self, filename: str) -> dict:

@@ -52,7 +52,7 @@ except Exception:
 
 a = Analysis(
     ['copy_trader/sidecar_main.py'],
-    pathex=['copy_trader'],
+    pathex=['.'],
     binaries=[],
     datas=[
         ('mt5_ea/MT5_File_Bridge_Enhanced.mq5', 'mt5_ea'),
@@ -71,17 +71,18 @@ a = Analysis(
         'anyio', 'anyio._backends', 'anyio._backends._asyncio',
         'sniffio', 'distro', 'h11',
         # Auth
-        'boto3', 'botocore', 'bcrypt', 'auth_handler',
+        'boto3', 'botocore', 'bcrypt', 'copy_trader.auth_handler',
         # copy_trader 內部模組
-        'config', 'app', 'mt5_reader',
-        'signal_capture', 'signal_capture.screen_capture', 'signal_capture.ocr',
-        'signal_capture.bubble_detector',
-        'signal_parser', 'signal_parser.keyword_filter', 'signal_parser.groq_parser',
-        'signal_parser.groq_vision_parser', 'signal_parser.gemini_vision_parser',
+        'copy_trader.config', 'copy_trader.app', 'copy_trader.mt5_reader',
+        'copy_trader.platform', 'copy_trader.platform.base', 'copy_trader.platform.macos',
+        'copy_trader.signal_capture', 'copy_trader.signal_capture.screen_capture', 'copy_trader.signal_capture.ocr',
+        'copy_trader.signal_capture.bubble_detector',
+        'copy_trader.signal_parser', 'copy_trader.signal_parser.keyword_filter', 'copy_trader.signal_parser.groq_parser',
+        'copy_trader.signal_parser.groq_vision_parser', 'copy_trader.signal_parser.gemini_vision_parser',
         # google-genai SDK
         'google.genai', 'google.genai.types',
-        'signal_parser.parser', 'signal_parser.prompts', 'signal_parser.regex_parser',
-        'trade_manager', 'trade_manager.manager',
+        'copy_trader.signal_parser.parser', 'copy_trader.signal_parser.prompts', 'copy_trader.signal_parser.regex_parser',
+        'copy_trader.trade_manager', 'copy_trader.trade_manager.manager',
     ] + rapid_hidden,
     hookspath=[],
     runtime_hooks=[],

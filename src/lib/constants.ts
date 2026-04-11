@@ -17,6 +17,7 @@ export const S = {
 
   // Buttons
   BTN_START: "開始交易",
+  BTN_STARTING: "啟動中...",
   BTN_STOP: "停止交易",
   BTN_SAVE: "儲存設定",
   BTN_RESET_DEFAULTS: "恢復預設",
@@ -33,6 +34,7 @@ export const S = {
   BTN_RESET: "重置",
 
   // Status
+  STATUS_STARTING: "啟動中",
   STATUS_RUNNING: "運行中",
   STATUS_STOPPED: "已停止",
   STATUS_ERROR: "錯誤",

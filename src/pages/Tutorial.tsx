@@ -5,7 +5,7 @@ export default function Tutorial() {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const dest = await invoke("download_ea") as string;
-      alert(`EA 檔案已儲存至：${dest}`);
+      alert(`橋接 EA（MT5_File_Bridge_Enhanced.mq5）已儲存至：${dest}`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes("not a function") || msg.includes("invoke")) {
@@ -55,11 +55,11 @@ export default function Tutorial() {
 
           <h2>步驟二：安裝 EA（專家顧問）</h2>
           <ol>
-            <li>點擊上方「下載 EA 檔案」按鈕，將 <code>.mq5</code> 檔案儲存到電腦</li>
+            <li>點擊上方「下載 EA 檔案」按鈕，下載橋接 EA <code>MT5_File_Bridge_Enhanced.mq5</code></li>
             <li>在 MT5 中開啟 <b>MetaEditor</b>（按 F4 或點選工具列圖示）</li>
-            <li>將 <code>.mq5</code> 檔案複製到 <code>MQL5/Experts/</code> 資料夾</li>
+            <li>將 <code>MT5_File_Bridge_Enhanced.mq5</code> 複製到 <code>MQL5/Experts/</code> 資料夾</li>
             <li>在 MetaEditor 中按 <b>F7</b> 編譯</li>
-            <li>回到 MT5 主視窗，在「導航」面板找到編譯好的 EA</li>
+            <li>回到 MT5 主視窗，在「導航」面板找到編譯好的 <code>MT5_File_Bridge_Enhanced</code></li>
           </ol>
 
           <h2>步驟三：掛載 EA 到圖表</h2>

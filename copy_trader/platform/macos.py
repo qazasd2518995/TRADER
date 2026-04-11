@@ -5,7 +5,9 @@ Requires: pyobjc-framework-Quartz, pyobjc-framework-Cocoa
 System permissions: Screen Recording, Accessibility
 """
 import glob
+import json
 import logging
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -49,6 +51,53 @@ try:
 except ImportError:
     APPKIT_AVAILABLE = False
 
+try:
+    from ApplicationServices import (
+        AXIsProcessTrusted,
+        AXIsProcessTrustedWithOptions,
+        kAXTrustedCheckOptionPrompt,
+    )
+    ACCESSIBILITY_AVAILABLE = True
+except ImportError:
+    ACCESSIBILITY_AVAILABLE = False
+
+
+def get_macos_permission_status(prompt: bool = False) -> dict:
+    """Check macOS capture/accessibility permissions and optionally prompt."""
+    status = {
+        "screen_recording": None,
+        "accessibility": None,
+    }
+
+    if not QUARTZ_AVAILABLE:
+        return status
+
+    try:
+        status["screen_recording"] = bool(Quartz.CGPreflightScreenCaptureAccess())
+    except Exception as e:
+        logger.debug(f"Unable to preflight screen recording access: {e}")
+
+    if prompt and status["screen_recording"] is False:
+        try:
+            request_fn = getattr(Quartz, "CGRequestScreenCaptureAccess", None)
+            if callable(request_fn):
+                status["screen_recording"] = bool(request_fn())
+        except Exception as e:
+            logger.debug(f"Unable to request screen recording access: {e}")
+
+    if ACCESSIBILITY_AVAILABLE:
+        try:
+            if prompt:
+                status["accessibility"] = bool(
+                    AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: True})
+                )
+            else:
+                status["accessibility"] = bool(AXIsProcessTrusted())
+        except Exception as e:
+            logger.debug(f"Unable to check accessibility access: {e}")
+
+    return status
+
 
 def _cgimage_to_pil(cg_image) -> Optional[Image.Image]:
     """Convert a Quartz CGImage to a PIL Image.
@@ -89,20 +138,99 @@ def _cgimage_to_pil(cg_image) -> Optional[Image.Image]:
 class MacScreenCapture(ScreenCaptureBase):
     """macOS screen capture using Quartz CGWindowList APIs."""
 
+    @staticmethod
+    def _list_process_windows_via_jxa(owner_name: str) -> List[dict]:
+        """Best-effort fallback: ask System Events for per-window titles and bounds."""
+        if not owner_name:
+            return []
+
+        script = f"""
+const owner = {json.dumps(owner_name)};
+const se = Application("System Events");
+function safeCall(fn, fallback) {{
+  try {{
+    return fn();
+  }} catch (e) {{
+    return fallback;
+  }}
+}}
+const proc = safeCall(() => se.processes.byName(owner), null);
+const windows = proc ? safeCall(() => proc.windows(), []) : [];
+const out = [];
+for (let i = 0; i < windows.length; i += 1) {{
+  const win = windows[i];
+  const title = safeCall(() => win.name(), "") || "";
+  const position = safeCall(() => win.position(), [0, 0]) || [0, 0];
+  const size = safeCall(() => win.size(), [0, 0]) || [0, 0];
+  out.push({{
+    title: title,
+    x: Number(position[0] || 0),
+    y: Number(position[1] || 0),
+    width: Number(size[0] || 0),
+    height: Number(size[1] || 0),
+  }});
+}}
+JSON.stringify(out);
+"""
+        try:
+            completed = subprocess.run(
+                ["osascript", "-l", "JavaScript", "-e", script],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            if completed.returncode != 0:
+                return []
+            payload = completed.stdout.strip()
+            if not payload:
+                return []
+            data = json.loads(payload)
+            return data if isinstance(data, list) else []
+        except Exception as e:
+            logger.debug(f"JXA window lookup failed for {owner_name}: {e}")
+            return []
+
+    @staticmethod
+    def _match_title_by_bounds(bounds: tuple, window_meta: List[dict]) -> str:
+        if not window_meta:
+            return ""
+
+        x, y, width, height = bounds
+        best_title = ""
+        best_score = None
+        for item in window_meta:
+            score = (
+                abs(int(item.get("x", 0)) - x)
+                + abs(int(item.get("y", 0)) - y)
+                + abs(int(item.get("width", 0)) - width)
+                + abs(int(item.get("height", 0)) - height)
+            )
+            if best_score is None or score < best_score:
+                best_score = score
+                best_title = str(item.get("title", "") or "").strip()
+
+        if best_score is not None and best_score <= 80:
+            return best_title
+        return ""
+
     def enumerate_windows(self, title_filter: str = "") -> List[WindowInfo]:
         if not QUARTZ_AVAILABLE:
             return []
 
         window_list = CGWindowListCopyWindowInfo(
-            kCGWindowListOptionOnScreenOnly, kCGNullWindowID
+            kCGWindowListOptionAll, kCGNullWindowID
         )
         if window_list is None:
             return []
 
+        candidates = []
+        owners_needing_fallback = set()
+        lowered_filter = title_filter.lower()
         result = []
         for win in window_list:
-            owner = win.get("kCGWindowOwnerName", "")
-            title = win.get("kCGWindowName", "")
+            owner = str(win.get("kCGWindowOwnerName", "") or "").strip()
+            title = str(win.get("kCGWindowName", "") or "").strip()
             layer = win.get("kCGWindowLayer", -1)
             wid = win.get("kCGWindowNumber", 0)
             pid = win.get("kCGWindowOwnerPID", 0)
@@ -111,11 +239,7 @@ class MacScreenCapture(ScreenCaptureBase):
             if layer != 0:
                 continue
 
-            display_title = title or owner
-            if not display_title:
-                continue
-
-            if title_filter and title_filter.lower() not in display_title.lower():
+            if not owner and not title:
                 continue
 
             bounds = win.get("kCGWindowBounds", {})
@@ -123,16 +247,51 @@ class MacScreenCapture(ScreenCaptureBase):
             y = int(bounds.get("Y", 0))
             w = int(bounds.get("Width", 0))
             h = int(bounds.get("Height", 0))
+            if w <= 0 or h <= 0:
+                continue
+
+            if not title or title.lower() == owner.lower():
+                if owner:
+                    owners_needing_fallback.add(owner)
+
+            candidates.append({
+                "window_id": wid,
+                "title": title,
+                "owner": owner,
+                "pid": pid,
+                "bounds": (x, y, w, h),
+            })
+
+        fallback_titles = {
+            owner: self._list_process_windows_via_jxa(owner)
+            for owner in owners_needing_fallback
+        }
+
+        for item in candidates:
+            owner = item["owner"]
+            title = item["title"]
+            bounds = item["bounds"]
+            resolved_title = title or owner
+
+            if not title or title.lower() == owner.lower():
+                fallback_title = self._match_title_by_bounds(bounds, fallback_titles.get(owner, []))
+                if fallback_title:
+                    resolved_title = fallback_title
+
+            haystacks = [resolved_title.lower(), owner.lower()]
+            if lowered_filter and not any(lowered_filter in haystack for haystack in haystacks):
+                continue
 
             result.append(WindowInfo(
-                window_id=wid,
-                title=display_title,
+                window_id=item["window_id"],
+                title=resolved_title,
                 owner_name=owner,
-                bounds=(x, y, w, h),
+                bounds=bounds,
                 is_visible=True,
-                pid=pid,
+                pid=item["pid"],
             ))
 
+        result.sort(key=lambda w: ((w.owner_name or "").lower(), (w.title or "").lower(), w.bounds[1], w.bounds[0]))
         return result
 
     def capture_window(self, window_id: int) -> Optional[Image.Image]:

@@ -75,6 +75,7 @@ fn poll_rpc_response(
 
 #[tauri::command]
 fn download_ea(state: tauri::State<ResourceDir>) -> Result<String, String> {
+    const EA_FILENAME: &str = "MT5_File_Bridge_Enhanced.mq5";
     let search_dirs = [
         state.0.join("_up_/mt5_ea"),
         state.0.join("mt5_ea"),
@@ -84,18 +85,15 @@ fn download_ea(state: tauri::State<ResourceDir>) -> Result<String, String> {
         if !dir.exists() {
             continue;
         }
-        for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "mq5") {
-                let desktop = dirs::desktop_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-                let dest = desktop.join(path.file_name().unwrap());
-                std::fs::copy(&path, &dest).map_err(|e| e.to_string())?;
-                return Ok(dest.to_string_lossy().to_string());
-            }
+        let path = dir.join(EA_FILENAME);
+        if path.exists() {
+            let desktop = dirs::desktop_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+            let dest = desktop.join(EA_FILENAME);
+            std::fs::copy(&path, &dest).map_err(|e| e.to_string())?;
+            return Ok(dest.to_string_lossy().to_string());
         }
     }
-    Err("EA file not found in resources".into())
+    Err(format!("{EA_FILENAME} not found in resources"))
 }
 
 fn spawn_sidecar(app: &AppHandle) {

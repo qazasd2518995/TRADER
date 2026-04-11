@@ -70,6 +70,28 @@ export interface CaptureWindow {
   window_name: string;
   app_name: string;
   name: string;
+  window_id?: number | null;
+  display_name?: string;
+}
+
+export interface DetectedWindow {
+  window_id?: number | null;
+  window_name: string;
+  owner: string;
+  label: string;
+  bounds?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+}
+
+export interface WindowPreview {
+  data_url: string;
+  width: number;
+  height: number;
+  window_id?: number | null;
 }
 
 export interface TradingConfig {

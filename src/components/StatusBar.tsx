@@ -15,10 +15,12 @@ export default function StatusBar() {
   const bid = useTradingStore((s) => s.bid);
   const ask = useTradingStore((s) => s.ask);
   const isTrading = useTradingStore((s) => s.isTrading);
+  const status = useTradingStore((s) => s.status);
   const startTime = useTradingStore((s) => s.startTime);
   const martingale = useTradingStore((s) => s.martingale);
   const lastDataTime = useTradingStore((s) => s.lastDataTime);
   const symbolName = useTradingStore((s) => s.config?.symbol_name || "XAUUSD");
+  const isStarting = status === "starting";
 
   const [now, setNow] = useState(Date.now());
 
@@ -42,6 +44,21 @@ export default function StatusBar() {
       heartbeatColor = "var(--color-loss)";
     }
   }
+
+  const tradingLabel = isStarting
+    ? S.STATUS_STARTING
+    : isTrading
+      ? S.STATUS_RUNNING
+      : status === "error"
+        ? S.STATUS_ERROR
+        : S.STATUS_STOPPED;
+  const tradingColor = isStarting
+    ? "var(--color-warning)"
+    : isTrading
+      ? "var(--color-profit)"
+      : status === "error"
+        ? "var(--color-loss)"
+        : "var(--color-ink-ghost)";
 
   return (
     <div
@@ -102,8 +119,8 @@ export default function StatusBar() {
       <div className="flex-1" />
 
       {/* Status */}
-      <span style={{ color: isTrading ? "var(--color-profit)" : "var(--color-ink-ghost)" }}>
-        {isTrading ? S.STATUS_RUNNING : S.STATUS_STOPPED}
+      <span style={{ color: tradingColor }}>
+        {tradingLabel}
       </span>
 
       <span style={{ color: "var(--color-ink-ghost)" }}>/</span>
