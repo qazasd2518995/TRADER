@@ -42,6 +42,12 @@ try:
 except Exception:
     _win32gui = None
 
+# 虛擬桌面 helper — 只在 Windows 平台有值
+try:
+    from copy_trader.platform.windows import get_virtual_desktop_manager as _get_vdm  # type: ignore
+except Exception:
+    _get_vdm = None
+
 
 # ----- 未讀數 regex -----
 # LINE 視窗標題樣式（實際格式尚待 Windows 實機驗證；此處涵蓋常見變體）：
@@ -264,8 +270,20 @@ class ClipboardReaderService:
         last_unread = self._last_unread.get(w.name, None)
 
         # 1. 首次 → 必定觸發（要建 baseline）
+        #    注意：baseline 忽略虛擬桌面判斷，因為若歷史訊息沒被 mark_seen，
+        #    使用者切到 LINE 桌面的第一瞬間會把全部歷史訊息當新訊號觸發下單。
+        #    Baseline 只有在程式啟動時發生一次，接受短暫跨桌面 focus。
         if w.name not in self._baselined:
             return True, "first_baseline", title, unread
+
+        # 0. 若 LINE 在另一個虛擬桌面 → 完全跳過，避免把使用者拉過去
+        #    之後使用者切回 LINE 所在桌面時會自動恢復
+        if _get_vdm is not None:
+            try:
+                if not _get_vdm().is_window_on_current_desktop(hwnd):
+                    return False, "other_virtual_desktop", title, unread
+            except Exception:
+                pass
 
         # 2. 未讀數有變化 → 強觸發
         #    這裡要小心：LINE 自己聚焦的群 unread 會一直是 None，這時 fall through 到規則 3

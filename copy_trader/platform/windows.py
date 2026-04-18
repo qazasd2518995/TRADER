@@ -360,6 +360,143 @@ class WindowsPlatformConfig(PlatformConfigBase):
         return None
 
 
+# ==================================================================
+# Virtual Desktop awareness (Windows 10/11)
+# ==================================================================
+# 目的：判斷 LINE 視窗是否在使用者當前的虛擬桌面。
+# 若 LINE 在別的桌面，抢焦點的 SetForegroundWindow 會把使用者整個拉過去，
+# 非常打擾。有了這個判斷，我們就能在 LINE 不在當前桌面時直接跳過複製。
+#
+# 使用者推薦設定：
+#   1. Win+Ctrl+D 建立桌面 2
+#   2. 把 LINE Desktop 拖到桌面 2
+#   3. 平常在桌面 1 工作 → 完全零打擾
+#   4. 偶爾 Win+Ctrl+→ 切去桌面 2 → 複製正常運作
+#
+# API 來源：shobjidl_core.h 的 IVirtualDesktopManager COM 介面
+# CLSID = {aa509086-5ca9-4c25-8f95-589d3c07b48a}
+# IID   = {a5cd92ff-29be-454c-8d04-d82879fb3f1b}
+
+_HRESULT = ctypes.c_long
+_HWND = ctypes.c_void_p
+
+
+class _GUID(ctypes.Structure):
+    _fields_ = [
+        ("Data1", ctypes.c_ulong),
+        ("Data2", ctypes.c_ushort),
+        ("Data3", ctypes.c_ushort),
+        ("Data4", ctypes.c_ubyte * 8),
+    ]
+
+    @classmethod
+    def from_string(cls, s: str) -> "_GUID":
+        """Build a GUID from '{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}'."""
+        g = cls()
+        s = s.strip().strip("{}")
+        parts = s.split("-")
+        g.Data1 = int(parts[0], 16)
+        g.Data2 = int(parts[1], 16)
+        g.Data3 = int(parts[2], 16)
+        d4 = bytes.fromhex(parts[3] + parts[4])
+        for i in range(8):
+            g.Data4[i] = d4[i]
+        return g
+
+
+class WindowsVirtualDesktop:
+    """
+    Thin wrapper around IVirtualDesktopManager::IsWindowOnCurrentVirtualDesktop.
+    All failures degrade gracefully (returns True = "assume visible") so that
+    the rest of the app keeps working on non-Win10+ environments.
+    """
+
+    CLSID = "{aa509086-5ca9-4c25-8f95-589d3c07b48a}"
+    IID = "{a5cd92ff-29be-454c-8d04-d82879fb3f1b}"
+
+    CLSCTX_ALL = 23
+    COINIT_APARTMENTTHREADED = 0x2
+    RPC_E_CHANGED_MODE = -2147417850
+
+    def __init__(self):
+        self._manager_ptr = ctypes.c_void_p()
+        self._is_window_on_current = None  # will hold a callable
+        self._initialised = False
+        self._init_ok = False
+        self._init_error: Optional[str] = None
+
+    def _ensure_inited(self) -> bool:
+        if self._initialised:
+            return self._init_ok
+        self._initialised = True
+        try:
+            ole32 = ctypes.windll.ole32
+            # CoInitializeEx — ignore already-inited / mode-change errors.
+            hr = ole32.CoInitializeEx(None, self.COINIT_APARTMENTTHREADED)
+            if hr != 0 and hr != 1 and hr != self.RPC_E_CHANGED_MODE:
+                # S_OK=0, S_FALSE=1 (already initialised) are fine.
+                self._init_error = f"CoInitializeEx hr=0x{hr & 0xFFFFFFFF:08x}"
+                # Keep going — CoCreateInstance might still work.
+
+            clsid = _GUID.from_string(self.CLSID)
+            iid = _GUID.from_string(self.IID)
+            hr = ole32.CoCreateInstance(
+                ctypes.byref(clsid), None, self.CLSCTX_ALL,
+                ctypes.byref(iid), ctypes.byref(self._manager_ptr),
+            )
+            if hr != 0 or not self._manager_ptr.value:
+                self._init_error = f"CoCreateInstance hr=0x{hr & 0xFFFFFFFF:08x}"
+                return False
+
+            # vtable[0..2] are IUnknown; IVirtualDesktopManager adds:
+            #   vtable[3] = IsWindowOnCurrentVirtualDesktop(HWND, BOOL*)
+            #   vtable[4] = GetWindowDesktopId(HWND, GUID*)
+            #   vtable[5] = MoveWindowToDesktop(HWND, REFGUID)
+            vtable_ptr = ctypes.cast(self._manager_ptr, ctypes.POINTER(ctypes.c_void_p))[0]
+            vtable = ctypes.cast(vtable_ptr, ctypes.POINTER(ctypes.c_void_p))
+
+            proto = ctypes.WINFUNCTYPE(_HRESULT, ctypes.c_void_p, _HWND, ctypes.POINTER(ctypes.c_int))
+            self._is_window_on_current = proto(vtable[3])
+            self._init_ok = True
+            return True
+        except Exception as e:
+            self._init_error = f"init exception: {e}"
+            return False
+
+    def is_window_on_current_desktop(self, hwnd: int) -> bool:
+        """
+        Returns True if ``hwnd`` is on the active virtual desktop,
+        OR if we can't determine (fail-open so the app still works on
+        Win7/older or when COM is uncooperative).
+        """
+        if not hwnd:
+            return True
+        if not self._ensure_inited():
+            return True  # fail-open
+        try:
+            out = ctypes.c_int(0)
+            hr = self._is_window_on_current(self._manager_ptr, hwnd, ctypes.byref(out))
+            if hr != 0:
+                # Common: hr=0x8002802B (TYPE_E_ELEMENTNOTFOUND) when window is
+                # pinned/on no desktop. Treat as visible to avoid false skips.
+                return True
+            return bool(out.value)
+        except Exception as e:
+            logger.debug(f"IsWindowOnCurrentVirtualDesktop failed: {e}")
+            return True
+
+
+# Singleton — we only need one manager per process.
+_vdm_singleton: Optional[WindowsVirtualDesktop] = None
+
+
+def get_virtual_desktop_manager() -> WindowsVirtualDesktop:
+    global _vdm_singleton
+    if _vdm_singleton is None:
+        _vdm_singleton = WindowsVirtualDesktop()
+    return _vdm_singleton
+
+
 # --- SendInput structures (more reliable than keybd_event on CEF windows) ---
 # Microsoft Learn 文件標示 keybd_event 為 "Superseded"，在 Windows 10/11 對
 # Electron/CEF 應用（LINE Desktop、Discord 等）的成功率明顯較差；改用 SendInput
@@ -673,6 +810,10 @@ class WindowsClipboardControl(ClipboardControlBase):
     # ---------------- Main API ----------------
 
     def copy_chat_tail(self, window_id: int, screens: int = 2) -> str:
+        """
+        呼叫者（ClipboardReaderService._should_copy）已負責虛擬桌面判斷；
+        本方法不再重複檢查，以免 baseline 一次性複製被誤擋。
+        """
         if not WIN32_AVAILABLE or not WIN32_CLIPBOARD_AVAILABLE:
             logger.error("win32 stack not available for clipboard copy")
             return ""

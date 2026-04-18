@@ -116,6 +116,10 @@ class CopyTrader:
                     f"Clipboard reader initialized for {len(cb_windows)} window(s), "
                     f"stale_seconds={self.clipboard_service.stale_seconds:.0f}"
                 )
+                logger.info(
+                    "💡 想完全零打擾？把 LINE 拖到另一個虛擬桌面 (Win+Ctrl+D 建立)，"
+                    "本程式偵測到 LINE 不在當前桌面時會自動跳過複製。"
+                )
         except Exception as e:
             logger.warning(f"Clipboard reader init failed: {e}")
 
