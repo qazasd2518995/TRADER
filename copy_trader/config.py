@@ -110,14 +110,20 @@ class CaptureWindow:
 class Config:
     """Copy Trader configuration."""
 
-    # Signal Source
-    signal_source: str = "screen_ocr"
+    # Signal Source — "clipboard" (LINE 全選複製) / "screen_ocr" (舊方案)
+    # clipboard 是主要管道，OCR 目前保留為手動切換的備援。
+    signal_source: str = "clipboard"
 
     # Screen Capture Settings
     capture_mode: str = "window"  # "region" or "window"
     capture_regions: List[CaptureRegion] = field(default_factory=list)
     capture_windows: List[CaptureWindow] = field(default_factory=list)
     capture_interval: float = 1.0
+
+    # Clipboard Capture Settings
+    clipboard_screens: int = 2   # Shift+PgUp 次數 — 要讀幾屏
+    clipboard_min_interval: float = 0.7  # 兩次剪貼板採集之間最小間隔（秒）
+    clipboard_stale_seconds: float = 10.0  # 未讀數沒變化時，最久幾秒做一次兜底複製
 
     # Parser Settings (hardcoded — Gemini > Groq > Regex fallback chain)
     parser_mode: str = "regex"
@@ -266,6 +272,9 @@ def save_config(config: Config, path: Path = CONFIG_FILE):
             for r in config.capture_regions
         ],
         "capture_interval": config.capture_interval,
+        "clipboard_screens": config.clipboard_screens,
+        "clipboard_min_interval": config.clipboard_min_interval,
+        "clipboard_stale_seconds": config.clipboard_stale_seconds,
         "auto_execute": config.auto_execute,
         "default_lot_size": config.default_lot_size,
         "symbol_name": config.symbol_name,

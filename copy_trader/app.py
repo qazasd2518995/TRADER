@@ -25,7 +25,14 @@ if _parent_dir not in sys.path:
     sys.path.insert(0, _parent_dir)
 
 from config import Config, CaptureRegion, CaptureWindow, load_config, DATA_DIR, DEFAULT_SYMBOL
-from signal_capture import ScreenCaptureService, CaptureWindow as SCWindow, OCRService
+from signal_capture import (
+    ScreenCaptureService,
+    CaptureWindow as SCWindow,
+    OCRService,
+    ClipboardReaderService,
+    ClipboardWindow,
+    LineMessage,
+)
 from signal_parser import RegexSignalParser
 from signal_parser.keyword_filter import is_potential_signal, extract_quick_info
 from signal_parser.gemini_vision_parser import GeminiVisionParser
@@ -86,6 +93,31 @@ class CopyTrader:
             self.capture_service = ScreenCaptureService(regions=regions)
             logger.info(f"Using region capture mode: {len(regions)} regions")
         self.ocr_service = OCRService()
+
+        # === Clipboard reader (primary signal path) ===
+        self.clipboard_service = None
+        try:
+            cb_windows = [
+                ClipboardWindow(
+                    name=w.name,
+                    window_name=w.window_name,
+                    display_name=_capture_window_label(w),
+                    window_id=getattr(w, "window_id", None),
+                    screens=int(getattr(config, "clipboard_screens", 2) or 2),
+                )
+                for w in (config.capture_windows or [])
+            ]
+            if cb_windows:
+                self.clipboard_service = ClipboardReaderService(
+                    cb_windows,
+                    stale_seconds=float(getattr(config, "clipboard_stale_seconds", 10.0) or 10.0),
+                )
+                logger.info(
+                    f"Clipboard reader initialized for {len(cb_windows)} window(s), "
+                    f"stale_seconds={self.clipboard_service.stale_seconds:.0f}"
+                )
+        except Exception as e:
+            logger.warning(f"Clipboard reader init failed: {e}")
 
         # === 3-tier Vision fallback chain: Gemini → Groq → Regex ===
         self.gemini_parser = None
@@ -209,31 +241,37 @@ class CopyTrader:
         self._startup_baseline = True  # First cycle = baseline only, don't trade
         logger.info("Copy Trader running. Press Ctrl+C to stop.")
 
-        # First cycle: capture baseline (record current screen state as "already seen")
-        # This prevents old signals on screen from being treated as new
-        logger.info("Building baseline from current screen (skipping existing signals)...")
-        try:
-            frames = self.capture_service.capture_all_regions(deduplicate=False)
-            for frame in frames:
-                text = self.ocr_service.extract_newest_bubble_text(frame.image_path)
-                if text and len(text.strip()) >= 10:
-                    text_hash = self._compute_text_hash(text)
-                    self._add_hash_with_ttl(text_hash, self.config.signal_dedup_minutes * 60)
-                    self._recent_ocr_texts.append(text)
-                    # Also try to parse and mark as processed
-                    signal = self.signal_parser.parse_latest(text)
-                    if signal.is_valid and signal.stop_loss and signal.take_profit:
-                        key = str(self._signal_key(signal))
-                        self._processed_signals.add(key)
-                        logger.info(f"Baseline: marked as seen: {signal}")
-                Path(frame.image_path).unlink(missing_ok=True)
-            logger.info(f"Baseline complete: {len(self._processed_signals)} signals, {len(self._processed_hashes)} hashes")
-        except Exception as e:
-            logger.warning(f"Baseline scan failed: {e}")
+        # Build baseline — skip old signals already on screen so they don't trigger new orders.
+        # Clipboard path does its own baseline inside ClipboardReaderService (first _capture_one).
+        if self._use_clipboard_path():
+            logger.info("Clipboard path: baseline will be built on first capture cycle")
+        else:
+            logger.info("Building OCR baseline from current screen (skipping existing signals)...")
+            try:
+                frames = self.capture_service.capture_all_regions(deduplicate=False)
+                for frame in frames:
+                    text = self.ocr_service.extract_newest_bubble_text(frame.image_path)
+                    if text and len(text.strip()) >= 10:
+                        text_hash = self._compute_text_hash(text)
+                        self._add_hash_with_ttl(text_hash, self.config.signal_dedup_minutes * 60)
+                        self._recent_ocr_texts.append(text)
+                        # Also try to parse and mark as processed
+                        signal = self.signal_parser.parse_latest(text)
+                        if signal.is_valid and signal.stop_loss and signal.take_profit:
+                            key = str(self._signal_key(signal))
+                            self._processed_signals.add(key)
+                            logger.info(f"Baseline: marked as seen: {signal}")
+                    Path(frame.image_path).unlink(missing_ok=True)
+                logger.info(f"Baseline complete: {len(self._processed_signals)} signals, {len(self._processed_hashes)} hashes")
+            except Exception as e:
+                logger.warning(f"Baseline scan failed: {e}")
 
         while self._running:
             try:
-                had_frames = await self._process_cycle()
+                if self._use_clipboard_path():
+                    had_frames = await self._process_clipboard_cycle()
+                else:
+                    had_frames = await self._process_cycle()
                 self._periodic_cleanup()
 
                 # Adaptive frequency: slow down when idle, speed up on activity
@@ -298,6 +336,331 @@ class CopyTrader:
 
         logger.info("MT5 connection verified")
         return True
+
+    # ------------------------------------------------------------------
+    # Clipboard-based signal path (primary)
+    # ------------------------------------------------------------------
+
+    def _use_clipboard_path(self) -> bool:
+        """是否使用剪貼板作為主要訊號來源。"""
+        src = getattr(self.config, "signal_source", "clipboard")
+        return src == "clipboard" and self.clipboard_service is not None
+
+    @staticmethod
+    def _merge_pending_signal(prev, new):
+        """
+        把 new 的已知欄位填入 prev，回傳合併後的 ParsedSignal。
+        規則：prev 已有的欄位優先保留，只有 prev 為空時才用 new 的值。
+        例外：take_profit 若 prev 空或 new 比較完整，整個覆蓋。
+        """
+        # 直接在 prev 物件上修改（ParsedSignal 是 dataclass，mutable）
+        if new is None:
+            return prev
+        if not prev.direction and new.direction:
+            prev.direction = new.direction
+        if not prev.entry_price and new.entry_price:
+            prev.entry_price = new.entry_price
+        if not prev.stop_loss and new.stop_loss:
+            prev.stop_loss = new.stop_loss
+        # TP：prev 空 → 用 new；prev 有但 new 較多 → 取 new；否則保留
+        prev_tp = list(prev.take_profit or [])
+        new_tp = list(new.take_profit or [])
+        if not prev_tp and new_tp:
+            prev.take_profit = new_tp
+        elif new_tp and len(new_tp) > len(prev_tp):
+            prev.take_profit = new_tp
+        # market order / lot 維持 prev
+        if not getattr(prev, "is_market_order", False) and getattr(new, "is_market_order", False):
+            prev.is_market_order = True
+        if not prev.lot_size and new.lot_size:
+            prev.lot_size = new.lot_size
+        # merge 後等同於完整解析成功
+        prev.is_valid = bool(prev.direction)
+        return prev
+
+    async def _process_clipboard_cycle(self) -> bool:
+        """
+        剪貼板主通道：
+          1. 對每個 LINE 視窗做一次 copy_chat_tail
+          2. 切出訊息列表 → diff 出新訊息
+          3. 逐則跑：取消/SL-hit 關鍵字 → 既有 regex → (未完整時 Vision) → 下單
+          4. mark_seen 避免重覆下單
+        """
+        self._update_daily_loss()
+        if self._daily_loss >= self.config.max_daily_loss:
+            logger.warning(f"Daily loss limit reached (${self._daily_loss:.2f})")
+            return False
+
+        # 清掉逾時 pending
+        now = time.time()
+        expired = [k for k, v in self._pending_signals.items() if now - v["time"] > 120]
+        for k in expired:
+            sig = self._pending_signals[k]["signal"]
+            self._log_signal_skip(
+                "等待逾時（120秒未收齊數值）",
+                signal=sig, source=k,
+                details=f"已有: direction={sig.direction}, entry={sig.entry_price}, SL={sig.stop_loss}, TP={sig.take_profit}"
+            )
+            self._pending_signals.pop(k)
+
+        captures = self.clipboard_service.capture_all()
+        had_any_new = False
+
+        for cap in captures:
+            if not cap.ok or not cap.new_messages:
+                continue
+
+            # 按時間順序處理（parser 已依照原文順序）
+            for msg in cap.new_messages:
+                try:
+                    result = await self._process_clipboard_message(msg, cap)
+                except Exception as e:
+                    # 只把「parser/邏輯層」的例外視為壞訊息 mark_seen；
+                    # 如果是 MT5 相關例外（通訊/檔案系統），要保留訊號讓下一輪重試。
+                    err_str = str(e)
+                    mt5_related = any(
+                        kw in err_str
+                        for kw in ("MT5", "mt5", "bridge", "command", "price_file", "timeout", "not connected")
+                    )
+                    if mt5_related:
+                        logger.error(f"clipboard message MT5-related error, will retry: {e}")
+                        # 不 mark_seen — 讓下一輪重試
+                        continue
+                    logger.exception(f"clipboard message handler failed: {e}")
+                    self.clipboard_service.mark_seen(cap.source_name, [msg])
+                    continue
+
+                # result == "pending" 代表目前缺 SL/TP 等資訊，等待後續訊息補齊 —
+                # 此時不 mark seen，讓下一輪若剪貼板內容有變（例如對方編輯了訊息）
+                # 還能重新評估。配合 app._pending_signals 的 120 秒 timeout 兜底。
+                if result == "pending":
+                    continue
+                self.clipboard_service.mark_seen(cap.source_name, [msg])
+                had_any_new = True
+
+        return had_any_new
+
+    async def _process_clipboard_message(self, msg: "LineMessage", cap) -> str:
+        """
+        處理單一則新 LINE 訊息（從剪貼板來）。
+
+        Returns 一個字串表示結果，caller 用這個決定是否 mark_seen：
+          "done"     — 已下單 / 已確定不是信號 / 撤單處理完 → 可以 mark_seen
+          "pending"  — 缺 SL/TP 等，等後續訊息補齊 → 不要 mark_seen
+        """
+        source_name = cap.source_name or "default"
+        source_display = cap.display_name or source_name
+        body = (msg.body or "").strip()
+
+        if not body:
+            return "done"
+
+        # 1. 取消 / SL-hit 關鍵字 — 即使是短訊息也要處理
+        if self._check_cancel_keywords(body, source_name):
+            return "done"
+        if self._check_sl_hit(body, source_name):
+            return "done"
+
+        # 2. 長度過濾（解析交易信號需要至少 10 字；短訊息上面已處理完）
+        if len(body) < 10:
+            return "done"
+
+        # 3. 內容關鍵字過濾
+        has_pending = source_name in self._pending_signals
+        is_signal, filter_reason = is_potential_signal(body)
+        if not is_signal and not has_pending:
+            self._signals_filtered += 1
+            logger.debug(f"clipboard filtered ({source_display}): {filter_reason}")
+            return "done"
+
+        t_signal_start = time.time()
+        ts_str = msg.timestamp.isoformat() if msg.timestamp else msg.time_str
+        logger.info(f"📨 Clipboard new msg [{source_display} {ts_str} {msg.sender}]: {body[:80]!r}")
+
+        # 4. 多信號偵測（一則 body 裡可能同時有 BUY+Sell）
+        all_regex_signals = self.signal_parser.parse_all_latest(body)
+        extra_signals = []
+        if len(all_regex_signals) > 1:
+            complete_extras = []
+            for sig in all_regex_signals:
+                if sig.is_valid and sig.stop_loss and sig.take_profit and len(sig.take_profit) > 0:
+                    sk = str(self._signal_key(sig))
+                    if sk not in self._processed_signals:
+                        complete_extras.append(sig)
+            if len(complete_extras) > 1:
+                logger.info(f"Multi-signal: {len(complete_extras)} signals in one message")
+                extra_signals = complete_extras[1:]
+
+        # 5. Regex 主解析
+        regex_signal = self.signal_parser.parse_latest(body)
+        if not regex_signal.is_valid and not regex_signal.direction and not has_pending:
+            return "done"
+
+        regex_complete = (
+            regex_signal.is_valid
+            and regex_signal.stop_loss
+            and regex_signal.take_profit
+            and len(regex_signal.take_profit) > 0
+        )
+
+        if regex_complete:
+            signal = regex_signal
+            logger.info(f"Regex 完整解析 (clipboard): {signal}")
+            pre_key = str(self._signal_key(signal))
+            if pre_key in self._processed_signals:
+                logger.debug(f"重複信號，跳過: {signal}")
+                return "done"
+        else:
+            # Regex 不完整 — 在 clipboard 模式下不跑 Vision（沒有截圖），
+            # 但保留 pending 跨訊息合併邏輯。
+            have = []
+            if regex_signal.direction: have.append(f"方向={regex_signal.direction}")
+            if regex_signal.entry_price: have.append(f"入場={regex_signal.entry_price}")
+            if regex_signal.stop_loss: have.append(f"SL={regex_signal.stop_loss}")
+            if regex_signal.take_profit: have.append(f"TP={regex_signal.take_profit}")
+            logger.info(f"Regex 不完整 (clipboard): {', '.join(have) or '無'}")
+            signal = regex_signal
+
+        # --- 若有 pending，把新訊息的欄位合併進去（pending 為底，新值填空）---
+        # 這一步必須在完整性檢查之前，否則第二則補單訊息會被誤判為不完整而退出。
+        prev_pending = self._pending_signals.get(source_name) if has_pending else None
+        if prev_pending is not None:
+            signal = self._merge_pending_signal(prev_pending["signal"], signal)
+
+        if not signal.is_valid:
+            return "done"
+
+        # 6. 完整性檢查 + pending buffer（跨訊息合併）
+        missing = []
+        if not signal.entry_price and not getattr(signal, 'is_market_order', False):
+            missing.append("入場價")
+        if not signal.stop_loss:
+            missing.append("止損")
+        if not signal.take_profit or len(signal.take_profit) == 0 or signal.take_profit[0] is None:
+            missing.append("止盈")
+
+        if missing:
+            if prev_pending is not None:
+                elapsed = time.time() - prev_pending["time"]
+                if elapsed > 120:
+                    self._log_signal_skip(
+                        "等待逾時（120秒未收齊數值）",
+                        signal=prev_pending["signal"], source=source_display,
+                        details=f"仍缺少: {', '.join(missing)} | 已等待 {elapsed:.0f}秒"
+                    )
+                    self._pending_signals.pop(source_name, None)
+                    return "done"
+            first_time = prev_pending is None
+            self._pending_signals[source_name] = {
+                "signal": signal,
+                "time": prev_pending["time"] if prev_pending else time.time(),
+                "direction": signal.direction,
+                "last_hash": "",
+            }
+            if first_time:
+                have_parts = []
+                if signal.direction: have_parts.append(f"方向={signal.direction}")
+                if signal.entry_price: have_parts.append(f"入場={signal.entry_price}")
+                if signal.stop_loss: have_parts.append(f"止損={signal.stop_loss}")
+                if signal.take_profit: have_parts.append(f"止盈={signal.take_profit}")
+                logger.warning(f"⏳ 缺少 {', '.join(missing)} — 等待後續訊息 (已有: {', '.join(have_parts)})")
+                self._write_trade_journal(
+                    "PENDING_SIGNAL", signal=signal, source=source_display,
+                    details=f"缺少: {', '.join(missing)} | 已有: {', '.join(have_parts)}",
+                    ocr_text=body,
+                )
+            return "pending"
+
+        # 7. 信號完整 — 清理 pending
+        if source_name in self._pending_signals:
+            pending_time = self._pending_signals[source_name]["time"]
+            wait_secs = time.time() - pending_time
+            logger.info(f"✅ 跨訊息信號收齊！等待了 {wait_secs:.1f}秒 | {signal}")
+            self._write_trade_journal(
+                "MULTI_MSG_COMPLETE", signal=signal, source=source_display,
+                details=f"等待了 {wait_secs:.1f}秒",
+                ocr_text=body,
+            )
+            self._pending_signals.pop(source_name, None)
+
+        # 8. 最終 dedup
+        signal_dedup_key = str(self._signal_key(signal))
+        if signal_dedup_key in self._processed_signals:
+            logger.info(f"重複信號（相同數值），跳過: {signal}")
+            return "done"
+
+        if signal.confidence < 0.95:
+            signal.confidence = 0.95
+
+        if not self._validate_signal(signal):
+            return "done"
+
+        self._processed_signals.add(signal_dedup_key)
+        self._save_persisted_signals()
+
+        self._emit_event("signal_detected", {
+            "direction": signal.direction,
+            "entry": signal.entry_price,
+            "sl": signal.stop_loss,
+            "tp": signal.take_profit,
+        })
+
+        lot = self.trade_manager.get_martingale_lot_size(source_display)
+        mg_level = self.trade_manager.current_martingale_level
+        if self.trade_manager.martingale_per_source:
+            src_state = self.trade_manager._source_martingale.get(source_display, {})
+            mg_level = src_state.get("level", 0)
+        self._write_trade_journal(
+            "ORDER_SUBMITTED", signal=signal, source=source_display,
+            details=(
+                f"method=clipboard+regex | 手數={lot} | 馬丁層級={mg_level}"
+                f" | signal_key={self._signal_key(signal)}"
+                f" | sender={msg.sender} | msg_time={ts_str}"
+            ),
+            ocr_text=body,
+        )
+
+        signal_id = self.trade_manager.submit_signal(
+            signal,
+            auto_execute=self.config.auto_execute,
+            cancel_after_seconds=self.config.cancel_pending_after_seconds,
+            cancel_if_price_beyond=self.config.cancel_if_price_beyond_percent,
+            source_window=source_display,
+        )
+        elapsed = time.time() - t_signal_start
+        logger.info(f"✅ Clipboard signal submitted: {signal_id} (pipeline {elapsed:.2f}s)")
+        self._daily_trades += 1
+        self._emit_event("trade_submitted", {"signal_id": signal_id})
+
+        # 9. 處理 extras（同一 body 裡的第二筆信號）
+        for extra_sig in extra_signals:
+            extra_key = str(self._signal_key(extra_sig))
+            if extra_key in self._processed_signals:
+                continue
+            if not self._validate_signal(extra_sig):
+                continue
+            self._processed_signals.add(extra_key)
+            self._save_persisted_signals()
+            self._write_trade_journal(
+                "ORDER_SUBMITTED", signal=extra_sig, source=source_display,
+                details=(
+                    f"method=clipboard+regex | multi_signal=True"
+                    f" | signal_key={self._signal_key(extra_sig)}"
+                ),
+                ocr_text=body,
+            )
+            extra_id = self.trade_manager.submit_signal(
+                extra_sig,
+                auto_execute=self.config.auto_execute,
+                cancel_after_seconds=self.config.cancel_pending_after_seconds,
+                cancel_if_price_beyond=self.config.cancel_if_price_beyond_percent,
+                source_window=source_display,
+            )
+            logger.info(f"✅ Clipboard extra signal submitted: {extra_id}")
+            self._daily_trades += 1
+            self._emit_event("trade_submitted", {"signal_id": extra_id})
+
+        return "done"
 
     async def _process_cycle(self) -> bool:
         """Single processing cycle. Returns True if frames were processed."""
@@ -1745,8 +2108,9 @@ class CopyTrader:
             self._processed_signals = set(keep)
             logger.debug("Trimmed _processed_signals to 100 entries")
 
-        # Clean up temp screenshot files
-        self.capture_service.cleanup_old_files(max_age_seconds=300)
+        # Clean up temp screenshot files (only meaningful in OCR path)
+        if not self._use_clipboard_path():
+            self.capture_service.cleanup_old_files(max_age_seconds=300)
 
 
 async def main():

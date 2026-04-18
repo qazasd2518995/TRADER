@@ -71,3 +71,22 @@ class PlatformConfigBase(ABC):
     @abstractmethod
     def get_tesseract_path(self) -> Optional[str]:
         """Get Tesseract executable path, or None if not found."""
+
+
+class ClipboardControlBase(ABC):
+    """
+    Abstract clipboard + chat-copy interface.
+
+    The canonical flow for LINE Desktop copy-based signal capture:
+      backup clipboard → activate target window → Ctrl+End → Shift+PgUp×N →
+      Ctrl+C → read clipboard → restore clipboard → restore previous foreground.
+    """
+
+    @abstractmethod
+    def copy_chat_tail(self, window_id: int, screens: int = 2) -> str:
+        """
+        Copy the bottom ``screens`` pages of chat content from ``window_id``
+        and return the clipboard text. Returns "" on failure.
+        The implementation MUST back up and restore the user's clipboard
+        and restore the previous foreground window before returning.
+        """

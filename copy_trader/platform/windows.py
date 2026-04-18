@@ -10,11 +10,12 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from PIL import Image
 
 from .base import (
+    ClipboardControlBase,
     KeyboardControlBase,
     PlatformConfigBase,
     ScreenCaptureBase,
@@ -32,6 +33,13 @@ try:
 except ImportError:
     WIN32_AVAILABLE = False
     logger.warning("win32gui not available. Install pywin32: pip install pywin32")
+
+try:
+    import win32clipboard
+    WIN32_CLIPBOARD_AVAILABLE = True
+except ImportError:
+    WIN32_CLIPBOARD_AVAILABLE = False
+    logger.warning("win32clipboard not available")
 
 try:
     from PIL import ImageGrab
@@ -350,3 +358,397 @@ class WindowsPlatformConfig(PlatformConfigBase):
             return candidate
         # Not found — caller should handle gracefully
         return None
+
+
+# --- SendInput structures (more reliable than keybd_event on CEF windows) ---
+# Microsoft Learn 文件標示 keybd_event 為 "Superseded"，在 Windows 10/11 對
+# Electron/CEF 應用（LINE Desktop、Discord 等）的成功率明顯較差；改用 SendInput
+# 的原子 INPUT array 呼叫，不會被使用者輸入或其他 SendInput 插入。
+
+_ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+
+class _KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk", ctypes.c_ushort),
+        ("wScan", ctypes.c_ushort),
+        ("dwFlags", ctypes.c_uint),
+        ("time", ctypes.c_uint),
+        ("dwExtraInfo", _ULONG_PTR),
+    ]
+
+class _MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", ctypes.c_long),
+        ("dy", ctypes.c_long),
+        ("mouseData", ctypes.c_uint),
+        ("dwFlags", ctypes.c_uint),
+        ("time", ctypes.c_uint),
+        ("dwExtraInfo", _ULONG_PTR),
+    ]
+
+class _HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [
+        ("uMsg", ctypes.c_uint),
+        ("wParamL", ctypes.c_ushort),
+        ("wParamH", ctypes.c_ushort),
+    ]
+
+class _INPUT_UNION(ctypes.Union):
+    _fields_ = [("ki", _KEYBDINPUT), ("mi", _MOUSEINPUT), ("hi", _HARDWAREINPUT)]
+
+class _INPUT(ctypes.Structure):
+    _anonymous_ = ("u",)
+    _fields_ = [("type", ctypes.c_uint), ("u", _INPUT_UNION)]
+
+_INPUT_KEYBOARD = 1
+
+
+class WindowsClipboardControl(ClipboardControlBase):
+    """
+    Windows clipboard control for LINE Desktop copy-based signal capture.
+
+    Flow:
+      1. back up the user's clipboard (multi-format)
+      2. short-focus the target LINE window (AttachThreadInput-based)
+      3. Ctrl+End        → scroll to newest message
+      4. Shift+PgUp×N    → select bottom N pages worth of content
+      5. Ctrl+C          → copy selection to clipboard
+      6. read clipboard text
+      7. restore clipboard and previous foreground window
+
+    重要設計：
+    * 鍵盤事件用 SendInput（非 keybd_event）— CEF 類應用才穩
+    * 每段 modifier 都有 try/finally 保護 KEYUP，例外時不會把 Ctrl/Shift 卡住
+    * SetForegroundWindow 透過 AttachThreadInput + Alt tap 繞過 Win10/11 鎖定
+    * 剪貼板備份保留 text / image / HTML / file-list 四種常見格式
+    """
+
+    VK_MENU = 0x12       # Alt
+    VK_CONTROL = 0x11
+    VK_SHIFT = 0x10
+    VK_END = 0x23
+    VK_PRIOR = 0x21      # PageUp
+
+    KEYEVENTF_EXTENDEDKEY = 0x0001
+    KEYEVENTF_KEYUP = 0x0002
+
+    CF_TEXT = 1
+    CF_UNICODETEXT = 13
+    CF_DIB = 8
+    CF_HDROP = 15        # file list
+    # CF_HTML is registered dynamically; we look up its id if available.
+
+    # ---------------- SendInput ----------------
+
+    def _send_input_keys(self, events: List[tuple]) -> None:
+        """
+        Send a batch of (vk, key_up, extended) as a single SendInput call.
+        Using a single batch makes the sequence atomic — modifier state stays
+        consistent even if another app is pumping input concurrently.
+        """
+        if not events:
+            return
+        n = len(events)
+        arr_t = _INPUT * n
+        arr = arr_t()
+        for i, (vk, key_up, extended) in enumerate(events):
+            flags = 0
+            if extended:
+                flags |= self.KEYEVENTF_EXTENDEDKEY
+            if key_up:
+                flags |= self.KEYEVENTF_KEYUP
+            arr[i].type = _INPUT_KEYBOARD
+            arr[i].ki = _KEYBDINPUT(
+                wVk=vk, wScan=0, dwFlags=flags, time=0, dwExtraInfo=0
+            )
+        sent = ctypes.windll.user32.SendInput(n, ctypes.byref(arr), ctypes.sizeof(_INPUT))
+        if sent != n:
+            err = ctypes.windll.kernel32.GetLastError()
+            logger.debug(f"SendInput returned {sent}/{n}, last_error={err}")
+
+    def _tap(self, vk: int, extended: bool = False):
+        self._send_input_keys([(vk, False, extended), (vk, True, extended)])
+
+    # ---------------- Focus acquisition ----------------
+
+    def _force_release_modifiers(self) -> None:
+        """Emit KEYUP for Ctrl/Shift/Alt. Safety net in case anything leaked."""
+        try:
+            self._send_input_keys([
+                (self.VK_CONTROL, True, False),
+                (self.VK_SHIFT, True, False),
+                (self.VK_MENU, True, False),
+            ])
+        except Exception:
+            pass
+
+    def _focus(self, hwnd: int) -> bool:
+        """
+        Bring ``hwnd`` to the foreground reliably on Win10/11.
+
+        Microsoft's foreground lock rejects SetForegroundWindow from non-foreground
+        processes. Standard workarounds (Raymond Chen / PowerToys):
+          1. simulate an Alt key-tap so the calling thread is "just" an input source
+          2. AttachThreadInput the current thread to the foreground thread's input queue
+        Both tricks are used together for maximum reliability.
+        """
+        try:
+            if win32gui.IsIconic(hwnd):
+                ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                time.sleep(0.12)
+            else:
+                ctypes.windll.user32.ShowWindow(hwnd, 5)  # SW_SHOW
+
+            # Alt tap: grants temporary foreground privilege to this thread.
+            self._tap(self.VK_MENU)
+
+            # AttachThreadInput trick
+            current_tid = ctypes.windll.kernel32.GetCurrentThreadId()
+            fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
+            fg_tid = ctypes.windll.user32.GetWindowThreadProcessId(fg_hwnd, None) if fg_hwnd else 0
+            target_tid = ctypes.windll.user32.GetWindowThreadProcessId(hwnd, None)
+
+            attached_fg = False
+            attached_tgt = False
+            try:
+                if fg_tid and fg_tid != current_tid:
+                    attached_fg = bool(ctypes.windll.user32.AttachThreadInput(current_tid, fg_tid, True))
+                if target_tid and target_tid != current_tid and target_tid != fg_tid:
+                    attached_tgt = bool(ctypes.windll.user32.AttachThreadInput(current_tid, target_tid, True))
+
+                ctypes.windll.user32.BringWindowToTop(hwnd)
+                ctypes.windll.user32.SetActiveWindow(hwnd)
+                ctypes.windll.user32.SetForegroundWindow(hwnd)
+            finally:
+                if attached_fg:
+                    ctypes.windll.user32.AttachThreadInput(current_tid, fg_tid, False)
+                if attached_tgt:
+                    ctypes.windll.user32.AttachThreadInput(current_tid, target_tid, False)
+
+            time.sleep(0.08)
+            return win32gui.GetForegroundWindow() == hwnd
+        except Exception as e:
+            logger.debug(f"_focus failed for hwnd={hwnd}: {e}")
+            return False
+
+    # ---------------- Clipboard primitives ----------------
+
+    def _open_clipboard(self, retries: int = 10, delay: float = 0.03) -> bool:
+        """OpenClipboard can fail if another app holds it — retry briefly.
+        Common offenders on Win10/11: Ditto, ClipboardMaster, RDP, Office."""
+        last_err = None
+        for _ in range(retries):
+            try:
+                win32clipboard.OpenClipboard()
+                return True
+            except Exception as e:
+                last_err = e
+                time.sleep(delay)
+        if last_err:
+            logger.debug(f"OpenClipboard failed after retries: {last_err}")
+        return False
+
+    _CF_HTML_ID = None
+
+    def _html_format_id(self) -> Optional[int]:
+        if self._CF_HTML_ID is not None:
+            return self._CF_HTML_ID
+        try:
+            WindowsClipboardControl._CF_HTML_ID = int(
+                ctypes.windll.user32.RegisterClipboardFormatW("HTML Format")
+            )
+        except Exception:
+            WindowsClipboardControl._CF_HTML_ID = 0
+        return self._CF_HTML_ID or None
+
+    def _backup_clipboard(self) -> Optional[Dict]:
+        """
+        Snapshot the clipboard across common formats so we can restore anything
+        the user had (text, image, file list, HTML). Returns {} when clipboard
+        was empty, None on failure.
+        """
+        if not WIN32_CLIPBOARD_AVAILABLE:
+            return None
+        if not self._open_clipboard():
+            return None
+        snap: Dict = {}
+        try:
+            # Iterate all formats present
+            fmt = 0
+            for _ in range(200):  # hard cap — no infinite loop
+                try:
+                    fmt = win32clipboard.EnumClipboardFormats(fmt)
+                except Exception:
+                    break
+                if not fmt:
+                    break
+                try:
+                    data = win32clipboard.GetClipboardData(fmt)
+                except Exception:
+                    data = None
+                if data is None:
+                    continue
+                snap[fmt] = data
+            return snap
+        except Exception as e:
+            logger.debug(f"clipboard backup failed: {e}")
+            return None
+        finally:
+            try:
+                win32clipboard.CloseClipboard()
+            except Exception:
+                pass
+
+    def _restore_clipboard(self, backup: Optional[Dict]) -> None:
+        """Restore backed-up formats. Skips any format we can't re-set cleanly."""
+        if backup is None or not WIN32_CLIPBOARD_AVAILABLE:
+            return
+        if not self._open_clipboard():
+            return
+        try:
+            win32clipboard.EmptyClipboard()
+            html_id = self._html_format_id()
+            for fmt, data in backup.items():
+                try:
+                    # Only restore formats we're confident about — mixing raw
+                    # handles (e.g. CF_BITMAP, CF_METAFILEPICT) is unsafe because
+                    # those handles were freed by the original owner.
+                    if fmt in (self.CF_UNICODETEXT, self.CF_TEXT):
+                        if isinstance(data, bytes):
+                            win32clipboard.SetClipboardData(fmt, data)
+                        elif isinstance(data, str):
+                            win32clipboard.SetClipboardData(fmt, data)
+                    elif fmt == self.CF_DIB and isinstance(data, (bytes, bytearray)):
+                        win32clipboard.SetClipboardData(fmt, bytes(data))
+                    elif html_id and fmt == html_id and isinstance(data, (bytes, bytearray, str)):
+                        payload = data.encode("utf-8") if isinstance(data, str) else bytes(data)
+                        win32clipboard.SetClipboardData(fmt, payload)
+                    # CF_HDROP / CF_BITMAP 我們不重建 — 那些 handle 已經失效。
+                except Exception as e:
+                    logger.debug(f"restore fmt={fmt} skipped: {e}")
+                    continue
+        except Exception as e:
+            logger.debug(f"clipboard restore failed: {e}")
+        finally:
+            try:
+                win32clipboard.CloseClipboard()
+            except Exception:
+                pass
+
+    def _clear_clipboard(self) -> None:
+        if not WIN32_CLIPBOARD_AVAILABLE:
+            return
+        if not self._open_clipboard():
+            return
+        try:
+            win32clipboard.EmptyClipboard()
+        finally:
+            try:
+                win32clipboard.CloseClipboard()
+            except Exception:
+                pass
+
+    def _read_clipboard_text(self, timeout: float = 1.0) -> str:
+        if not WIN32_CLIPBOARD_AVAILABLE:
+            return ""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self._open_clipboard(retries=2, delay=0.02):
+                try:
+                    if win32clipboard.IsClipboardFormatAvailable(self.CF_UNICODETEXT):
+                        data = win32clipboard.GetClipboardData(self.CF_UNICODETEXT)
+                        if isinstance(data, str) and data:
+                            # pywin32 偶見尾端混入 NUL（Excel / CEF 來源）
+                            if "\x00" in data:
+                                data = data.split("\x00", 1)[0]
+                            return data
+                finally:
+                    try:
+                        win32clipboard.CloseClipboard()
+                    except Exception:
+                        pass
+            time.sleep(0.04)
+        return ""
+
+    # ---------------- Main API ----------------
+
+    def copy_chat_tail(self, window_id: int, screens: int = 2) -> str:
+        if not WIN32_AVAILABLE or not WIN32_CLIPBOARD_AVAILABLE:
+            logger.error("win32 stack not available for clipboard copy")
+            return ""
+        if not window_id:
+            return ""
+
+        screens = max(1, min(int(screens), 10))
+        old_fg = None
+        try:
+            old_fg = win32gui.GetForegroundWindow()
+        except Exception:
+            old_fg = None
+
+        backup = self._backup_clipboard()
+        self._clear_clipboard()
+        text = ""
+
+        # Track which modifiers we've pressed so finally can release them.
+        ctrl_down = False
+        shift_down = False
+        try:
+            if not self._focus(window_id):
+                logger.debug(f"clipboard copy: focus failed for hwnd={window_id}")
+                return ""
+
+            # 1. Ctrl+End — jump to newest message
+            self._send_input_keys([(self.VK_CONTROL, False, False)])
+            ctrl_down = True
+            self._tap(self.VK_END, extended=True)
+            self._send_input_keys([(self.VK_CONTROL, True, False)])
+            ctrl_down = False
+            time.sleep(0.10)
+
+            # 2. Shift+PageUp × N — select bottom N pages
+            self._send_input_keys([(self.VK_SHIFT, False, False)])
+            shift_down = True
+            for _ in range(screens):
+                self._tap(self.VK_PRIOR, extended=True)
+                time.sleep(0.06)
+            self._send_input_keys([(self.VK_SHIFT, True, False)])
+            shift_down = False
+            time.sleep(0.08)
+
+            # 3. Ctrl+C — copy. Use one atomic SendInput batch for reliability.
+            self._send_input_keys([
+                (self.VK_CONTROL, False, False),
+                (ord('C'), False, False),
+                (ord('C'), True, False),
+                (self.VK_CONTROL, True, False),
+            ])
+            time.sleep(0.10)
+
+            text = self._read_clipboard_text(timeout=0.8)
+        except Exception as e:
+            logger.warning(f"copy_chat_tail failed for hwnd={window_id}: {e}")
+        finally:
+            # 1. Always release modifiers that might still be held
+            try:
+                if ctrl_down:
+                    self._send_input_keys([(self.VK_CONTROL, True, False)])
+                if shift_down:
+                    self._send_input_keys([(self.VK_SHIFT, True, False)])
+                # Belt-and-suspenders: force-release all three in case of weird state
+                self._force_release_modifiers()
+            except Exception:
+                pass
+            # 2. Restore clipboard so we don't clobber user content
+            try:
+                self._restore_clipboard(backup)
+            except Exception:
+                pass
+            # 3. Restore previous foreground — use same focus routine for reliability
+            if old_fg and old_fg != window_id:
+                try:
+                    self._focus(old_fg)
+                except Exception:
+                    pass
+
+        return text or ""

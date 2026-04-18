@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional, List
 
 from PIL import Image
-from .base import ScreenCaptureBase, KeyboardControlBase, PlatformConfigBase, WindowInfo
+from .base import ClipboardControlBase, ScreenCaptureBase, KeyboardControlBase, PlatformConfigBase, WindowInfo
 
 logger = logging.getLogger(__name__)
 
@@ -461,3 +461,11 @@ class MacPlatformConfig(PlatformConfigBase):
         if homebrew_path.exists():
             return str(homebrew_path)
         return None
+
+
+class MacClipboardControl(ClipboardControlBase):
+    """Placeholder — macOS clipboard path lands in a later phase."""
+
+    def copy_chat_tail(self, window_id: int, screens: int = 2) -> str:
+        logger.warning("MacClipboardControl.copy_chat_tail is not implemented yet")
+        return ""
