@@ -58,8 +58,8 @@ a = Analysis(
         ('mt5_ea/MT5_File_Bridge_Enhanced.mq5', 'mt5_ea'),
     ] + rapid_datas,
     hiddenimports=[
-        # pywin32 — screen capture
-        'win32gui', 'win32ui', 'win32con', 'win32api',
+        # pywin32 — screen capture + clipboard
+        'win32gui', 'win32ui', 'win32con', 'win32api', 'win32clipboard',
         # PIL — image processing
         'PIL', 'PIL.Image', 'PIL.ImageGrab',
         'imagehash',
@@ -77,6 +77,7 @@ a = Analysis(
         'copy_trader.platform', 'copy_trader.platform.base', 'copy_trader.platform.windows',
         'copy_trader.signal_capture', 'copy_trader.signal_capture.screen_capture', 'copy_trader.signal_capture.ocr',
         'copy_trader.signal_capture.bubble_detector',
+        'copy_trader.signal_capture.clipboard_reader', 'copy_trader.signal_capture.line_text_parser',
         'copy_trader.signal_parser', 'copy_trader.signal_parser.keyword_filter', 'copy_trader.signal_parser.groq_parser',
         'copy_trader.signal_parser.groq_vision_parser', 'copy_trader.signal_parser.gemini_vision_parser',
         # google-genai SDK

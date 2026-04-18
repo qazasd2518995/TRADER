@@ -668,6 +668,48 @@ class WindowsClipboardControl(ClipboardControlBase):
             logger.debug(f"_focus failed for hwnd={hwnd}: {e}")
             return False
 
+    # ---------------- Chat-area seeding click ----------------
+
+    _MOUSEEVENTF_LEFTDOWN = 0x0002
+    _MOUSEEVENTF_LEFTUP = 0x0004
+
+    def _click_chat_area(self, hwnd: int) -> bool:
+        """
+        LINE Desktop (CEF/Chromium) needs a text-selection caret inside the
+        message pane before Shift+PgUp can select anything. SetForegroundWindow
+        alone leaves keyboard focus on the sidebar/input box, so Shift+PgUp
+        becomes a no-op and Ctrl+C returns the old clipboard contents.
+
+        This helper drops a single left-click at 50% width × 65% height —
+        safely below the header and above the input bar for any reasonable
+        LINE window size. Cursor position is saved and restored so the user
+        barely notices.
+        """
+        try:
+            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+            if right <= left or bottom <= top:
+                return False
+            cx = (left + right) // 2
+            cy = top + int((bottom - top) * 0.65)
+
+            old_pos = win32gui.GetCursorPos()
+            try:
+                ctypes.windll.user32.SetCursorPos(cx, cy)
+                time.sleep(0.03)
+                ctypes.windll.user32.mouse_event(self._MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                time.sleep(0.03)
+                ctypes.windll.user32.mouse_event(self._MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                time.sleep(0.05)
+            finally:
+                try:
+                    ctypes.windll.user32.SetCursorPos(*old_pos)
+                except Exception:
+                    pass
+            return True
+        except Exception as e:
+            logger.debug(f"_click_chat_area failed for hwnd={hwnd}: {e}")
+            return False
+
     # ---------------- Clipboard primitives ----------------
 
     def _open_clipboard(self, retries: int = 10, delay: float = 0.03) -> bool:
@@ -838,6 +880,11 @@ class WindowsClipboardControl(ClipboardControlBase):
             if not self._focus(window_id):
                 logger.debug(f"clipboard copy: focus failed for hwnd={window_id}")
                 return ""
+
+            # 0. Seed a text-selection caret inside the chat pane. Without this,
+            #    LINE CEF routes Shift+PgUp to the sidebar/input box and selects
+            #    nothing — Ctrl+C would then return stale clipboard data.
+            self._click_chat_area(window_id)
 
             # 1. Ctrl+End — jump to newest message
             self._send_input_keys([(self.VK_CONTROL, False, False)])
