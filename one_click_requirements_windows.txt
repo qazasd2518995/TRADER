@@ -1,0 +1,4 @@
+# One-click desktop launchers for Windows.
+Pillow>=10.0
+pywin32>=306
+pyinstaller>=6.0

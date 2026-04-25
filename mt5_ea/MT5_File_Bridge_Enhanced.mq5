@@ -696,24 +696,34 @@ bool ExecuteBuySellCommand(TradeCommand &cmd, long &retcode, string &detail)
    req.comment      = cmd.comment;
 
    int digits = (int)SymbolInfoInteger(cmd.symbol, SYMBOL_DIGITS);
-   if(cmd.price <= 0)
-   {
-      detail = "entry price required - no market orders allowed";
-      Print("Error: ", detail);
-      return false;
-   }
+   bool is_market = (cmd.price <= 0);
 
    if(cmd.action == "buy")
    {
       double market_price = SymbolInfoDouble(cmd.symbol, SYMBOL_ASK);
-      double entry = NormalizeDouble(cmd.price, digits);
+      if(market_price <= 0)
+      {
+         detail = "invalid ask price";
+         Print("Error: ", detail);
+         return false;
+      }
 
-      req.action = TRADE_ACTION_PENDING;
-      if(entry < market_price)
-         req.type = ORDER_TYPE_BUY_LIMIT;
+      if(is_market)
+      {
+         req.action = TRADE_ACTION_DEAL;
+         req.type = ORDER_TYPE_BUY;
+         req.price = NormalizeDouble(market_price, digits);
+      }
       else
-         req.type = ORDER_TYPE_BUY_STOP;
-      req.price = entry;
+      {
+         double entry = NormalizeDouble(cmd.price, digits);
+         req.action = TRADE_ACTION_PENDING;
+         if(entry < market_price)
+            req.type = ORDER_TYPE_BUY_LIMIT;
+         else
+            req.type = ORDER_TYPE_BUY_STOP;
+         req.price = entry;
+      }
 
       double sl = cmd.stop_loss;
       double tp = cmd.take_profit;
@@ -727,14 +737,29 @@ bool ExecuteBuySellCommand(TradeCommand &cmd, long &retcode, string &detail)
    else // sell
    {
       double market_price = SymbolInfoDouble(cmd.symbol, SYMBOL_BID);
-      double entry = NormalizeDouble(cmd.price, digits);
+      if(market_price <= 0)
+      {
+         detail = "invalid bid price";
+         Print("Error: ", detail);
+         return false;
+      }
 
-      req.action = TRADE_ACTION_PENDING;
-      if(entry > market_price)
-         req.type = ORDER_TYPE_SELL_LIMIT;
+      if(is_market)
+      {
+         req.action = TRADE_ACTION_DEAL;
+         req.type = ORDER_TYPE_SELL;
+         req.price = NormalizeDouble(market_price, digits);
+      }
       else
-         req.type = ORDER_TYPE_SELL_STOP;
-      req.price = entry;
+      {
+         double entry = NormalizeDouble(cmd.price, digits);
+         req.action = TRADE_ACTION_PENDING;
+         if(entry > market_price)
+            req.type = ORDER_TYPE_SELL_LIMIT;
+         else
+            req.type = ORDER_TYPE_SELL_STOP;
+         req.price = entry;
+      }
 
       double sl = cmd.stop_loss;
       double tp = cmd.take_profit;
@@ -749,7 +774,7 @@ bool ExecuteBuySellCommand(TradeCommand &cmd, long &retcode, string &detail)
    if(DetailedLogging)
       Print("Executing trade: ", cmd.action, " ", req.volume, " ", cmd.symbol,
             " @ ", req.price, " SL:", req.sl, " TP:", req.tp,
-            " [PENDING]");
+            is_market ? " [MARKET]" : " [PENDING]");
 
    bool sent = OrderSend(req, res);
    retcode = (long)res.retcode;

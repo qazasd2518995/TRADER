@@ -235,7 +235,7 @@ class TradeManager:
                     order.status = OrderStatus.CLOSED
                     # Manual close counts as win/loss based on current P/L
                     is_win = current_profit >= 0
-                    self.on_trade_result(is_win, signal_id)
+                    self.on_trade_result(is_win, signal_id, source_window=order.source_window)
                     logger.info(f"Closed position {signal_id}: {reason} ({'WIN' if is_win else 'LOSS'})")
                 return success
 
@@ -448,7 +448,7 @@ class TradeManager:
 
         # Use martingale lot size if enabled, otherwise use signal's lot size or default
         if self.use_martingale:
-            lot_size = self.get_martingale_lot_size()
+            lot_size = self.get_martingale_lot_size(order.source_window)
         else:
             lot_size = signal.lot_size or self.default_lot_size
 
@@ -713,7 +713,7 @@ class TradeManager:
                 if profit is not None:
                     # Got real profit from EA — use it
                     order.status = OrderStatus.CLOSED
-                    newly_confirmed.append((signal_id, profit))
+                    newly_confirmed.append((signal_id, profit, order.source_window))
                     logger.info(
                         f"Position closed (confirmed by EA): {signal_id} "
                         f"(ticket {order.ticket}) — actual profit: {profit:.2f}"
@@ -722,7 +722,7 @@ class TradeManager:
                     # Grace period expired — fall back to last known profit
                     profit = order.last_known_profit
                     order.status = OrderStatus.CLOSED
-                    newly_confirmed.append((signal_id, profit))
+                    newly_confirmed.append((signal_id, profit, order.source_window))
                     logger.warning(
                         f"Position closed (timeout fallback): {signal_id} "
                         f"(ticket {order.ticket}) — using last known profit: {profit:.2f}"
@@ -731,12 +731,12 @@ class TradeManager:
 
         # Update martingale for EACH trade individually
         # (batch net-sum was incorrect: +100/-500/+100 = loss, but should be 2 wins + 1 loss)
-        for signal_id, profit in newly_confirmed:
+        for signal_id, profit, source_window in newly_confirmed:
             is_win = profit >= 0
             logger.info(
                 f"Trade closed: {signal_id}, profit: {profit:.2f} → {'WIN' if is_win else 'LOSS'}"
             )
-            self.on_trade_result(is_win, signal_id=signal_id)
+            self.on_trade_result(is_win, signal_id=signal_id, source_window=source_window)
 
     def _get_closed_trade_profit(self, ticket: int) -> Optional[float]:
         """

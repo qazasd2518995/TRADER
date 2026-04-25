@@ -469,3 +469,7 @@ class MacClipboardControl(ClipboardControlBase):
     def copy_chat_tail(self, window_id: int, screens: int = 2) -> str:
         logger.warning("MacClipboardControl.copy_chat_tail is not implemented yet")
         return ""
+
+    def copy_chat_all(self, window_id: int) -> str:
+        logger.warning("MacClipboardControl.copy_chat_all is not implemented yet")
+        return ""

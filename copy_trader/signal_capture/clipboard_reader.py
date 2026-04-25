@@ -95,6 +95,7 @@ class ClipboardWindow:
     display_name: str = ""       # UI 顯示用
     window_id: Optional[int] = None  # 已經找到的 hwnd，下次復用；找不到時重新搜
     screens: int = 2             # Shift+PgUp 次數
+    copy_mode: str = "tail"      # "tail" = 底部 N 屏, "all" = Ctrl+A 全選複製
 
     @property
     def label(self) -> str:
@@ -327,7 +328,11 @@ class ClipboardReaderService:
         logger.debug(f"clipboard trigger {w.label!r}: {reason} (title={title!r}, unread={unread})")
 
         try:
-            text = self.clipboard.copy_chat_tail(hwnd, screens=max(1, int(w.screens)))
+            copy_mode = (w.copy_mode or "tail").strip().lower()
+            if copy_mode == "all" and hasattr(self.clipboard, "copy_chat_all"):
+                text = self.clipboard.copy_chat_all(hwnd)
+            else:
+                text = self.clipboard.copy_chat_tail(hwnd, screens=max(1, int(w.screens)))
         except Exception as e:
             cap.error = f"copy_failed:{e}"
             return cap
@@ -403,5 +408,6 @@ def make_windows_from_config(config_windows) -> List[ClipboardWindow]:
             display_name=getattr(w, "display_name", "") or getattr(w, "window_name", "") or "",
             window_id=getattr(w, "window_id", None),
             screens=2,
+            copy_mode=getattr(w, "copy_mode", "tail"),
         ))
     return out

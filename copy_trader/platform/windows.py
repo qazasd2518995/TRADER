@@ -940,3 +940,78 @@ class WindowsClipboardControl(ClipboardControlBase):
                     pass
 
         return text or ""
+
+    def copy_chat_all(self, window_id: int) -> str:
+        """
+        Dedicated central-machine mode: focus LINE, jump to newest message,
+        Ctrl+A, Ctrl+C, then restore the user's clipboard and foreground window.
+
+        This intentionally selects the full chat text. It is more intrusive than
+        copy_chat_tail(), so it should be used on the always-on signal computer,
+        not on an end user's working machine.
+        """
+        if not WIN32_AVAILABLE or not WIN32_CLIPBOARD_AVAILABLE:
+            logger.error("win32 stack not available for clipboard copy")
+            return ""
+        if not window_id:
+            return ""
+
+        old_fg = None
+        try:
+            old_fg = win32gui.GetForegroundWindow()
+        except Exception:
+            old_fg = None
+
+        backup = self._backup_clipboard()
+        self._clear_clipboard()
+        text = ""
+        ctrl_down = False
+
+        try:
+            if not self._focus(window_id):
+                logger.debug(f"clipboard copy all: focus failed for hwnd={window_id}")
+                return ""
+
+            # Keep LINE positioned at the latest messages before selecting all.
+            self._send_input_keys([(self.VK_CONTROL, False, False)])
+            ctrl_down = True
+            self._tap(self.VK_END, extended=True)
+            self._send_input_keys([(self.VK_CONTROL, True, False)])
+            ctrl_down = False
+            time.sleep(0.10)
+
+            self._send_input_keys([
+                (self.VK_CONTROL, False, False),
+                (ord('A'), False, False),
+                (ord('A'), True, False),
+                (self.VK_CONTROL, True, False),
+            ])
+            time.sleep(0.08)
+            self._send_input_keys([
+                (self.VK_CONTROL, False, False),
+                (ord('C'), False, False),
+                (ord('C'), True, False),
+                (self.VK_CONTROL, True, False),
+            ])
+            time.sleep(0.12)
+            text = self._read_clipboard_text(timeout=1.0)
+        except Exception as e:
+            logger.warning(f"copy_chat_all failed for hwnd={window_id}: {e}")
+        finally:
+            try:
+                if ctrl_down:
+                    self._send_input_keys([(self.VK_CONTROL, True, False)])
+                self._force_release_modifiers()
+            except Exception:
+                pass
+            try:
+                self._restore_clipboard(backup)
+            except Exception:
+                pass
+            if old_fg and old_fg != window_id:
+                try:
+                    self._focus(old_fg)
+                except Exception:
+                    pass
+
+        return text or ""

@@ -104,6 +104,7 @@ class CopyTrader:
                     display_name=_capture_window_label(w),
                     window_id=getattr(w, "window_id", None),
                     screens=int(getattr(config, "clipboard_screens", 2) or 2),
+                    copy_mode=str(getattr(config, "clipboard_copy_mode", "tail") or "tail"),
                 )
                 for w in (config.capture_windows or [])
             ]

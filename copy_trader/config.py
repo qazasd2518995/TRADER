@@ -122,6 +122,7 @@ class Config:
 
     # Clipboard Capture Settings
     clipboard_screens: int = 2   # Shift+PgUp 次數 — 要讀幾屏
+    clipboard_copy_mode: str = "tail"  # "tail" = bottom N pages, "all" = Ctrl+A/Cmd+A copy
     clipboard_min_interval: float = 0.7  # 兩次剪貼板採集之間最小間隔（秒）
     clipboard_stale_seconds: float = 10.0  # 未讀數沒變化時，最久幾秒做一次兜底複製
 
@@ -273,6 +274,7 @@ def save_config(config: Config, path: Path = CONFIG_FILE):
         ],
         "capture_interval": config.capture_interval,
         "clipboard_screens": config.clipboard_screens,
+        "clipboard_copy_mode": config.clipboard_copy_mode,
         "clipboard_min_interval": config.clipboard_min_interval,
         "clipboard_stale_seconds": config.clipboard_stale_seconds,
         "auto_execute": config.auto_execute,
