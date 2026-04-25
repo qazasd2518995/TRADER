@@ -18,7 +18,7 @@ from typing import Dict, List
 
 from copy_trader.config import DATA_DIR, DEFAULT_SYMBOL, load_config
 from copy_trader.signal_parser.regex_parser import ParsedSignal
-from copy_trader.trade_manager import TradeManager
+from copy_trader.trade_manager import OrderStatus, TradeManager
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +82,17 @@ def _parsed_signal_from_payload(payload: Dict) -> ParsedSignal:
     )
 
 
+def _is_executable_signal(signal: ParsedSignal) -> bool:
+    has_entry = signal.entry_price is not None or bool(signal.is_market_order)
+    return bool(
+        signal.is_valid
+        and signal.direction in {"buy", "sell"}
+        and has_entry
+        and signal.stop_loss is not None
+        and signal.take_profit
+    )
+
+
 class MT5ClientAgent:
     def __init__(self, hub: HubClient, state_file: Path, mt5_files_dir: str = "", replay: bool = False):
         self.hub = hub
@@ -102,12 +113,22 @@ class MT5ClientAgent:
         self.trade_manager.martingale_source_lots = getattr(self.config, "martingale_source_lots", {})
 
         self.state = _load_state(state_file)
-        if "last_seq" not in self.state:
-            if replay:
-                self.state["last_seq"] = 0
-            else:
-                health = self.hub.health()
-                self.state["last_seq"] = int(health.get("latest_seq") or 0)
+        if replay:
+            self.state["last_seq"] = 0
+            self.state["hub_url"] = self.hub.hub_url
+            _save_state(self.state_file, self.state)
+        else:
+            health = self.hub.health()
+            latest_seq = int(health.get("latest_seq") or 0)
+            state_hub_url = str(self.state.get("hub_url") or "")
+            state_last_seq = int(self.state.get("last_seq") or 0)
+            if (
+                "last_seq" not in self.state
+                or state_hub_url != self.hub.hub_url
+                or state_last_seq > latest_seq
+            ):
+                self.state["last_seq"] = latest_seq
+            self.state["hub_url"] = self.hub.hub_url
             _save_state(self.state_file, self.state)
 
     @property
@@ -129,8 +150,8 @@ class MT5ClientAgent:
 
             payload = item.get("signal") or {}
             signal = _parsed_signal_from_payload(payload)
-            if not signal.direction:
-                logger.warning("invalid hub signal seq=%s: missing direction", seq)
+            if not _is_executable_signal(signal):
+                logger.warning("invalid hub signal seq=%s: incomplete signal payload=%s", seq, payload)
                 self._mark_seq(seq)
                 continue
 
@@ -142,6 +163,9 @@ class MT5ClientAgent:
                 cancel_if_price_beyond=self.config.cancel_if_price_beyond_percent,
                 source_window=source,
             )
+            order = self.trade_manager.get_order_status(signal_id)
+            if order is not None and order.status == OrderStatus.FAILED:
+                raise RuntimeError(f"failed to write MT5 command for hub seq={seq}")
             logger.info("submitted hub seq=%s as local signal %s: %s", seq, signal_id, signal)
             self._mark_seq(seq)
             count += 1

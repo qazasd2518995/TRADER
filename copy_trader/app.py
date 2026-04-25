@@ -429,6 +429,8 @@ class CopyTrader:
                     )
                     if mt5_related:
                         logger.error(f"clipboard message MT5-related error, will retry: {e}")
+                        if hasattr(self.clipboard_service, "force_retry"):
+                            self.clipboard_service.force_retry(cap.source_name)
                         # 不 mark_seen — 讓下一輪重試
                         continue
                     logger.exception(f"clipboard message handler failed: {e}")

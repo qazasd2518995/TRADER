@@ -173,6 +173,11 @@ class ClipboardReaderService:
         self._last_copy_at: Dict[str, float] = {w.name: 0.0 for w in windows}
         # 上次複製到的整塊文字 md5
         self._last_text_hash: Dict[str, str] = {w.name: "" for w in windows}
+        # 全選複製模式會拿到完整聊天記錄；用「下游已確認處理」的最後 key
+        # 作為切點，避免 seen deque 截斷後把很舊的訊息重新視為新訊息。
+        self._last_marked_key: Dict[str, Optional[Tuple[str, str, str]]] = {
+            w.name: None for w in windows
+        }
 
     # -------- public --------
 
@@ -208,6 +213,20 @@ class ClipboardReaderService:
                 seen_set.discard(old)
             seen_deque.append(k)
             seen_set.add(k)
+        if messages:
+            self._last_marked_key[source_name] = messages[-1].key
+
+    def force_retry(self, source_name: str) -> None:
+        """
+        讓下一輪即使剪貼板全文相同也重新 parse。
+
+        下游若發布 Hub 或寫 MT5 失敗，訊息不能 mark_seen；若不清掉 hash，
+        下一輪會因 identical text shortcut 直接跳過，導致無法重試。
+        """
+        if source_name in self._last_text_hash:
+            self._last_text_hash[source_name] = ""
+        if source_name in self._last_copy_at:
+            self._last_copy_at[source_name] = 0.0
 
     # -------- window id resolution --------
 
@@ -327,8 +346,8 @@ class ClipboardReaderService:
 
         logger.debug(f"clipboard trigger {w.label!r}: {reason} (title={title!r}, unread={unread})")
 
+        copy_mode = (w.copy_mode or "tail").strip().lower()
         try:
-            copy_mode = (w.copy_mode or "tail").strip().lower()
             if copy_mode == "all" and hasattr(self.clipboard, "copy_chat_all"):
                 text = self.clipboard.copy_chat_all(hwnd)
             else:
@@ -379,8 +398,22 @@ class ClipboardReaderService:
             return cap
 
         # 非首次：挑出新訊息
-        seen = self._seen_set[w.name]
-        new_msgs = diff_new_messages(parsed.messages, seen)
+        if copy_mode == "all":
+            last_key = self._last_marked_key.get(w.name)
+            new_msgs = []
+            found_tail = False
+            if last_key is not None:
+                for i, parsed_msg in enumerate(parsed.messages):
+                    if parsed_msg.key == last_key:
+                        found_tail = True
+                        new_msgs = parsed.messages[i + 1:]
+                        break
+            if last_key is None or not found_tail:
+                seen = self._seen_set[w.name]
+                new_msgs = diff_new_messages(parsed.messages, seen)
+        else:
+            seen = self._seen_set[w.name]
+            new_msgs = diff_new_messages(parsed.messages, seen)
         # 過濾掉系統訊息（加入聊天 / Auto-reply），這些不會是交易信號
         cap.new_messages = [m for m in new_msgs if not m.is_system]
         cap.ok = True

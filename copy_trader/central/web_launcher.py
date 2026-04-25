@@ -398,6 +398,7 @@ def _page_html(state: LauncherState) -> str:
   <script>
     const role = {json.dumps(state.role)};
     let snapshot = null;
+    let didFill = false;
     function ids() {{ return role === "central" ? ["host","port","token","copy_mode","interval"] : ["hub_url","token","mt5_files_dir","interval"]; }}
     function collect() {{
       const out = {{}};
@@ -417,7 +418,10 @@ def _page_html(state: LauncherState) -> str:
       const res = await fetch("/api/status");
       snapshot = await res.json();
       if (!snapshot.ok) return;
-      fill(snapshot.settings);
+      if (!didFill) {{
+        fill(snapshot.settings);
+        didFill = true;
+      }}
       document.getElementById("status").textContent = snapshot.status + (snapshot.running ? ` (${snapshot.uptime_seconds}s)` : "");
       document.getElementById("logs").textContent = (snapshot.logs || []).join("\\n");
       document.getElementById("logs").scrollTop = document.getElementById("logs").scrollHeight;

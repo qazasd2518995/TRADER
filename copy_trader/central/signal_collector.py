@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import time
+import urllib.error
 import urllib.request
 from typing import Dict, List, Optional, Tuple
 
@@ -154,13 +155,20 @@ class CentralSignalCollector:
                     logger.warning("capture failed for %s: %s", cap.display_name, cap.error)
                 continue
             for msg in cap.new_messages:
+                should_mark_seen = False
                 try:
                     count = self._process_message(msg, cap.source_name, cap.display_name)
                     published += count
+                    should_mark_seen = True
+                except (urllib.error.URLError, TimeoutError, RuntimeError) as e:
+                    logger.warning("message publish failed, will retry source=%s: %s", cap.display_name, e)
+                    self.clipboard.force_retry(cap.source_name)
                 except Exception as e:
                     logger.exception("message processing failed: %s", e)
+                    should_mark_seen = True
                 finally:
-                    self.clipboard.mark_seen(cap.source_name, [msg])
+                    if should_mark_seen:
+                        self.clipboard.mark_seen(cap.source_name, [msg])
         return published
 
     def _candidate_signals(self, body: str) -> List[ParsedSignal]:
