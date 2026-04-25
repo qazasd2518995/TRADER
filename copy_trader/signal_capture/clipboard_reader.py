@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -43,10 +44,12 @@ except Exception:
     _win32gui = None
 
 # 虛擬桌面 helper — 只在 Windows 平台有值
-try:
-    from copy_trader.platform.windows import get_virtual_desktop_manager as _get_vdm  # type: ignore
-except Exception:
-    _get_vdm = None
+_get_vdm = None
+if sys.platform == "win32":
+    try:
+        from copy_trader.platform.windows import get_virtual_desktop_manager as _get_vdm  # type: ignore
+    except Exception:
+        _get_vdm = None
 
 
 # ----- 未讀數 regex -----

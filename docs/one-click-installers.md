@@ -2,7 +2,7 @@
 
 這裡提供新的「不用命令列」版本。程式啟動後會自動開啟本機瀏覽器控制台，使用者在網頁上按開始/停止即可。
 
-- `黃金訊號中心`：安裝在中央 Windows 訊號電腦，負責 Hub + LINE 全選複製擷取。
+- `黃金訊號中心`：安裝在中央 Windows / macOS 訊號電腦，負責 Hub + LINE 全選複製擷取。
 - `黃金跟單會員端`：安裝在會員 Windows / macOS 電腦，負責接 Hub 訊號並寫入本機 MT5。
 
 ## Windows 產出安裝檔
@@ -24,28 +24,31 @@ dist\installers\黃金跟單會員端_安裝檔.exe
 
 若電腦沒有安裝 Inno Setup，腳本會先產出可直接執行的資料夾；安裝 Inno Setup 後重跑即可產出正式安裝檔。
 
-## macOS 會員端
+## macOS 產出 DMG
 
 在 macOS build 電腦執行：
 
 ```bash
 bash build_one_click_macos_client.sh
+bash build_one_click_macos_central.sh
 ```
 
 輸出：
 
 ```text
 dist/黃金跟單會員端.app
+dist/黃金訊號中心.app
 dist/installers/黃金跟單會員端.dmg
+dist/installers/黃金訊號中心.dmg
 ```
 
-macOS 中央訊號中心目前不建議打包，因為 LINE 全選複製擷取目前是 Windows 版。
+macOS 中央訊號中心需要授權「螢幕錄製」和「輔助使用」，否則程式看不到 LINE 視窗或無法送出 Cmd+A/C。
 
 ## 使用流程
 
 中央電腦：
 
-1. 安裝 `黃金訊號中心_安裝檔.exe`。
+1. 安裝 `黃金訊號中心_安裝檔.exe` 或 `黃金訊號中心.dmg`。
 2. 開啟 `黃金訊號中心`。
 3. 保留預設 Port `8765`，或自行修改。
 4. 按 `開始`。
@@ -62,7 +65,7 @@ macOS 中央訊號中心目前不建議打包，因為 LINE 全選複製擷取�
 
 ## 開機自動啟動
 
-Windows 安裝檔有「開機後自動啟動」選項。程式內也有「開啟程式後自動開始」勾選項：
+Windows 安裝檔有「開機後自動啟動」選項。macOS 可在「系統設定 → 一般 → 登入項目」加入 App。程式內也有「開啟程式後自動開始」勾選項：
 
 - 安裝時勾開機自動啟動：Windows 登入後會開程式。
 - 程式內勾自動開始：程式開啟後會自動啟動 Hub 或會員端 agent。

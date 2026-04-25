@@ -27,6 +27,8 @@ python3 -m copy_trader.central.signal_collector \
 
 `--copy-mode all` 會對 LINE 視窗執行 Ctrl+A/Ctrl+C，適合專用的中央訊號機。若仍想讀底部幾屏，可改成 `--copy-mode tail`。
 
+macOS 中央電腦第一次使用時，需要在系統設定授權目前執行程式「螢幕錄製」和「輔助使用」。缺少螢幕錄製時程式會找不到 LINE 視窗；缺少輔助使用時 Cmd+A/C 無法送到 LINE。
+
 Hub 儀表板：
 
 ```text

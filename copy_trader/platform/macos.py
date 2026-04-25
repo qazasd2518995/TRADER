@@ -46,6 +46,7 @@ try:
     from AppKit import (
         NSRunningApplication,
         NSApplicationActivateIgnoringOtherApps,
+        NSWorkspace,
     )
     APPKIT_AVAILABLE = True
 except ImportError:
@@ -464,12 +465,259 @@ class MacPlatformConfig(PlatformConfigBase):
 
 
 class MacClipboardControl(ClipboardControlBase):
-    """Placeholder — macOS clipboard path lands in a later phase."""
+    """macOS clipboard control for LINE Desktop copy-based signal capture."""
+
+    KEY_A = 0x00
+    KEY_C = 0x08
+    KEY_END = 0x77
+    KEY_PAGE_UP = 0x74
 
     def copy_chat_tail(self, window_id: int, screens: int = 2) -> str:
-        logger.warning("MacClipboardControl.copy_chat_tail is not implemented yet")
-        return ""
+        if not self._is_available() or not window_id:
+            return ""
+
+        screens = max(1, min(int(screens or 2), 10))
+        old_pid = self._frontmost_pid()
+        backup = self._backup_clipboard()
+        text = ""
+
+        try:
+            if not self._clear_clipboard():
+                return ""
+            if not self._focus_window(window_id):
+                return ""
+            self._click_chat_area(window_id)
+
+            self._tap_key(self.KEY_END, Quartz.kCGEventFlagMaskCommand)
+            time.sleep(0.12)
+            for _ in range(screens):
+                self._tap_key(self.KEY_PAGE_UP, Quartz.kCGEventFlagMaskShift)
+                time.sleep(0.08)
+            time.sleep(0.08)
+            self._tap_key(self.KEY_C, Quartz.kCGEventFlagMaskCommand)
+            text = self._read_clipboard_text(timeout=1.2)
+        except Exception as e:
+            logger.warning("macOS copy_chat_tail failed for window_id=%s: %s", window_id, e)
+        finally:
+            self._restore_clipboard(backup)
+            self._restore_frontmost_pid(old_pid)
+
+        return text or ""
 
     def copy_chat_all(self, window_id: int) -> str:
-        logger.warning("MacClipboardControl.copy_chat_all is not implemented yet")
+        if not self._is_available() or not window_id:
+            return ""
+
+        old_pid = self._frontmost_pid()
+        backup = self._backup_clipboard()
+        text = ""
+
+        try:
+            if not self._clear_clipboard():
+                return ""
+            if not self._focus_window(window_id):
+                return ""
+            self._click_chat_area(window_id)
+
+            self._tap_key(self.KEY_END, Quartz.kCGEventFlagMaskCommand)
+            time.sleep(0.12)
+            self._tap_key(self.KEY_A, Quartz.kCGEventFlagMaskCommand)
+            time.sleep(0.12)
+            self._tap_key(self.KEY_C, Quartz.kCGEventFlagMaskCommand)
+            text = self._read_clipboard_text(timeout=1.5)
+        except Exception as e:
+            logger.warning("macOS copy_chat_all failed for window_id=%s: %s", window_id, e)
+        finally:
+            self._restore_clipboard(backup)
+            self._restore_frontmost_pid(old_pid)
+
+        return text or ""
+
+    def _is_available(self) -> bool:
+        if not QUARTZ_AVAILABLE:
+            logger.error("Quartz is not available for macOS clipboard copy")
+            return False
+        if not APPKIT_AVAILABLE:
+            logger.error("AppKit is not available for macOS clipboard copy")
+            return False
+        return True
+
+    def _window_record(self, window_id: int) -> Optional[dict]:
+        if not QUARTZ_AVAILABLE:
+            return None
+        try:
+            window_list = CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID)
+        except Exception:
+            return None
+        for item in window_list or []:
+            if int(item.get("kCGWindowNumber", 0) or 0) == int(window_id):
+                return item
+        return None
+
+    def _frontmost_pid(self) -> Optional[int]:
+        if not APPKIT_AVAILABLE:
+            return None
+        try:
+            app = NSWorkspace.sharedWorkspace().frontmostApplication()
+            if app is None:
+                return None
+            return int(app.processIdentifier())
+        except Exception:
+            return None
+
+    def _restore_frontmost_pid(self, pid: Optional[int]) -> None:
+        if not pid or not APPKIT_AVAILABLE:
+            return
+        try:
+            app = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+            if app is not None:
+                app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+        except Exception:
+            pass
+
+    def _focus_window(self, window_id: int) -> bool:
+        record = self._window_record(window_id)
+        if not record or not APPKIT_AVAILABLE:
+            return False
+
+        pid = int(record.get("kCGWindowOwnerPID", 0) or 0)
+        if not pid:
+            return False
+
+        try:
+            app = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+            if app is None:
+                return False
+            app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+            time.sleep(0.18)
+            return True
+        except Exception as e:
+            logger.debug("macOS focus_window failed for window_id=%s: %s", window_id, e)
+            return False
+
+    def _point(self, x: float, y: float):
+        if hasattr(Quartz, "CGPointMake"):
+            return Quartz.CGPointMake(float(x), float(y))
+        return (float(x), float(y))
+
+    def _post_mouse(self, event_type, x: float, y: float) -> None:
+        event = Quartz.CGEventCreateMouseEvent(
+            None,
+            event_type,
+            self._point(x, y),
+            Quartz.kCGMouseButtonLeft,
+        )
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+
+    def _cursor_location(self):
+        try:
+            event = Quartz.CGEventCreate(None)
+            return Quartz.CGEventGetLocation(event)
+        except Exception:
+            return None
+
+    def _click_chat_area(self, window_id: int) -> bool:
+        record = self._window_record(window_id)
+        if not record:
+            return False
+
+        bounds = record.get("kCGWindowBounds", {}) or {}
+        x = float(bounds.get("X", 0) or 0)
+        y = float(bounds.get("Y", 0) or 0)
+        width = float(bounds.get("Width", 0) or 0)
+        height = float(bounds.get("Height", 0) or 0)
+        if width <= 0 or height <= 0:
+            return False
+
+        click_x = x + width * 0.50
+        click_y = y + height * 0.65
+        old_pos = self._cursor_location()
+
+        try:
+            self._post_mouse(Quartz.kCGEventMouseMoved, click_x, click_y)
+            time.sleep(0.03)
+            self._post_mouse(Quartz.kCGEventLeftMouseDown, click_x, click_y)
+            time.sleep(0.03)
+            self._post_mouse(Quartz.kCGEventLeftMouseUp, click_x, click_y)
+            time.sleep(0.10)
+            return True
+        except Exception as e:
+            logger.debug("macOS click_chat_area failed for window_id=%s: %s", window_id, e)
+            return False
+        finally:
+            if old_pos is not None:
+                try:
+                    self._post_mouse(Quartz.kCGEventMouseMoved, old_pos.x, old_pos.y)
+                except Exception:
+                    pass
+
+    def _tap_key(self, key_code: int, flags: int = 0) -> None:
+        down = Quartz.CGEventCreateKeyboardEvent(None, key_code, True)
+        up = Quartz.CGEventCreateKeyboardEvent(None, key_code, False)
+        if flags:
+            Quartz.CGEventSetFlags(down, flags)
+            Quartz.CGEventSetFlags(up, flags)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
+        time.sleep(0.035)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
+
+    def _backup_clipboard(self) -> Optional[str]:
+        try:
+            completed = subprocess.run(
+                ["pbpaste"],
+                capture_output=True,
+                text=True,
+                timeout=1,
+                check=False,
+            )
+            return completed.stdout if completed.returncode == 0 else ""
+        except Exception as e:
+            logger.debug("macOS clipboard backup failed: %s", e)
+            return None
+
+    def _restore_clipboard(self, backup: Optional[str]) -> None:
+        if backup is None:
+            return
+
+        try:
+            subprocess.run(
+                ["pbcopy"],
+                input=backup,
+                text=True,
+                timeout=1,
+                check=False,
+            )
+        except Exception as e:
+            logger.debug("macOS clipboard restore failed: %s", e)
+
+    def _clear_clipboard(self) -> bool:
+        try:
+            completed = subprocess.run(
+                ["pbcopy"],
+                input="",
+                text=True,
+                timeout=1,
+                check=False,
+            )
+            return completed.returncode == 0
+        except Exception as e:
+            logger.debug("macOS clipboard clear failed: %s", e)
+            return False
+
+    def _read_clipboard_text(self, timeout: float = 1.0) -> str:
+        deadline = time.time() + max(0.2, timeout)
+        while time.time() < deadline:
+            try:
+                completed = subprocess.run(
+                    ["pbpaste"],
+                    capture_output=True,
+                    text=True,
+                    timeout=1,
+                    check=False,
+                )
+                if completed.returncode == 0 and completed.stdout:
+                    return completed.stdout
+            except Exception:
+                pass
+            time.sleep(0.05)
         return ""
