@@ -49,17 +49,18 @@ macOS 中央訊號中心需要授權「螢幕錄製」和「輔助使用」，�
 中央電腦：
 
 1. 安裝 `黃金訊號中心_安裝檔.exe` 或 `黃金訊號中心.dmg`。
-2. 開啟 `黃金訊號中心`。
-3. 保留預設 Port `8765`，或自行修改。
-4. 按 `開始`。
-5. 畫面紀錄會顯示會員端要填的 Hub URL。
+2. 如果會員不在同一個網路，Windows 中央機先執行一次 `install_cloudflared_windows.bat`。
+3. 開啟 `黃金訊號中心`。
+4. 保留預設 `Hub 監聽 IP = 127.0.0.1`、Port `8765`，並勾選 `Cloudflare Tunnel`。
+5. 按 `開始`。
+6. 畫面紀錄會顯示會員端要填的 Cloudflare 公開 Hub URL。
 
 會員電腦：
 
 1. 安裝 `黃金跟單會員端`。
 2. 把新版 `mt5_ea/MT5_File_Bridge_Enhanced.mq5` 編譯並掛到 MT5 圖表。
 3. 開啟 `黃金跟單會員端`。
-4. 填中央電腦顯示的 Hub URL 和密碼。
+4. 填中央電腦顯示的 Cloudflare Hub URL 和密碼。
 5. 如自動偵測不到 MT5，手動選擇 `MQL5/Files` 資料夾。
 6. 按 `開始`。
 

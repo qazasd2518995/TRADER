@@ -35,6 +35,8 @@ Hub 儀表板：
 http://中央電腦IP:8765/?token=換成你的密碼
 ```
 
+若會員端不在同一個網路，建議在一鍵版 `黃金訊號中心` 勾選 `Cloudflare Tunnel`。Windows 中央機先執行一次 `install_cloudflared_windows.bat`，再按開始；狀態紀錄會顯示 `https://...trycloudflare.com`，會員端 Hub URL 填這個公開網址。
+
 ## 2. 用戶端電腦
 
 每台用戶電腦都要：

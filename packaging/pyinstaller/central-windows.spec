@@ -13,6 +13,7 @@ a = Analysis(
     binaries=[],
     datas=[
         (str(ROOT / "mt5_ea/MT5_File_Bridge_Enhanced.mq5"), "mt5_ea"),
+        (str(ROOT / "install_cloudflared_windows.bat"), "."),
     ],
     hiddenimports=[
         "copy_trader.central.hub_server",
