@@ -544,7 +544,7 @@ def _page_html(state: LauncherState) -> str:
         fill(snapshot.settings);
         didFill = true;
       }}
-      document.getElementById("status").textContent = snapshot.status + (snapshot.running ? ` (${snapshot.uptime_seconds}s)` : "");
+      document.getElementById("status").textContent = snapshot.status + (snapshot.running ? ` (${{snapshot.uptime_seconds}}s)` : "");
       document.getElementById("logs").textContent = (snapshot.logs || []).join("\\n");
       document.getElementById("logs").scrollTop = document.getElementById("logs").scrollHeight;
       if (role === "central") {{
