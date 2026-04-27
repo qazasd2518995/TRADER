@@ -7,6 +7,9 @@ Windows 訊號源電腦使用方式
 2. 若要產生正式安裝檔，先安裝 Inno Setup。
    沒安裝也可以，會產出可直接執行的 dist\黃金訊號中心 資料夾。
 3. 雙擊 build_signal_center_windows.bat。
+   如果視窗仍然消失，右鍵資料夾空白處開啟 Terminal / PowerShell，執行：
+   cmd /k build_signal_center_windows.bat
+   並把 build_signal_center_windows.log 傳回來。
 4. 產出後優先使用：
    dist\installers\黃金訊號中心_安裝檔.exe
 5. 如果沒有 installers，改用：
