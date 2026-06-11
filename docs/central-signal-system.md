@@ -8,7 +8,27 @@
 - Hub：保存並提供訊號 feed，可給網頁或用戶端代理輪詢。
 - 用戶端電腦：只跑輕量 MT5 agent，輪詢 Hub，寫入本機 MT5 `MQL5/Files/commands.json` 下單。
 
-## 1. 中央電腦
+## 0. 雲端 Hub 模式（建議）
+
+如果 Hub 已部署在雲端（例如 Fly.io，網址固定不會變），就不需要在中央電腦本機自架 Hub，也不需要 Cloudflare Tunnel：
+
+- 一鍵版「黃金訊號中心」：在「雲端 Hub URL」填雲端網址（例如 `https://gold-signal-hub-tw.fly.dev`）、「Hub 密碼」填該 Hub 的 token，按開始。中央機只會把擷取到的訊號 POST 到雲端 Hub，本機不再開 Hub。
+- 命令列版：直接讓擷取器發到雲端即可，不必先啟動本機 hub：
+
+```bash
+python3 -m copy_trader.central.signal_collector \
+  --hub-url https://gold-signal-hub-tw.fly.dev \
+  --token "雲端Hub密碼" \
+  --copy-mode all
+```
+
+- 每台會員端的「中央 Hub URL」「Hub 密碼」也填同一組雲端網址與 token。
+
+雲端 Hub 適合會員分散在不同網路的情況；網址固定，會員端設定一次即可，不像 Cloudflare Quick Tunnel 每次重啟都會換網址。
+
+下面第 1、2 節是「中央電腦本機自架 Hub」的傳統方式，雲端模式可略過第 1 節的 Hub 啟動步驟。
+
+## 1. 中央電腦（本機自架 Hub）
 
 先啟動 Hub：
 

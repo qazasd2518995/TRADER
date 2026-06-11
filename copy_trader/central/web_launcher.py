@@ -105,6 +105,7 @@ class LauncherState:
     def defaults(self) -> Dict[str, Any]:
         if self.role == "central":
             return {
+                "hub_url": "",
                 "host": "0.0.0.0",
                 "port": "8765",
                 "token": secrets.token_urlsafe(24),
@@ -263,32 +264,53 @@ class LauncherState:
     def _run_central(self) -> None:
         try:
             from copy_trader.central.hub_server import HubHTTPServer, HubRequestHandler, SignalStore
+            from copy_trader.central.mt5_client_agent import HubClient
             from copy_trader.central.signal_collector import CentralSignalCollector, HubPublisher
 
-            host = str(self.settings.get("host") or "0.0.0.0")
-            port = int(self.settings.get("port") or 8765)
             token = str(self.settings.get("token") or "")
             interval = max(0.2, float(self.settings.get("interval") or 1.0))
             copy_mode = str(self.settings.get("copy_mode") or "all")
+            remote_hub = str(self.settings.get("hub_url") or "").strip().rstrip("/")
 
-            self.httpd = HubHTTPServer((host, port), HubRequestHandler, SignalStore(DATA_DIR / "central_hub_signals.jsonl"), token)
-            server_thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
-            server_thread.start()
-
-            local_url = f"http://127.0.0.1:{port}"
-            lan_url = f"http://{_lan_ip()}:{port}"
-            loopback_only = host in ("127.0.0.1", "localhost", "::1")
-            if loopback_only:
-                logger.info("Hub 已啟動（僅本機 %s）", local_url)
-                if not _truthy(self.settings.get("cloudflare_tunnel")):
-                    logger.warning("Hub 目前只監聽本機，區網會員無法連線；請把「Hub 監聽 IP」改成 0.0.0.0，或勾選 Cloudflare Tunnel")
+            if remote_hub:
+                # 雲端 Hub 模式：不在本機開 Hub，直接把訊號發到雲端（例如 Fly.io）。
+                # 會員端 Hub URL 也填同一個雲端網址。
+                publish_url = remote_hub
+                logger.info("雲端 Hub 模式，發布到：%s", remote_hub)
+                try:
+                    health = HubClient(remote_hub, token).health()
+                    logger.info("雲端 Hub 連線成功：latest_seq=%s", health.get("latest_seq"))
+                except urllib.error.HTTPError as exc:
+                    if exc.code == 401:
+                        logger.error("雲端 Hub 密碼錯誤（401），請檢查「Hub 密碼」設定")
+                    else:
+                        logger.warning("雲端 Hub 健康檢查失敗（%s），仍會嘗試發布", exc)
+                except Exception as exc:
+                    logger.warning("無法連線雲端 Hub（%s），仍會嘗試發布：%s", remote_hub, exc)
+                logger.info("會員端 Hub URL 請填：%s", remote_hub)
             else:
-                logger.info("Hub 已啟動：%s", lan_url)
-                logger.info("區網會員端請填 Hub URL：%s（若連不上請檢查 Windows 防火牆是否放行）", lan_url)
-            logger.info("Hub 管理頁面：%s/?token=%s", local_url, token)
-            self._start_cloudflare_tunnel(port)
+                # 本機自架 Hub 模式（區網直連或 Cloudflare Tunnel）。
+                host = str(self.settings.get("host") or "0.0.0.0")
+                port = int(self.settings.get("port") or 8765)
+                self.httpd = HubHTTPServer((host, port), HubRequestHandler, SignalStore(DATA_DIR / "central_hub_signals.jsonl"), token)
+                server_thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+                server_thread.start()
 
-            collector = CentralSignalCollector(load_config(), HubPublisher(local_url, token), copy_mode=copy_mode)
+                local_url = f"http://127.0.0.1:{port}"
+                lan_url = f"http://{_lan_ip()}:{port}"
+                publish_url = local_url
+                loopback_only = host in ("127.0.0.1", "localhost", "::1")
+                if loopback_only:
+                    logger.info("Hub 已啟動（僅本機 %s）", local_url)
+                    if not _truthy(self.settings.get("cloudflare_tunnel")):
+                        logger.warning("Hub 目前只監聽本機，區網會員無法連線；請把「Hub 監聽 IP」改成 0.0.0.0，或勾選 Cloudflare Tunnel")
+                else:
+                    logger.info("Hub 已啟動：%s", lan_url)
+                    logger.info("區網會員端請填 Hub URL：%s（若連不上請檢查 Windows 防火牆是否放行）", lan_url)
+                logger.info("Hub 管理頁面：%s/?token=%s", local_url, token)
+                self._start_cloudflare_tunnel(port)
+
+            collector = CentralSignalCollector(load_config(), HubPublisher(publish_url, token), copy_mode=copy_mode)
             self.status = "運行中"
             self.service_started_at = time.time()
 
@@ -483,11 +505,13 @@ def make_handler(state: LauncherState):
 def _page_html(state: LauncherState) -> str:
     is_central = state.role == "central"
     fields = """
-      <label>Hub 監聽 IP<input id="host" /></label>
-      <label>Hub Port<input id="port" /></label>
+      <label>雲端 Hub URL<input id="hub_url" placeholder="留空 = 本機自架 Hub；雲端填 https://...fly.dev" /></label>
       <label>Hub 密碼<input id="token" type="password" /></label>
       <label>複製模式<select id="copy_mode"><option value="all">全選複製</option><option value="tail">底部幾屏</option></select></label>
       <label>輪詢秒數<input id="interval" /></label>
+      <hr style="grid-column:1/3;border:none;border-top:1px solid #e3e8ec;margin:6px 0" />
+      <label>Hub 監聽 IP<input id="host" placeholder="本機自架時用；0.0.0.0" /></label>
+      <label>Hub Port<input id="port" placeholder="本機自架時用；8765" /></label>
       <label>Cloudflare Tunnel<input id="cloudflare_tunnel" type="checkbox" /></label>
       <label>cloudflared 路徑<input id="cloudflared_path" placeholder="可留空自動搜尋" /></label>
       <label>開啟程式後自動開始<input id="auto_start" type="checkbox" /></label>
@@ -541,7 +565,7 @@ def _page_html(state: LauncherState) -> str:
     const role = {json.dumps(state.role)};
     let snapshot = null;
     let didFill = false;
-    function ids() {{ return role === "central" ? ["host","port","token","copy_mode","interval","cloudflare_tunnel","cloudflared_path","auto_start"] : ["hub_url","token","mt5_files_dir","interval","auto_start"]; }}
+    function ids() {{ return role === "central" ? ["hub_url","host","port","token","copy_mode","interval","cloudflare_tunnel","cloudflared_path","auto_start"] : ["hub_url","token","mt5_files_dir","interval","auto_start"]; }}
     function collect() {{
       const out = {{}};
       for (const id of ids()) {{
@@ -575,10 +599,13 @@ def _page_html(state: LauncherState) -> str:
       document.getElementById("logs").textContent = (snapshot.logs || []).join("\\n");
       document.getElementById("logs").scrollTop = document.getElementById("logs").scrollHeight;
       if (role === "central") {{
+        const remoteHub = String(snapshot.settings.hub_url || "").trim();
         const port = snapshot.settings.port || "8765";
         const host = String(snapshot.settings.host || "").trim();
         const loopbackOnly = host === "127.0.0.1" || host === "localhost" || host === "::1";
-        if (snapshot.cloudflare_url) {{
+        if (remoteHub) {{
+          document.getElementById("hint").textContent = `雲端 Hub 模式：訊號發布到 ${{remoteHub}}；會員端 Hub URL 也填這個。`;
+        }} else if (snapshot.cloudflare_url) {{
           document.getElementById("hint").textContent = `會員端 Hub URL：${{snapshot.cloudflare_url}}`;
         }} else if (["true", "1", "yes", "on"].includes(String(snapshot.settings.cloudflare_tunnel || "").toLowerCase())) {{
           document.getElementById("hint").textContent = "Cloudflare Tunnel 啟動中；公開 Hub URL 會出現在狀態紀錄。";
@@ -595,7 +622,10 @@ def _page_html(state: LauncherState) -> str:
     if (document.getElementById("testHub")) document.getElementById("testHub").onclick = () => post("/api/test-hub", collect()).then(j => alert(`連線成功 latest_seq=${{j.health.latest_seq}}`)).catch(e => alert(e.message));
     if (document.getElementById("openHub")) document.getElementById("openHub").onclick = () => {{
       const s = collect();
-      window.open(`http://127.0.0.1:${{s.port || "8765"}}/?token=${{encodeURIComponent(s.token || "")}}`, "_blank");
+      let remoteHub = String(s.hub_url || "").trim();
+      if (remoteHub.endsWith("/")) remoteHub = remoteHub.slice(0, -1);
+      const base = remoteHub || `http://127.0.0.1:${{s.port || "8765"}}`;
+      window.open(`${{base}}/?token=${{encodeURIComponent(s.token || "")}}`, "_blank");
     }};
     refresh();
     setInterval(refresh, 1000);

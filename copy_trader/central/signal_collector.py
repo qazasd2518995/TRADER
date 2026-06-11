@@ -64,6 +64,25 @@ def _is_complete(signal: ParsedSignal) -> bool:
     return bool(signal.is_valid and signal.direction and has_entry and signal.stop_loss and signal.take_profit)
 
 
+def _sl_tp_consistent(signal: ParsedSignal) -> bool:
+    """SL/TP 必須在方向正確的一側，否則視為解析錯誤，不發布。"""
+    sl = signal.stop_loss
+    tps = [float(t) for t in (signal.take_profit or []) if t is not None]
+    if sl is None or not tps:
+        return True
+    sl = float(sl)
+    entry = float(signal.entry_price) if signal.entry_price is not None else None
+    if signal.direction == "buy":
+        if not all(tp > sl for tp in tps):
+            return False
+        return entry is None or (sl < entry < min(tps))
+    if signal.direction == "sell":
+        if not all(tp < sl for tp in tps):
+            return False
+        return entry is None or (max(tps) < entry < sl)
+    return True
+
+
 def _signal_payload(signal: ParsedSignal) -> Dict:
     return {
         "symbol": signal.symbol or "XAUUSD",
@@ -221,6 +240,13 @@ class CentralSignalCollector:
 
             if source_name in self._pending:
                 self._pending.pop(source_name, None)
+
+            if not _sl_tp_consistent(signal):
+                logger.warning(
+                    "skipped reversed signal (SL/TP wrong side) source=%s dir=%s entry=%s sl=%s tp=%s",
+                    source_display, signal.direction, signal.entry_price, signal.stop_loss, signal.take_profit,
+                )
+                continue
 
             key = _signal_key(signal, source_display)
             if key in self._processed:

@@ -82,6 +82,36 @@ def _parsed_signal_from_payload(payload: Dict) -> ParsedSignal:
     )
 
 
+def _sl_tp_consistent(signal: ParsedSignal) -> bool:
+    """
+    確認 SL/TP 落在方向正確的一側，擋掉解析錯誤的反向訊號。
+
+    buy：SL 必須低於 entry、entry 必須低於每個 TP（市價單沒有 entry 時，
+    只要求每個 TP 高於 SL）。sell 相反。這能擋掉像「buy entry=4588
+    sl=4605 tp=4580」這種 SL/TP 顛倒的壞訊號被送進 MT5。
+    """
+    sl = signal.stop_loss
+    tps = [float(t) for t in (signal.take_profit or []) if t is not None]
+    if sl is None or not tps:
+        return True
+    sl = float(sl)
+    entry = float(signal.entry_price) if signal.entry_price is not None else None
+
+    if signal.direction == "buy":
+        if not all(tp > sl for tp in tps):
+            return False
+        if entry is not None and not (sl < entry < min(tps)):
+            return False
+        return True
+    if signal.direction == "sell":
+        if not all(tp < sl for tp in tps):
+            return False
+        if entry is not None and not (max(tps) < entry < sl):
+            return False
+        return True
+    return True
+
+
 def _is_executable_signal(signal: ParsedSignal) -> bool:
     has_entry = signal.entry_price is not None or bool(signal.is_market_order)
     return bool(
@@ -90,6 +120,7 @@ def _is_executable_signal(signal: ParsedSignal) -> bool:
         and has_entry
         and signal.stop_loss is not None
         and signal.take_profit
+        and _sl_tp_consistent(signal)
     )
 
 
@@ -151,7 +182,13 @@ class MT5ClientAgent:
             payload = item.get("signal") or {}
             signal = _parsed_signal_from_payload(payload)
             if not _is_executable_signal(signal):
-                logger.warning("invalid hub signal seq=%s: incomplete signal payload=%s", seq, payload)
+                if signal.direction in {"buy", "sell"} and not _sl_tp_consistent(signal):
+                    logger.warning(
+                        "rejected hub signal seq=%s: SL/TP on wrong side for %s (entry=%s sl=%s tp=%s) — skipped",
+                        seq, signal.direction, signal.entry_price, signal.stop_loss, signal.take_profit,
+                    )
+                else:
+                    logger.warning("invalid hub signal seq=%s: incomplete signal payload=%s", seq, payload)
                 self._mark_seq(seq)
                 continue
 
