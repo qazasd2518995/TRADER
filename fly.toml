@@ -1,0 +1,31 @@
+# Fly.io config for the central signal Hub.
+# Deploy from the repo root:  fly deploy
+# Set the shared password once: fly secrets set COPY_TRADER_HUB_TOKEN=<your-token>
+app = "gold-signal-hub-tw"
+primary_region = "nrt"
+
+[build]
+
+[env]
+  COPY_TRADER_HUB_HOST = "0.0.0.0"
+  COPY_TRADER_HUB_PORT = "8080"
+  COPY_TRADER_HUB_STORE = "/data/central_hub_signals.jsonl"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+# Persistent volume so the signal history (and seq counter) survives restarts.
+# Create it once before the first deploy:
+#   fly volumes create hub_data --region nrt --size 1
+[[mounts]]
+  source = "hub_data"
+  destination = "/data"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256

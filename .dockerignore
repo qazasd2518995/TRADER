@@ -1,0 +1,12 @@
+# Fly's build context is the whole repo root, but the Hub image only needs
+# copy_trader/. Exclude everything, then re-include just the Python package so
+# each `fly deploy` uploads kilobytes — not node_modules, the Rust target dir,
+# the PyInstaller dist/, the MT5 EA, or tools/ (which holds a ~1GB line_chat.db).
+*
+!copy_trader
+
+# Never ship caches / compiled artifacts, even from the re-included tree.
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd

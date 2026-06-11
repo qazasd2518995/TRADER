@@ -26,6 +26,8 @@ python3 -m copy_trader.central.signal_collector \
 
 雲端 Hub 適合會員分散在不同網路的情況；網址固定，會員端設定一次即可，不像 Cloudflare Quick Tunnel 每次重啟都會換網址。
 
+Hub 本身怎麼部署到 Fly.io（`Dockerfile` / `fly.toml` / 換密碼 / 更新）見 [`cloud-hub-deploy.md`](cloud-hub-deploy.md)。
+
 下面第 1、2 節是「中央電腦本機自架 Hub」的傳統方式，雲端模式可略過第 1 節的 Hub 啟動步驟。
 
 ## 1. 中央電腦（本機自架 Hub）
