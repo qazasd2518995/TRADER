@@ -20,6 +20,7 @@ import threading
 import time
 import urllib.error
 import urllib.parse
+import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -104,19 +105,21 @@ class LauncherState:
     def defaults(self) -> Dict[str, Any]:
         if self.role == "central":
             return {
-                "host": "127.0.0.1",
+                "host": "0.0.0.0",
                 "port": "8765",
                 "token": secrets.token_urlsafe(24),
                 "copy_mode": "all",
                 "interval": "1.0",
                 "cloudflare_tunnel": "true",
                 "cloudflared_path": "",
+                "auto_start": "false",
             }
         return {
             "hub_url": "http://中央電腦IP:8765",
             "token": "",
             "mt5_files_dir": "",
             "interval": "1.0",
+            "auto_start": "false",
         }
 
     def _load_settings(self) -> Dict[str, Any]:
@@ -274,8 +277,14 @@ class LauncherState:
 
             local_url = f"http://127.0.0.1:{port}"
             lan_url = f"http://{_lan_ip()}:{port}"
-            logger.info("Hub 已啟動：%s", lan_url)
-            logger.info("會員端請填 Hub URL：%s", lan_url)
+            loopback_only = host in ("127.0.0.1", "localhost", "::1")
+            if loopback_only:
+                logger.info("Hub 已啟動（僅本機 %s）", local_url)
+                if not _truthy(self.settings.get("cloudflare_tunnel")):
+                    logger.warning("Hub 目前只監聽本機，區網會員無法連線；請把「Hub 監聽 IP」改成 0.0.0.0，或勾選 Cloudflare Tunnel")
+            else:
+                logger.info("Hub 已啟動：%s", lan_url)
+                logger.info("區網會員端請填 Hub URL：%s（若連不上請檢查 Windows 防火牆是否放行）", lan_url)
             logger.info("Hub 管理頁面：%s/?token=%s", local_url, token)
             self._start_cloudflare_tunnel(port)
 
@@ -314,12 +323,23 @@ class LauncherState:
             mt5_dir = str(self.settings.get("mt5_files_dir") or "")
             interval = max(0.5, float(self.settings.get("interval") or 1.0))
 
-            self.client_agent = MT5ClientAgent(
-                HubClient(hub_url, token),
-                DATA_DIR / "central_client_state.json",
-                mt5_files_dir=mt5_dir,
-                replay=False,
-            )
+            # Hub 可能晚於會員端開機；連不上就每 10 秒重試，不直接放棄。
+            while not self.stop_event.is_set():
+                try:
+                    self.client_agent = MT5ClientAgent(
+                        HubClient(hub_url, token),
+                        DATA_DIR / "central_client_state.json",
+                        mt5_files_dir=mt5_dir,
+                        replay=False,
+                    )
+                    break
+                except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                    self.status = "等待 Hub 連線"
+                    logger.warning("無法連線 Hub（%s），10 秒後重試：%s", hub_url, exc)
+                    self.stop_event.wait(10)
+            if self.client_agent is None:
+                return
+
             self.client_agent.trade_manager.start()
             logger.info("會員端已啟動，Hub=%s，last_seq=%s", hub_url, self.client_agent.last_seq)
             self.status = "運行中"
@@ -330,6 +350,11 @@ class LauncherState:
                     count = self.client_agent.run_cycle()
                     if count:
                         logger.info("本輪送出 %s 筆 MT5 指令", count)
+                except urllib.error.HTTPError as exc:
+                    if exc.code == 401:
+                        logger.error("Hub 密碼錯誤（401），請檢查「Hub 密碼」設定")
+                    else:
+                        logger.warning("Hub 連線失敗：%s", exc)
                 except (urllib.error.URLError, TimeoutError) as exc:
                     logger.warning("Hub 連線失敗：%s", exc)
                 except Exception as exc:
@@ -465,11 +490,13 @@ def _page_html(state: LauncherState) -> str:
       <label>輪詢秒數<input id="interval" /></label>
       <label>Cloudflare Tunnel<input id="cloudflare_tunnel" type="checkbox" /></label>
       <label>cloudflared 路徑<input id="cloudflared_path" placeholder="可留空自動搜尋" /></label>
+      <label>開啟程式後自動開始<input id="auto_start" type="checkbox" /></label>
     """ if is_central else """
       <label>中央 Hub URL<input id="hub_url" placeholder="http://中央電腦IP:8765" /></label>
       <label>Hub 密碼<input id="token" type="password" /></label>
       <label>MT5 Files 路徑<input id="mt5_files_dir" placeholder="可留空自動偵測" /></label>
       <label>輪詢秒數<input id="interval" /></label>
+      <label>開啟程式後自動開始<input id="auto_start" type="checkbox" /></label>
     """
     extra_button = "<button id=\"openHub\">開啟 Hub 頁面</button>" if is_central else "<button id=\"testHub\">測試 Hub</button>"
     return f"""<!doctype html>
@@ -514,7 +541,7 @@ def _page_html(state: LauncherState) -> str:
     const role = {json.dumps(state.role)};
     let snapshot = null;
     let didFill = false;
-    function ids() {{ return role === "central" ? ["host","port","token","copy_mode","interval","cloudflare_tunnel","cloudflared_path"] : ["hub_url","token","mt5_files_dir","interval"]; }}
+    function ids() {{ return role === "central" ? ["host","port","token","copy_mode","interval","cloudflare_tunnel","cloudflared_path","auto_start"] : ["hub_url","token","mt5_files_dir","interval","auto_start"]; }}
     function collect() {{
       const out = {{}};
       for (const id of ids()) {{
@@ -549,12 +576,16 @@ def _page_html(state: LauncherState) -> str:
       document.getElementById("logs").scrollTop = document.getElementById("logs").scrollHeight;
       if (role === "central") {{
         const port = snapshot.settings.port || "8765";
+        const host = String(snapshot.settings.host || "").trim();
+        const loopbackOnly = host === "127.0.0.1" || host === "localhost" || host === "::1";
         if (snapshot.cloudflare_url) {{
           document.getElementById("hint").textContent = `會員端 Hub URL：${{snapshot.cloudflare_url}}`;
         }} else if (["true", "1", "yes", "on"].includes(String(snapshot.settings.cloudflare_tunnel || "").toLowerCase())) {{
           document.getElementById("hint").textContent = "Cloudflare Tunnel 啟動中；公開 Hub URL 會出現在狀態紀錄。";
+        }} else if (loopbackOnly) {{
+          document.getElementById("hint").textContent = "Hub 只監聽本機，會員端無法連線 — 請把「Hub 監聽 IP」改成 0.0.0.0，或勾選 Cloudflare Tunnel。";
         }} else {{
-          document.getElementById("hint").textContent = `會員端 Hub URL 可填：http://${{snapshot.lan_ip}}:${{port}}`;
+          document.getElementById("hint").textContent = `會員端 Hub URL 可填：http://${{snapshot.lan_ip}}:${{port}}（限同一區網）`;
         }}
       }}
     }}
@@ -580,17 +611,49 @@ def _install_logging(state: LauncherState) -> None:
     logging.getLogger().addHandler(handler)
 
 
+def _find_running_instance(role: str, port_file: Path) -> Optional[str]:
+    """若同角色的程式已在執行，回傳其控制台 URL；否則回傳 None。"""
+    try:
+        port = int(port_file.read_text(encoding="utf-8").strip())
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=1.5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        if data.get("ok") and data.get("role") == role:
+            return f"http://127.0.0.1:{port}/"
+    except Exception:
+        pass
+    return None
+
+
 def main(default_role: Optional[str] = None) -> None:
     role = _infer_role(default_role)
     state = LauncherState(role)
     _install_logging(state)
+
+    # 單一實例：重複開啟時直接打開既有控制台，避免兩個 agent 同時下單。
+    port_file = DATA_DIR / f"{role}_web_launcher_port.txt"
+    if port_file.exists():
+        existing = _find_running_instance(role, port_file)
+        if existing:
+            logger.info("%s 已在執行，開啟既有控制台：%s", state.title, existing)
+            webbrowser.open(existing)
+            return
+
     logger.info("%s 已啟動", state.title)
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(state))
     state.control_server = server
     url = f"http://127.0.0.1:{server.server_address[1]}/"
+    try:
+        port_file.parent.mkdir(parents=True, exist_ok=True)
+        port_file.write_text(str(server.server_address[1]), encoding="utf-8")
+    except Exception:
+        pass
     webbrowser.open(url)
     logger.info("控制台：%s", url)
+
+    if _truthy(state.settings.get("auto_start")):
+        logger.info("已設定自動開始，啟動服務中…")
+        state.start_service()
 
     try:
         server.serve_forever()
@@ -599,6 +662,10 @@ def main(default_role: Optional[str] = None) -> None:
     finally:
         state.stop_service()
         server.server_close()
+        try:
+            port_file.unlink()
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":

@@ -327,12 +327,23 @@ class OneClickLauncher:
             mt5_dir = settings["mt5_files_dir"]
             interval = max(0.5, float(settings["interval"]))
 
-            self.client_agent = MT5ClientAgent(
-                HubClient(hub_url, token),
-                DATA_DIR / "central_client_state.json",
-                mt5_files_dir=mt5_dir,
-                replay=False,
-            )
+            # Hub 可能晚於會員端開機；連不上就每 10 秒重試，不直接放棄。
+            while not self.stop_event.is_set():
+                try:
+                    self.client_agent = MT5ClientAgent(
+                        HubClient(hub_url, token),
+                        DATA_DIR / "central_client_state.json",
+                        mt5_files_dir=mt5_dir,
+                        replay=False,
+                    )
+                    break
+                except (urllib.error.URLError, TimeoutError, OSError) as e:
+                    self.root.after(0, lambda: self.status_var.set("等待 Hub 連線"))
+                    logger.warning("無法連線 Hub（%s），10 秒後重試：%s", hub_url, e)
+                    self.stop_event.wait(10)
+            if self.client_agent is None:
+                return
+
             self.client_agent.trade_manager.start()
             logger.info("會員端已啟動，Hub=%s，last_seq=%s", hub_url, self.client_agent.last_seq)
             self.root.after(0, lambda: self.status_var.set("運行中"))
@@ -342,6 +353,11 @@ class OneClickLauncher:
                     count = self.client_agent.run_cycle()
                     if count:
                         logger.info("本輪送出 %s 筆 MT5 指令", count)
+                except urllib.error.HTTPError as e:
+                    if e.code == 401:
+                        logger.error("Hub 密碼錯誤（401），請檢查「Hub 密碼」設定")
+                    else:
+                        logger.warning("Hub 連線失敗：%s", e)
                 except (urllib.error.URLError, TimeoutError) as e:
                     logger.warning("Hub 連線失敗：%s", e)
                 except Exception as e:

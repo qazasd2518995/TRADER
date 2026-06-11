@@ -431,8 +431,10 @@ class CopyTrader:
                         logger.error(f"clipboard message MT5-related error, will retry: {e}")
                         if hasattr(self.clipboard_service, "force_retry"):
                             self.clipboard_service.force_retry(cap.source_name)
-                        # 不 mark_seen — 讓下一輪重試
-                        continue
+                        # 不 mark_seen — 讓下一輪重試。
+                        # 必須中斷本批：全選複製模式以最後 mark_seen 的訊息當切點，
+                        # 若後面的訊息先被標記，這則失敗的訊息下一輪會被跳過。
+                        break
                     logger.exception(f"clipboard message handler failed: {e}")
                     self.clipboard_service.mark_seen(cap.source_name, [msg])
                     continue

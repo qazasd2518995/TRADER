@@ -156,6 +156,7 @@ class CentralSignalCollector:
                 continue
             for msg in cap.new_messages:
                 should_mark_seen = False
+                abort_source = False
                 try:
                     count = self._process_message(msg, cap.source_name, cap.display_name)
                     published += count
@@ -163,12 +164,18 @@ class CentralSignalCollector:
                 except (urllib.error.URLError, TimeoutError, RuntimeError) as e:
                     logger.warning("message publish failed, will retry source=%s: %s", cap.display_name, e)
                     self.clipboard.force_retry(cap.source_name)
+                    # 全選複製模式的新訊息切點是「最後一則已 mark_seen 的訊息」；
+                    # 若這裡 continue 讓後面的訊息先被標記，這則失敗的訊號
+                    # 下一輪會被切點跳過而永久遺失。中斷本批，下一輪整批重試。
+                    abort_source = True
                 except Exception as e:
                     logger.exception("message processing failed: %s", e)
                     should_mark_seen = True
                 finally:
                     if should_mark_seen:
                         self.clipboard.mark_seen(cap.source_name, [msg])
+                if abort_source:
+                    break
         return published
 
     def _candidate_signals(self, body: str) -> List[ParsedSignal]:

@@ -28,9 +28,10 @@ echo   Build Windows central signal app only
 echo ============================================
 echo.
 
+rem 用「實際能執行」來偵測 Python — py.exe 存在但指向已移除的安裝時 where 仍會成功
 set "PY_CMD="
-where py >nul 2>&1 && set "PY_CMD=py"
-if not defined PY_CMD where python >nul 2>&1 && set "PY_CMD=python"
+py --version >nul 2>&1 && set "PY_CMD=py"
+if not defined PY_CMD python --version >nul 2>&1 && set "PY_CMD=python"
 
 if not defined PY_CMD (
     echo [ERROR] 找不到 Python。
