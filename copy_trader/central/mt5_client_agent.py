@@ -24,17 +24,28 @@ logger = logging.getLogger(__name__)
 
 
 class HubClient:
-    def __init__(self, hub_url: str, token: str = "", timeout: float = 8.0):
+    def __init__(self, hub_url: str, token: str = "", timeout: float = 15.0):
         self.hub_url = hub_url.rstrip("/")
         self.token = token
         self.timeout = timeout
 
-    def _request(self, path: str) -> Dict:
-        req = urllib.request.Request(f"{self.hub_url}{path}", method="GET")
-        if self.token:
-            req.add_header("Authorization", f"Bearer {self.token}")
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+    def _request(self, path: str, retries: int = 2) -> Dict:
+        """GET with 退避重試: 暫時性網路卡頓(timeout/連線斷)時自動重試, 避免單次抖動就放棄。"""
+        last_exc: Optional[Exception] = None
+        for attempt in range(retries + 1):
+            try:
+                req = urllib.request.Request(f"{self.hub_url}{path}", method="GET")
+                if self.token:
+                    req.add_header("Authorization", f"Bearer {self.token}")
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError:
+                raise  # 401 等 HTTP 錯誤不重試
+            except (urllib.error.URLError, TimeoutError, OSError) as e:
+                last_exc = e
+                if attempt < retries:
+                    time.sleep(0.5 * (attempt + 1))  # 退避: 0.5s, 1.0s
+        raise last_exc if last_exc else RuntimeError("hub request failed")
 
     def health(self) -> Dict:
         return self._request("/health")
@@ -131,6 +142,8 @@ class MT5ClientAgent:
         self.config = load_config()
         if mt5_files_dir:
             self.config.mt5_files_dir = mt5_files_dir
+        # 訊號時效鎖: hub 訊號擷取時間超過這麼久就不下單 (防會員端恢復後補到舊單)。0=不限。
+        self.max_signal_age_sec = max(0, int(getattr(self.config, "signal_max_age_minutes", 10) or 0) * 60)
 
         self.trade_manager = TradeManager(self.config.mt5_files_dir)
         self.trade_manager.default_lot_size = self.config.default_lot_size
@@ -178,6 +191,15 @@ class MT5ClientAgent:
             if item.get("type") != "trade_signal":
                 self._mark_seq(seq)
                 continue
+
+            # 訊號時效鎖: 擷取時間太舊就跳過 (例如會員端剛恢復, 補到一堆舊單)
+            captured_at = float(item.get("captured_at") or 0)
+            if self.max_signal_age_sec > 0 and captured_at > 0:
+                age = time.time() - captured_at
+                if age > self.max_signal_age_sec:
+                    logger.info("跳過過期 hub 訊號 seq=%s (擷取已過 %.0f 分鐘)", seq, age / 60.0)
+                    self._mark_seq(seq)
+                    continue
 
             payload = item.get("signal") or {}
             signal = _parsed_signal_from_payload(payload)

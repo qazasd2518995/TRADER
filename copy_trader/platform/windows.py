@@ -619,50 +619,81 @@ class WindowsClipboardControl(ClipboardControlBase):
         except Exception:
             pass
 
-    def _focus(self, hwnd: int) -> bool:
+    def _disable_foreground_lock(self) -> None:
         """
-        Bring ``hwnd`` to the foreground reliably on Win10/11.
+        關閉 Windows 前景鎖，讓背景程序的 SetForegroundWindow 真正生效。
 
-        Microsoft's foreground lock rejects SetForegroundWindow from non-foreground
-        processes. Standard workarounds (Raymond Chen / PowerToys):
-          1. simulate an Alt key-tap so the calling thread is "just" an input source
-          2. AttachThreadInput the current thread to the foreground thread's input queue
-        Both tricks are used together for maximum reliability.
+        Win10/11 預設在「使用者最近有輸入」期間禁止其他程式搶前景
+        (SPI_GETFOREGROUNDLOCKTIMEOUT)。把它設成 0 等於停用該鎖；再配合
+        AllowSetForegroundWindow(ASFW_ANY) 允許任何程序搶前景。這是讓背景
+        擷取穩定的關鍵（單純 AttachThreadInput + Alt tap 在背景常常不夠）。
         """
         try:
-            if win32gui.IsIconic(hwnd):
-                ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-                time.sleep(0.12)
-            else:
-                ctypes.windll.user32.ShowWindow(hwnd, 5)  # SW_SHOW
+            SPI_SETFOREGROUNDLOCKTIMEOUT = 0x2001
+            SPIF_SENDCHANGE = 0x2
+            ctypes.windll.user32.SystemParametersInfoW(
+                SPI_SETFOREGROUNDLOCKTIMEOUT, 0, ctypes.c_void_p(0), SPIF_SENDCHANGE
+            )
+        except Exception:
+            pass
+        try:
+            ctypes.windll.user32.AllowSetForegroundWindow(-1)  # ASFW_ANY
+        except Exception:
+            pass
 
-            # Alt tap: grants temporary foreground privilege to this thread.
-            self._tap(self.VK_MENU)
+    def _focus(self, hwnd: int) -> bool:
+        """
+        Bring ``hwnd`` to the foreground reliably on Win10/11 — even from a
+        background process / service.
 
-            # AttachThreadInput trick
-            current_tid = ctypes.windll.kernel32.GetCurrentThreadId()
-            fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
-            fg_tid = ctypes.windll.user32.GetWindowThreadProcessId(fg_hwnd, None) if fg_hwnd else 0
-            target_tid = ctypes.windll.user32.GetWindowThreadProcessId(hwnd, None)
+        Microsoft's foreground lock rejects SetForegroundWindow from non-foreground
+        processes. We combine every known workaround:
+          0. disable the foreground lock (SPI_SETFOREGROUNDLOCKTIMEOUT=0 + AllowSetForegroundWindow)
+          1. an Alt key-tap so the calling thread counts as an input source
+          2. AttachThreadInput to the foreground thread's input queue
+          3. retry a few times (CEF / lock state can need a second pass)
+        """
+        try:
+            self._disable_foreground_lock()
 
-            attached_fg = False
-            attached_tgt = False
-            try:
-                if fg_tid and fg_tid != current_tid:
-                    attached_fg = bool(ctypes.windll.user32.AttachThreadInput(current_tid, fg_tid, True))
-                if target_tid and target_tid != current_tid and target_tid != fg_tid:
-                    attached_tgt = bool(ctypes.windll.user32.AttachThreadInput(current_tid, target_tid, True))
+            for _ in range(3):
+                if win32gui.IsIconic(hwnd):
+                    ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                    time.sleep(0.12)
+                else:
+                    ctypes.windll.user32.ShowWindow(hwnd, 5)  # SW_SHOW
 
-                ctypes.windll.user32.BringWindowToTop(hwnd)
-                ctypes.windll.user32.SetActiveWindow(hwnd)
-                ctypes.windll.user32.SetForegroundWindow(hwnd)
-            finally:
-                if attached_fg:
-                    ctypes.windll.user32.AttachThreadInput(current_tid, fg_tid, False)
-                if attached_tgt:
-                    ctypes.windll.user32.AttachThreadInput(current_tid, target_tid, False)
+                # Alt tap: grants temporary foreground privilege to this thread.
+                self._tap(self.VK_MENU)
 
-            time.sleep(0.08)
+                # AttachThreadInput trick
+                current_tid = ctypes.windll.kernel32.GetCurrentThreadId()
+                fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
+                fg_tid = ctypes.windll.user32.GetWindowThreadProcessId(fg_hwnd, None) if fg_hwnd else 0
+                target_tid = ctypes.windll.user32.GetWindowThreadProcessId(hwnd, None)
+
+                attached_fg = False
+                attached_tgt = False
+                try:
+                    if fg_tid and fg_tid != current_tid:
+                        attached_fg = bool(ctypes.windll.user32.AttachThreadInput(current_tid, fg_tid, True))
+                    if target_tid and target_tid != current_tid and target_tid != fg_tid:
+                        attached_tgt = bool(ctypes.windll.user32.AttachThreadInput(current_tid, target_tid, True))
+
+                    ctypes.windll.user32.BringWindowToTop(hwnd)
+                    ctypes.windll.user32.SetActiveWindow(hwnd)
+                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+                finally:
+                    if attached_fg:
+                        ctypes.windll.user32.AttachThreadInput(current_tid, fg_tid, False)
+                    if attached_tgt:
+                        ctypes.windll.user32.AttachThreadInput(current_tid, target_tid, False)
+
+                time.sleep(0.08)
+                if win32gui.GetForegroundWindow() == hwnd:
+                    return True
+                time.sleep(0.10)  # backoff before retry
+
             return win32gui.GetForegroundWindow() == hwnd
         except Exception as e:
             logger.debug(f"_focus failed for hwnd={hwnd}: {e}")
@@ -851,6 +882,46 @@ class WindowsClipboardControl(ClipboardControlBase):
 
     # ---------------- Main API ----------------
 
+    _MOUSEEVENTF_WHEEL = 0x0800
+
+    def _scroll_to_bottom(self, hwnd: int, rounds: int = 4) -> None:
+        """
+        強制把 LINE (CEF) 聊天捲到「真正最底」（最新訊息）。
+
+        單次合成 Ctrl+End 對 CEF 虛擬列表常常無效，只停在「目前已載入區段」的底，
+        導致漏掉最新訊息。CEF 對「滑鼠滾輪」反應最可靠，所以這裡用
+        「滾輪往下 + Ctrl+End」多輪、每輪 settle，讓 LINE 惰性載入並停在最新。
+        """
+        cx = cy = None
+        try:
+            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+            if right > left and bottom > top:
+                cx = (left + right) // 2
+                cy = top + int((bottom - top) * 0.55)
+        except Exception:
+            cx = cy = None
+
+        wheel_down = (-480) & 0xFFFFFFFF   # 負值 = 往下捲（toward user）
+        for _ in range(max(1, rounds)):
+            if cx is not None:
+                try:
+                    old_pos = win32gui.GetCursorPos()
+                    ctypes.windll.user32.SetCursorPos(cx, cy)
+                    for _ in range(8):
+                        ctypes.windll.user32.mouse_event(self._MOUSEEVENTF_WHEEL, 0, 0, wheel_down, 0)
+                        time.sleep(0.01)
+                    try:
+                        ctypes.windll.user32.SetCursorPos(*old_pos)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            # Ctrl+End 補刀（當鍵盤焦點在訊息區時有效）
+            self._send_input_keys([(self.VK_CONTROL, False, False)])
+            self._tap(self.VK_END, extended=True)
+            self._send_input_keys([(self.VK_CONTROL, True, False)])
+            time.sleep(0.15)
+
     def copy_chat_tail(self, window_id: int, screens: int = 2) -> str:
         """
         呼叫者（ClipboardReaderService._should_copy）已負責虛擬桌面判斷；
@@ -886,13 +957,8 @@ class WindowsClipboardControl(ClipboardControlBase):
             #    nothing — Ctrl+C would then return stale clipboard data.
             self._click_chat_area(window_id)
 
-            # 1. Ctrl+End — jump to newest message
-            self._send_input_keys([(self.VK_CONTROL, False, False)])
-            ctrl_down = True
-            self._tap(self.VK_END, extended=True)
-            self._send_input_keys([(self.VK_CONTROL, True, False)])
-            ctrl_down = False
-            time.sleep(0.10)
+            # 1. 強制捲到最底（滾輪 + Ctrl+End 多輪），確保 CEF 載入最新訊息
+            self._scroll_to_bottom(window_id)
 
             # 2. Shift+PageUp × N — select bottom N pages
             self._send_input_keys([(self.VK_SHIFT, False, False)])
@@ -972,13 +1038,8 @@ class WindowsClipboardControl(ClipboardControlBase):
                 logger.debug(f"clipboard copy all: focus failed for hwnd={window_id}")
                 return ""
 
-            # Keep LINE positioned at the latest messages before selecting all.
-            self._send_input_keys([(self.VK_CONTROL, False, False)])
-            ctrl_down = True
-            self._tap(self.VK_END, extended=True)
-            self._send_input_keys([(self.VK_CONTROL, True, False)])
-            ctrl_down = False
-            time.sleep(0.10)
+            # 強制捲到最底（滾輪 + Ctrl+End 多輪），確保最新訊息已載入再全選
+            self._scroll_to_bottom(window_id)
 
             self._send_input_keys([
                 (self.VK_CONTROL, False, False),

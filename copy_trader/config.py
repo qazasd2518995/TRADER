@@ -163,6 +163,7 @@ class Config:
     min_confidence: float = 0.9
     max_price_deviation: float = 0.01
     signal_dedup_minutes: int = 10
+    signal_max_age_minutes: int = 10   # 訊號時效: 訊息時間超過這麼久(分)就不發布/不下單; 0=不限
     max_daily_loss: float = 500.0
 
     # MT5 Bridge Settings (auto detect)
@@ -295,6 +296,7 @@ def save_config(config: Config, path: Path = CONFIG_FILE):
         "min_confidence": config.min_confidence,
         "max_price_deviation": config.max_price_deviation,
         "signal_dedup_minutes": config.signal_dedup_minutes,
+        "signal_max_age_minutes": config.signal_max_age_minutes,
         "max_daily_loss": config.max_daily_loss,
         "mt5_files_dir": config.mt5_files_dir,
         "log_level": config.log_level,

@@ -121,6 +121,12 @@ class LauncherState:
             "mt5_files_dir": "",
             "interval": "1.0",
             "auto_start": "false",
+            "default_lot_size": "0.01",
+            "use_martingale": "true",
+            "martingale_multiplier": "2.0",
+            "martingale_max_level": "4",
+            "martingale_lots": "",
+            "partial_close_ratios": "0.5,0.3,0.2",
         }
 
     def _load_settings(self) -> Dict[str, Any]:
@@ -336,6 +342,51 @@ class LauncherState:
             self.status = "已停止"
             self.service_started_at = None
 
+    def _apply_client_trade_settings(self) -> None:
+        """把會員面板的手數 / 馬丁 / 分批設定套到 agent 的 TradeManager。"""
+        tm = self.client_agent.trade_manager
+
+        def _flt(key, fallback):
+            try:
+                v = str(self.settings.get(key) or "").strip()
+                return float(v) if v else fallback
+            except Exception:
+                return fallback
+
+        def _lots(key):
+            raw = str(self.settings.get(key) or "").strip().replace("，", ",")
+            out = []
+            for part in raw.split(","):
+                part = part.strip()
+                if part:
+                    try:
+                        out.append(float(part))
+                    except Exception:
+                        pass
+            return out
+
+        tm.default_lot_size = _flt("default_lot_size", tm.default_lot_size)
+        tm.use_martingale = _truthy(self.settings.get("use_martingale"))
+        tm.martingale_multiplier = _flt("martingale_multiplier", tm.martingale_multiplier)
+        lvl = str(self.settings.get("martingale_max_level") or "").strip()
+        if lvl:
+            try:
+                tm.martingale_max_level = int(float(lvl))
+            except Exception:
+                pass
+        ml = _lots("martingale_lots")
+        if ml:
+            tm.martingale_lots = ml
+        pcr = _lots("partial_close_ratios")
+        if pcr:
+            tm.partial_close_ratios = pcr
+
+        logger.info(
+            "套用會員設定：基礎手數=%s 馬丁=%s 倍數=%s 最大層數=%s 每層手數=%s 分批=%s",
+            tm.default_lot_size, tm.use_martingale, tm.martingale_multiplier,
+            tm.martingale_max_level, tm.martingale_lots, tm.partial_close_ratios,
+        )
+
     def _run_client(self) -> None:
         try:
             from copy_trader.central.mt5_client_agent import HubClient, MT5ClientAgent
@@ -362,14 +413,19 @@ class LauncherState:
             if self.client_agent is None:
                 return
 
+            self._apply_client_trade_settings()
             self.client_agent.trade_manager.start()
             logger.info("會員端已啟動，Hub=%s，last_seq=%s", hub_url, self.client_agent.last_seq)
             self.status = "運行中"
             self.service_started_at = time.time()
 
+            consecutive_fail = 0  # 連線連續失敗次數 (用來壓 log 洗版)
             while not self.stop_event.is_set():
                 try:
                     count = self.client_agent.run_cycle()
+                    if consecutive_fail > 0:
+                        logger.info("Hub 連線已恢復（中斷 %d 次後）", consecutive_fail)
+                        consecutive_fail = 0
                     if count:
                         logger.info("本輪送出 %s 筆 MT5 指令", count)
                 except urllib.error.HTTPError as exc:
@@ -378,7 +434,10 @@ class LauncherState:
                     else:
                         logger.warning("Hub 連線失敗：%s", exc)
                 except (urllib.error.URLError, TimeoutError) as exc:
-                    logger.warning("Hub 連線失敗：%s", exc)
+                    consecutive_fail += 1
+                    # 只在第一次 + 每隔約 30 次記一次, 避免洗版
+                    if consecutive_fail == 1 or consecutive_fail % 30 == 0:
+                        logger.warning("Hub 連線卡頓（連續 %d 次，會自動重連）：%s", consecutive_fail, exc)
                 except Exception as exc:
                     logger.exception("會員端執行錯誤：%s", exc)
                 self.stop_event.wait(interval)
@@ -521,6 +580,13 @@ def _page_html(state: LauncherState) -> str:
       <label>MT5 Files 路徑<input id="mt5_files_dir" placeholder="可留空自動偵測" /></label>
       <label>輪詢秒數<input id="interval" /></label>
       <label>開啟程式後自動開始<input id="auto_start" type="checkbox" /></label>
+      <hr style="grid-column:1/3;border:none;border-top:1px solid #e3e8ec;margin:6px 0" />
+      <label>基礎手數<input id="default_lot_size" placeholder="0.01" /></label>
+      <label>啟用馬丁格爾<input id="use_martingale" type="checkbox" /></label>
+      <label>馬丁倍數<input id="martingale_multiplier" placeholder="2.0（每層 × 倍數）" /></label>
+      <label>馬丁最大層數<input id="martingale_max_level" placeholder="4（關卡數）" /></label>
+      <label>每層自訂手數<input id="martingale_lots" placeholder="留空=用倍數；例 0.01,0.02,0.04,0.08" /></label>
+      <label>多TP分批平倉<input id="partial_close_ratios" placeholder="例 0.5,0.3,0.2" /></label>
     """
     extra_button = "<button id=\"openHub\">開啟 Hub 頁面</button>" if is_central else "<button id=\"testHub\">測試 Hub</button>"
     return f"""<!doctype html>
@@ -565,7 +631,7 @@ def _page_html(state: LauncherState) -> str:
     const role = {json.dumps(state.role)};
     let snapshot = null;
     let didFill = false;
-    function ids() {{ return role === "central" ? ["hub_url","host","port","token","copy_mode","interval","cloudflare_tunnel","cloudflared_path","auto_start"] : ["hub_url","token","mt5_files_dir","interval","auto_start"]; }}
+    function ids() {{ return role === "central" ? ["hub_url","host","port","token","copy_mode","interval","cloudflare_tunnel","cloudflared_path","auto_start"] : ["hub_url","token","mt5_files_dir","interval","auto_start","default_lot_size","use_martingale","martingale_multiplier","martingale_max_level","martingale_lots","partial_close_ratios"]; }}
     function collect() {{
       const out = {{}};
       for (const id of ids()) {{
@@ -637,7 +703,7 @@ def _page_html(state: LauncherState) -> str:
 def _install_logging(state: LauncherState) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
     handler = QueueLogHandler(state.log_queue)
-    handler.setFormatter(logging.Formatter("%H:%M:%S %(levelname)s: %(message)s"))
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s: %(message)s", datefmt="%H:%M:%S"))
     logging.getLogger().addHandler(handler)
 
 

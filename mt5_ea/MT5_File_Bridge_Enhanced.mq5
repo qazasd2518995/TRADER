@@ -12,6 +12,14 @@ input double DefaultLotSize = 0.01;
 input bool   EnableTrading = true;
 input bool   DetailedLogging = true;
 
+// === Cloud Hub auto-trading (members poll the central hub directly) ===
+input bool   EnableHubPolling = false;                                  // (選用) EA 直接向雲端 Hub 抓訊號; 會員端建議用 Python agent, 此處保持關閉
+input string HubUrl           = "https://gold-signal-hub-tw.fly.dev";   // 中央 Hub 網址
+input string HubToken         = "";                                     // 你的存取 token (向管理者索取; 走 EA-direct 才需要)
+input int    HubPollSeconds   = 3;                                      // 每幾秒輪詢一次 Hub
+input double HubLotSize       = 0.0;                                    // 下單手數; 0 = 用 DefaultLotSize
+input int    HubMagic         = 990001;                                 // Hub 來源訂單的 magic number
+
 // === ATR-based SL/TP inputs ======================================
 input bool   UseATRBasedSLTP     = false;        // enable ATR-based SL/TP when missing
 input ENUM_TIMEFRAMES ATR_TF     = PERIOD_M15;   // ATR timeframe
@@ -32,6 +40,17 @@ datetime last_tick_write       = 0;
 datetime last_symbolinfo_write = 0;
 datetime last_orderbook_write  = 0;
 datetime last_rates_write      = 0;
+
+// Cloud Hub polling state
+long     g_hub_last_seq  = -1;     // -1 = 尚未初始化 (第一次連線會對齊到 latest_seq)
+datetime g_last_hub_poll = 0;
+bool     g_hub_warned    = false;
+
+// Runtime hub config (from inputs, overridable by Files/hub_config.txt)
+bool     g_hub_on       = false;
+string   g_hub_url      = "";
+string   g_hub_token    = "";
+int      g_hub_interval = 3;
 
 //+------------------------------------------------------------------+
 //| Trade command structure                                          |
@@ -72,6 +91,8 @@ int OnInit()
    // Write static symbol info at startup
    WriteSymbolInfo(TradingSymbol);
 
+   LoadHubConfig();
+
    return(INIT_SUCCEEDED);
 }
 
@@ -106,6 +127,13 @@ void OnTimer()
    // Command processor
    if(EnableTrading && IsTradeAllowedFunc())
       CheckTradeCommands();
+
+   // Cloud Hub poller — pull signals straight from the central hub
+   if(g_hub_on && IsTradeAllowedFunc() && (TimeLocal() - g_last_hub_poll >= g_hub_interval))
+   {
+      g_last_hub_poll = TimeLocal();
+      PollHub();
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -963,4 +991,207 @@ void CheckTradeCommands()
    {
       if(DetailedLogging) Print("Failed to parse command: ", cmd);
    }
+}
+
+//+------------------------------------------------------------------+
+//| Cloud Hub polling — pull signals & execute (member-side direct)  |
+//+------------------------------------------------------------------+
+bool ExtractBoolValue(string json, string key)
+{
+   string search = "\"" + key + "\":";
+   int start = StringFind(json, search);
+   if(start < 0) return false;
+   start += StringLen(search);
+   string rest = StringSubstr(json, start, 6);
+   StringReplace(rest, " ", "");
+   return (StringFind(rest, "true") == 0);
+}
+
+double ExtractFirstTP(string json)
+{
+   int k = StringFind(json, "\"take_profit\":");
+   if(k < 0) return 0.0;
+   int b = StringFind(json, "[", k);
+   if(b < 0) return 0.0;
+   int e1 = StringFind(json, ",", b + 1);
+   int e2 = StringFind(json, "]", b + 1);
+   int e = e2;
+   if(e1 >= 0 && (e2 < 0 || e1 < e2)) e = e1;
+   if(e < 0) return 0.0;
+   string v = StringSubstr(json, b + 1, e - (b + 1));
+   StringReplace(v, " ", "");
+   if(v == "" || v == "null") return 0.0;
+   return StringToDouble(v);
+}
+
+void ProcessHubSignalElement(string elem)
+{
+   long seq = ExtractLongValue(elem, "seq");
+   if(seq <= g_hub_last_seq) return;
+
+   string typ      = ExtractStringValue(elem, "type");
+   string dir      = ExtractStringValue(elem, "direction");
+   double entry    = ExtractDoubleValue(elem, "entry_price");
+   double sl       = ExtractDoubleValue(elem, "stop_loss");
+   double tp       = ExtractFirstTP(elem);
+   bool   isMarket = ExtractBoolValue(elem, "is_market_order");
+
+   bool ok = (typ == "trade_signal")
+          && (dir == "buy" || dir == "sell")
+          && sl > 0 && tp > 0
+          && (isMarket || entry > 0);
+
+   if(ok)
+   {
+      TradeCommand cmd;
+      cmd.action       = dir;
+      cmd.symbol       = Symbol();                       // 用「圖表的品種」, 自動對應各券商 (如 XAUUSD.s)
+      cmd.lot_size     = (HubLotSize > 0 ? HubLotSize : DefaultLotSize);
+      cmd.stop_loss    = sl;
+      cmd.take_profit  = tp;
+      cmd.price        = (isMarket ? 0.0 : entry);       // 0 = 市價, >0 = 掛單
+      cmd.comment      = "hub_" + IntegerToString(seq);
+      cmd.magic_number = HubMagic;
+      cmd.trade_id     = "hub_" + IntegerToString(seq);
+      cmd.ticket       = 0;
+      cmd.close_volume = 0;
+
+      long rc = 0; string detail = "";
+      bool done = ExecuteBuySellCommand(cmd, rc, detail);
+      Print("[Hub] seq=", seq, " ", dir, " entry=", entry, " sl=", sl, " tp=", tp,
+            " => ", (done ? "OK" : "FAIL"), " rc=", rc, " ", detail);
+   }
+   else if(DetailedLogging)
+   {
+      Print("[Hub] 略過 seq=", seq, " (type=", typ, " dir=", dir, " sl=", sl, " tp=", tp, ")");
+   }
+
+   g_hub_last_seq = seq;   // 不論成功與否都前進, 避免卡住或重下舊單
+}
+
+void ParseAndExecuteSignals(string body)
+{
+   int sigPos = StringFind(body, "\"signals\":");
+   if(sigPos < 0) return;
+   int arrStart = StringFind(body, "[", sigPos);
+   if(arrStart < 0) return;
+
+   int n = StringLen(body);
+   int i = arrStart + 1;
+   int depth = 0;
+   int elemStart = -1;
+   bool inStr = false;
+   ushort prev = 0;
+
+   while(i < n)
+   {
+      ushort ch = StringGetCharacter(body, i);
+      if(ch == '"' && prev != '\\')
+      {
+         inStr = !inStr;
+      }
+      else if(!inStr)
+      {
+         if(ch == '{')
+         {
+            if(depth == 0) elemStart = i;
+            depth++;
+         }
+         else if(ch == '}')
+         {
+            depth--;
+            if(depth == 0 && elemStart >= 0)
+            {
+               ProcessHubSignalElement(StringSubstr(body, elemStart, i - elemStart + 1));
+               elemStart = -1;
+            }
+         }
+         else if(ch == ']' && depth == 0)
+         {
+            break;
+         }
+      }
+      prev = ch;
+      i++;
+   }
+}
+
+void LoadHubConfig()
+{
+   // 1) start from EA inputs
+   g_hub_on       = EnableHubPolling;
+   g_hub_url      = HubUrl;
+   g_hub_token    = HubToken;
+   g_hub_interval = (HubPollSeconds > 0 ? HubPollSeconds : 3);
+
+   // 2) override from Files/hub_config.txt if present (繞過 MT5 輸入快取)
+   int h = FileOpen("hub_config.txt", FILE_READ|FILE_TXT|FILE_ANSI);
+   if(h != INVALID_HANDLE)
+   {
+      string cfg = "";
+      while(!FileIsEnding(h)) cfg += FileReadString(h);
+      FileClose(h);
+      if(StringLen(cfg) > 2)
+      {
+         g_hub_on = ExtractBoolValue(cfg, "enabled");
+         string u = ExtractStringValue(cfg, "url");
+         string t = ExtractStringValue(cfg, "token");
+         long   p = ExtractLongValue(cfg, "poll_seconds");
+         if(u != "") g_hub_url = u;
+         if(t != "") g_hub_token = t;
+         if(p > 0)   g_hub_interval = (int)p;
+         Print("[Hub] config 來自 hub_config.txt");
+      }
+   }
+
+   Print("[Hub] init: enabled=", g_hub_on, " url=", g_hub_url,
+         " token_len=", StringLen(g_hub_token), " interval=", g_hub_interval, "s");
+}
+
+void PollHub()
+{
+   long after = (g_hub_last_seq < 0 ? 0 : g_hub_last_seq);
+   string url = g_hub_url + "/signals?after=" + IntegerToString(after) + "&limit=50&token=" + g_hub_token;
+
+   char  data[];
+   char  result[];
+   string result_headers;
+   ResetLastError();
+   int code = WebRequest("GET", url, "", 10000, data, result, result_headers);
+
+   if(code == -1)
+   {
+      int err = GetLastError();
+      if(!g_hub_warned)
+      {
+         Print("[Hub] WebRequest 失敗 err=", err,
+               " — 請到 [工具>選項>EA交易] 勾選 '允許 WebRequest', 並把此網址加入清單: ", g_hub_url);
+         g_hub_warned = true;
+      }
+      return;
+   }
+   g_hub_warned = false;
+
+   string body = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
+
+   if(code != 200)
+   {
+      int err = GetLastError();
+      Print("[Hub] code=", code, " GetLastError=", err, " body_len=", StringLen(body),
+            " body=", StringSubstr(body, 0, 80));
+      if(StringFind(body, "\"signals\"") < 0)
+         return;   // 真的失敗 (body 無資料)
+      // 否則 body 其實有資料 → 繼續往下處理
+   }
+
+   // 第一次成功連線: 對齊到目前最新 seq, 不補下歷史訊號
+   if(g_hub_last_seq < 0)
+   {
+      long latest = ExtractLongValue(body, "latest_seq");
+      g_hub_last_seq = (latest > 0 ? latest : 0);
+      Print("[Hub] 已連線, 從 seq=", g_hub_last_seq, " 開始 (不補歷史)");
+      return;
+   }
+
+   ParseAndExecuteSignals(body);
 }

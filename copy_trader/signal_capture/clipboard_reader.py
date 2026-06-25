@@ -350,14 +350,23 @@ class ClipboardReaderService:
         logger.debug(f"clipboard trigger {w.label!r}: {reason} (title={title!r}, unread={unread})")
 
         copy_mode = (w.copy_mode or "tail").strip().lower()
-        try:
-            if copy_mode == "all" and hasattr(self.clipboard, "copy_chat_all"):
-                text = self.clipboard.copy_chat_all(hwnd)
-            else:
-                text = self.clipboard.copy_chat_tail(hwnd, screens=max(1, int(w.screens)))
-        except Exception as e:
-            cap.error = f"copy_failed:{e}"
-            return cap
+        # 背景搶焦點偶爾失敗（空白）；失敗就「立即重試」而不是等下一輪 10s，
+        # 降低漏抓 / 延遲（例如新報單拖很久才被擷取到）。
+        text = ""
+        for attempt in range(3):
+            try:
+                if copy_mode == "all" and hasattr(self.clipboard, "copy_chat_all"):
+                    text = self.clipboard.copy_chat_all(hwnd)
+                else:
+                    text = self.clipboard.copy_chat_tail(hwnd, screens=max(1, int(w.screens)))
+            except Exception as e:
+                cap.error = f"copy_failed:{e}"
+                return cap
+            if text:
+                break
+            if attempt < 2:
+                logger.debug(f"clipboard empty for {w.label!r}, 立即重試 ({attempt+1}/3)")
+                time.sleep(0.35)
 
         cap.elapsed_ms = (time.time() - t0) * 1000.0
         cap.raw_text = text or ""

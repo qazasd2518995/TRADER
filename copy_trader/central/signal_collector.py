@@ -13,6 +13,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 from copy_trader.config import Config, load_config
@@ -134,6 +135,8 @@ class CentralSignalCollector:
         self._pending: Dict[str, Dict] = {}
         self._processed: Dict[Tuple, float] = {}
         self._processed_ttl = max(60, int(config.signal_dedup_minutes or 10) * 60)
+        # 訊號時效鎖: 訊息時間超過這麼久就不發布 (擋歷史洪水/延遲/過期)。0=不限。
+        self.max_signal_age_sec = max(0, int(getattr(config, "signal_max_age_minutes", 10) or 0) * 60)
 
         windows = [
             ClipboardWindow(
@@ -214,6 +217,20 @@ class CentralSignalCollector:
         if not is_signal and not has_pending:
             logger.debug("filtered %s: %s", source_display, reason)
             return 0
+
+        # 訊號時效鎖: 訊息時間太舊就跳過 — 擋掉(1)新增視窗時的歷史洪水
+        # (2)延遲擷取 (3)被編輯/收回的過期單。需要 msg 有可靠 timestamp。
+        if self.max_signal_age_sec > 0 and msg.timestamp is not None:
+            try:
+                age = (datetime.now() - msg.timestamp).total_seconds()
+            except Exception:
+                age = 0
+            if age > self.max_signal_age_sec:
+                logger.info(
+                    "跳過過期訊號 (%s, 已過 %.0f 分鐘 > %.0f): %s",
+                    msg.time_str, age / 60.0, self.max_signal_age_sec / 60.0, body[:50],
+                )
+                return 0
 
         logger.info("LINE message [%s %s %s]: %r", source_display, msg.time_str, msg.sender, body[:100])
         published = 0
