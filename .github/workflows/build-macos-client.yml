@@ -1,0 +1,45 @@
+name: Build macOS 會員端 (DMG)
+
+# 手動觸發: GitHub → Actions → "Build macOS 會員端" → Run workflow
+# 也會在這個 workflow 檔本身被改動 push 時自動跑一次。
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/build-macos-client.yml"
+
+jobs:
+  build-macos-dmg:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "Pillow>=10.0" "pyinstaller>=6.0"
+
+      - name: Build .app
+        run: |
+          PYINSTALLER_CONFIG_DIR=/tmp/pyi python -m PyInstaller --noconfirm packaging/pyinstaller/client-macos.spec
+
+      - name: Make DMG
+        run: |
+          mkdir -p dist/installers
+          hdiutil create -volname "黃金跟單會員端" \
+            -srcfolder "dist/黃金跟單會員端.app" \
+            -ov -format UDZO "dist/installers/黃金跟單會員端.dmg"
+          ls -la dist/installers
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 黃金跟單會員端-macos-dmg
+          path: dist/installers/黃金跟單會員端.dmg
+          if-no-files-found: error
