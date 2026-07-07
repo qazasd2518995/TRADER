@@ -159,7 +159,9 @@ class Config:
     martingale_source_lots: dict = field(default_factory=dict)  # 各群自訂手數 {"群名": [0.01, 0.02, ...]}
 
     # OCR Confirmation Settings
-    ocr_confirm_count: int = 2       # Number of OCR reads to confirm a signal (2 = 1 initial + 1 confirmation)
+    # 1 = 讀到完整訊號即發布。設 >1 會與「畫面沒變就跳過 OCR」衝突
+    # (新訊號停著不動→畫面不變→跳過 OCR→永遠湊不到確認次數→永不發布)，故預設 1。
+    ocr_confirm_count: int = 1
     ocr_confirm_delay: float = 1.0   # Seconds between each confirmation OCR
 
     # Safety Settings
