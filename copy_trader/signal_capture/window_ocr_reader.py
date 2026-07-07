@@ -27,11 +27,13 @@ CentralSignalCollector 依 config.signal_source 選用，其餘流程完全不�
 """
 from __future__ import annotations
 
+import json
 import logging
 import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Deque, Dict, List, Optional, Set
 
 from copy_trader.platform import ScreenCapture, WindowInfo
@@ -162,6 +164,7 @@ class WindowOcrReaderService:
         # 每個來源：已看過(baseline+已發布)的正規化訊號文字
         self._seen_keys: Dict[str, Deque[str]] = {w.name: deque(maxlen=self.SEEN_MAX) for w in windows}
         self._seen_set: Dict[str, Set[str]] = {w.name: set() for w in windows}
+        self._seen_ts: Dict[str, Dict[str, float]] = {w.name: {} for w in windows}
         # 尚未確認的新訊號 → 連續出現次數
         self._confirm: Dict[str, Dict[str, int]] = {w.name: {} for w in windows}
         # baseline 狀態
@@ -171,6 +174,17 @@ class WindowOcrReaderService:
         self._last_ocr_at: Dict[str, float] = {w.name: 0.0 for w in windows}
         # 上次「中下聊天區」縮圖 — 幾乎相同(容忍微動畫/廣告)就跳過 OCR
         self._last_thumb: Dict[str, object] = {w.name: None for w in windows}
+
+        # 跨重啟去重：把已發布/baseline 的訊號鍵存檔，重啟後載回。
+        # 防「重啟後舊訊號(捲回畫面/重新 baseline)被當新單重發 → 會員重複下單」。
+        self._seen_retention_sec = 2 * 24 * 3600  # 保留 2 天
+        self._seen_path: Optional[Path] = None
+        try:
+            from copy_trader.config import DATA_DIR
+            self._seen_path = Path(DATA_DIR) / "central_ocr_seen.json"
+        except Exception:
+            self._seen_path = None
+        self._load_seen()
 
     # -------- OCR 延遲載入 --------
 
@@ -201,12 +215,16 @@ class WindowOcrReaderService:
         seen_set = self._seen_set.get(source_name)
         seen_deque = self._seen_keys.get(source_name)
         confirm = self._confirm.get(source_name)
+        ts_map = self._seen_ts.setdefault(source_name, {})
         if seen_set is None or seen_deque is None:
             return
+        now = time.time()
+        changed = False
         for m in messages:
             k = m.body  # 正規化訊號文字即為鍵
             if confirm is not None:
                 confirm.pop(k, None)
+            ts_map[k] = now  # 更新時間戳(即使已 seen) 以延長保留
             if k in seen_set:
                 continue
             if len(seen_deque) == seen_deque.maxlen:
@@ -214,6 +232,51 @@ class WindowOcrReaderService:
                 seen_set.discard(old)
             seen_deque.append(k)
             seen_set.add(k)
+            changed = True
+        if changed or messages:
+            self._save_seen()
+
+    def _load_seen(self) -> None:
+        """重啟時載回近 2 天已發布/baseline 的訊號鍵，避免重複下單。"""
+        if not self._seen_path or not self._seen_path.exists():
+            return
+        try:
+            data = json.loads(self._seen_path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        now = time.time()
+        loaded = 0
+        for name in self._seen_set:
+            for key, ts in (data.get(name) or {}).items():
+                try:
+                    ts = float(ts)
+                except (TypeError, ValueError):
+                    continue
+                if now - ts > self._seen_retention_sec:
+                    continue
+                self._seen_ts[name][key] = ts
+                if key not in self._seen_set[name]:
+                    self._seen_keys[name].append(key)
+                    self._seen_set[name].add(key)
+                    loaded += 1
+        if loaded:
+            logger.info("OCR 去重：從存檔載回 %d 筆近期已發布訊號 (重啟後不重發、會員不重複下單)", loaded)
+
+    def _save_seen(self) -> None:
+        if not self._seen_path:
+            return
+        try:
+            now = time.time()
+            data = {
+                name: {k: ts for k, ts in d.items() if now - ts <= self._seen_retention_sec}
+                for name, d in self._seen_ts.items()
+            }
+            self._seen_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._seen_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(self._seen_path)
+        except Exception as e:
+            logger.debug("save seen failed: %s", e)
 
     def force_retry(self, source_name: str) -> None:
         # 下游發布失敗且未 mark_seen 時，訊號仍不在 _seen → 下一輪自然重發，
@@ -374,9 +437,9 @@ class WindowOcrReaderService:
         seen_set = self._seen_set[w.name]
 
         # 首輪 baseline：目前可見訊號全部視為已讀，不發布
+        # (跨重啟去重已從存檔載回近 2 天的鍵，這裡再補上目前可見的)
         if w.name not in self._baselined:
-            for key in current:
-                self.mark_seen(w.name, [self._make_msg(w, key)])
+            self.mark_seen(w.name, [self._make_msg(w, key) for key in current])
             self._baselined.add(w.name)
             cap.ok = True
             logger.info("baseline(OCR) %r: %d 則可見訊號設為已讀", w.label, len(current))

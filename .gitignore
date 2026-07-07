@@ -34,6 +34,7 @@ _ocr_*.png
 trade_journal.txt
 agent_test_state.json
 central_client_state.json
+central_ocr_seen.json
 *.ex5
 
 # Debug screenshots
