@@ -110,9 +110,12 @@ class CaptureWindow:
 class Config:
     """Copy Trader configuration."""
 
-    # Signal Source — "clipboard" (LINE 全選複製) / "screen_ocr" (舊方案)
-    # clipboard 是主要管道，OCR 目前保留為手動切換的備援。
-    signal_source: str = "clipboard"
+    # Signal Source —
+    #   "window_ocr" (PrintWindow 背景截圖 + OCR)：主要管道。
+    #   "clipboard"  (LINE 全選複製)：LINE 2026-06 更新後擋掉合成鍵鼠，已失效。
+    #   "screen_ocr" (舊的螢幕區域 OCR 方案)。
+    # 預設 window_ocr：剪貼簿法在新版 LINE 上拿不到任何文字 (empty_clipboard)。
+    signal_source: str = "window_ocr"
 
     # Screen Capture Settings
     capture_mode: str = "window"  # "region" or "window"

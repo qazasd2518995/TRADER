@@ -152,11 +152,26 @@ class CentralSignalCollector:
         if not windows:
             raise RuntimeError("no capture_windows configured")
 
-        self.clipboard = ClipboardReaderService(
-            windows,
-            stale_seconds=float(stale_seconds if stale_seconds is not None else getattr(config, "clipboard_stale_seconds", 10.0) or 10.0),
-        )
-        logger.info("collector initialized: windows=%s copy_mode=%s", len(windows), copy_mode)
+        # 採集管道：
+        #   "window_ocr" = PrintWindow 背景截圖 + OCR (LINE 擋掉合成鍵鼠後的主管道)
+        #   其它 (clipboard) = 舊的剪貼板全選複製 (LINE 更新後已失效, 保留為備援)
+        signal_source = str(getattr(config, "signal_source", "clipboard") or "clipboard").strip().lower()
+        if signal_source == "window_ocr":
+            from copy_trader.signal_capture.window_ocr_reader import WindowOcrReaderService
+            self.clipboard = WindowOcrReaderService(
+                windows,
+                confirm_count=int(getattr(config, "ocr_confirm_count", 2) or 2),
+            )
+            logger.info(
+                "collector initialized (WINDOW_OCR): windows=%s confirm=%s",
+                len(windows), getattr(config, "ocr_confirm_count", 2),
+            )
+        else:
+            self.clipboard = ClipboardReaderService(
+                windows,
+                stale_seconds=float(stale_seconds if stale_seconds is not None else getattr(config, "clipboard_stale_seconds", 10.0) or 10.0),
+            )
+            logger.info("collector initialized (CLIPBOARD): windows=%s copy_mode=%s", len(windows), copy_mode)
 
     def _cleanup(self) -> None:
         now = time.time()
