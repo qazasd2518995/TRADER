@@ -144,6 +144,8 @@ class MT5ClientAgent:
             self.config.mt5_files_dir = mt5_files_dir
         # 訊號時效鎖: hub 訊號擷取時間超過這麼久就不下單 (防會員端恢復後補到舊單)。0=不限。
         self.max_signal_age_sec = max(0, int(getattr(self.config, "signal_max_age_minutes", 10) or 0) * 60)
+        # 同方向短時間改單防呆: 下單前撤掉這麼久內同方向的舊掛單。0=關閉。
+        self.supersede_window_sec = max(0, int(getattr(self.config, "supersede_same_direction_minutes", 5) or 0) * 60)
 
         self.trade_manager = TradeManager(self.config.mt5_files_dir)
         self.trade_manager.default_lot_size = self.config.default_lot_size
@@ -229,6 +231,9 @@ class MT5ClientAgent:
                 continue
 
             source = str(item.get("source") or item.get("source_name") or "central")
+            # 同方向短時間改單防呆: 下這筆前, 撤掉同方向的近期未成交舊掛單, 只留最新
+            if self.supersede_window_sec > 0 and signal.direction in ("buy", "sell"):
+                self.trade_manager.cancel_pending_same_direction(signal.direction, self.supersede_window_sec)
             signal_id = self.trade_manager.submit_signal(
                 signal,
                 auto_execute=True,

@@ -260,6 +260,31 @@ class TradeManager:
         sid = candidates[0][0]
         return self.cancel_order(sid, reason=reason)
 
+    def cancel_pending_same_direction(self, direction: str, within_seconds: float, exclude_signal_id: str = "") -> int:
+        """撤掉 within_seconds 內、同方向的未成交舊掛單 (只動 PENDING/SENT)。
+
+        「同方向短時間改單防呆」：新訊號下單前呼叫，撤掉剛剛同方向的舊掛單，
+        避免乘改單/OCR怪異造成同方向多下一張。回傳撤掉的張數。
+        """
+        if not direction or within_seconds <= 0:
+            return 0
+        now = time.time()
+        with self._lock:
+            victims = [
+                sid for sid, o in self.orders.items()
+                if sid != exclude_signal_id
+                and o.status in (OrderStatus.PENDING, OrderStatus.SENT)
+                and getattr(o.signal, "direction", "") == direction
+                and (now - o.created_at) <= within_seconds
+            ]
+        n = 0
+        for sid in victims:
+            if self.cancel_order(sid, reason="superseded_same_direction"):
+                n += 1
+        if n:
+            logger.info("同方向改單防呆：撤掉 %d 張 %s 舊掛單 (被新訊號取代)", n, direction)
+        return n
+
     def _get_position_profit(self, ticket: int) -> float:
         """Get current profit of an open position."""
         positions = self._get_positions()

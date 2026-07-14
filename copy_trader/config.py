@@ -149,6 +149,9 @@ class Config:
     # (0=關閉)，避免價格一跑就把掛單莫名刪掉。
     cancel_pending_after_seconds: int = 14400
     cancel_if_price_beyond_percent: float = 0.0  # 0=關閉價格偏離自動撤單
+    # 同方向短時間改單防呆：新訊號下單前，撤掉這麼多分鐘內「同品種同方向」的
+    # 未成交舊掛單、只留最新一張 (擋乘改單/OCR怪異造成同方向多下一張)。0=關閉。
+    supersede_same_direction_minutes: int = 5
 
     # Multiple TP Settings
     partial_close_ratios: List[float] = field(default_factory=lambda: [0.5, 0.3, 0.2])
