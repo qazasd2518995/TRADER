@@ -393,8 +393,13 @@ class WindowOcrReaderService:
             return cap
 
         # 影像差異比對：中下聊天區幾乎沒變 → 跳過 OCR (baseline 仍需跑一次)
+        # 守衛：若有「待確認」訊號 (confirm 計數中) 絕不可跳過，否則新訊號被讀到一次後
+        # 畫面靜止→跳過OCR→永遠湊不到 confirm_count 次數。這也是 confirm≥2 能擋掉
+        # 「瞬間誤讀」的關鍵：連續多次 OCR 讀到一致才發，瞬間讀錯的那次會被下一次否決。
         thumb = self._region_thumb(img)
-        if w.name in self._baselined and self._thumbs_similar(thumb, self._last_thumb.get(w.name), self._DIFF_THRESHOLD):
+        if (w.name in self._baselined
+                and not self._confirm.get(w.name)
+                and self._thumbs_similar(thumb, self._last_thumb.get(w.name), self._DIFF_THRESHOLD)):
             cap.ok = True
             cap.skipped = True
             cap.skip_reason = "no_visual_change"

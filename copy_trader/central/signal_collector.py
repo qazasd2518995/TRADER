@@ -160,7 +160,7 @@ class CentralSignalCollector:
             from copy_trader.signal_capture.window_ocr_reader import WindowOcrReaderService
             self.clipboard = WindowOcrReaderService(
                 windows,
-                confirm_count=int(getattr(config, "ocr_confirm_count", 1) or 1),
+                confirm_count=int(getattr(config, "ocr_confirm_count", 2) or 2),
             )
             logger.info(
                 "collector initialized (WINDOW_OCR): windows=%s confirm=%s",
