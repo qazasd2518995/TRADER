@@ -144,8 +144,11 @@ class Config:
     max_open_positions: int = 10
 
     # Cancellation Rules
-    cancel_pending_after_seconds: int = 7200
-    cancel_if_price_beyond_percent: float = 1.0  # Percent away from entry before auto-cancel
+    # 撤單策略：跟群組的「取消/撤」訊息為主 (見 signal_collector 的 cancel 偵測)。
+    # 自動撤單只保留「逾時」當安全網 (預設 4 小時)，關掉「價格偏離%」自動撤
+    # (0=關閉)，避免價格一跑就把掛單莫名刪掉。
+    cancel_pending_after_seconds: int = 14400
+    cancel_if_price_beyond_percent: float = 0.0  # 0=關閉價格偏離自動撤單
 
     # Multiple TP Settings
     partial_close_ratios: List[float] = field(default_factory=lambda: [0.5, 0.3, 0.2])

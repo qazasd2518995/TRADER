@@ -227,6 +227,25 @@ class CentralSignalCollector:
         if len(body) < 5:
             return 0
 
+        # 撤單指令：reader 偵測到群組「取消/撤」訊息 → body 帶 __CANCEL__:<dir>:<訊號>
+        if body.startswith("__CANCEL__"):
+            parts = body.split(":", 2)
+            direction = parts[1] if len(parts) > 1 else "any"
+            direction = direction if direction in ("buy", "sell") else ""
+            payload = {
+                "type": "cancel_signal",
+                "source": source_display,
+                "source_name": source_name,
+                "direction": direction,
+                "captured_at": time.time(),
+                "raw_text": body,
+            }
+            response = self.publisher.publish(payload)
+            if not response.get("ok"):
+                raise RuntimeError(f"hub rejected cancel: {response}")
+            logger.info("published cancel to hub: source=%s direction=%s", source_display, direction or "any")
+            return 1
+
         has_pending = source_name in self._pending
         is_signal, reason = is_potential_signal(body)
         if not is_signal and not has_pending:

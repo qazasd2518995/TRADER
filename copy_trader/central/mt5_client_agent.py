@@ -188,6 +188,20 @@ class MT5ClientAgent:
         count = 0
         for item in self.hub.signals_after(self.last_seq):
             seq = int(item.get("seq") or 0)
+
+            # 群組撤單指令：撤掉最近一筆未成交掛單 (只動掛單, 不平已成交部位)
+            if item.get("type") == "cancel_signal":
+                direction = str(item.get("direction") or "").strip().lower()
+                direction = direction if direction in ("buy", "sell") else ""
+                try:
+                    ok = self.trade_manager.cancel_latest_pending(direction)
+                    logger.info("收到群組撤單 seq=%s (%s) → %s", seq, direction or "any", "已撤掉最近掛單" if ok else "無掛單可撤")
+                except Exception as e:
+                    logger.warning("處理撤單失敗 seq=%s: %s", seq, e)
+                self._mark_seq(seq)
+                count += 1
+                continue
+
             if item.get("type") != "trade_signal":
                 self._mark_seq(seq)
                 continue

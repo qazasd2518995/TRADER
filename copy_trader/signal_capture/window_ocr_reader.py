@@ -96,6 +96,36 @@ def _is_complete(sig: ParsedSignal) -> bool:
     return bool(sig.is_valid and sig.direction and has_entry and sig.stop_loss and sig.take_profit)
 
 
+# 群組撤單關鍵字 (實測自報單群：取消 / 撤掉 / 空單先撤掉 / 都撤單 …)
+_CANCEL_KWS = ("取消", "撤單", "撤掉", "撤回", "先撤", "都撤", "撤了", "撤吧", "刪單", "砍單", "撤")
+CANCEL_PREFIX = "__CANCEL__"
+
+
+def detect_cancel_after_signal(text: str, last_sig: ParsedSignal) -> Optional[str]:
+    """
+    最後一個訊號『之後』的文字若出現撤單關鍵字 → 回傳方向提示
+    ('sell'/'buy'/'')；否則 None。
+
+    只看「最後一個訊號之後」是為了把撤單綁定到它要撤的那一單：新訊號一出現，
+    舊撤單字就落在新訊號上方、不再觸發，避免舊撤單誤撤到新掛單。
+    """
+    anchor = 0
+    for tp in (last_sig.take_profit or []):
+        s = _fmt_price(tp)
+        if s:
+            i = text.rfind(s)
+            if i >= 0:
+                anchor = max(anchor, i + len(s))
+    tail = text[anchor:] if anchor else text
+    if any(kw in tail for kw in _CANCEL_KWS):
+        if "空" in tail:
+            return "sell"
+        if "多" in tail:
+            return "buy"
+        return ""
+    return None
+
+
 # -------------------- 結果 --------------------
 
 @dataclass
@@ -430,14 +460,27 @@ class WindowOcrReaderService:
         # 抽出目前可見的完整訊號 → 正規化文字集合
         current: List[str] = []
         seen_local: Set[str] = set()
+        last_complete: Optional[ParsedSignal] = None
         for s in self.parser.parse_all_latest(text):
             if not _is_complete(s):
                 continue
+            last_complete = s
             key = signal_to_canonical_text(s)
             if key in seen_local:
                 continue
             seen_local.add(key)
             current.append(key)
+
+        # 撤單偵測：最後一個訊號之後若有撤單字 → 加一個 cancel key，綁定該訊號。
+        # 與訊號共用 baseline / confirm≥2 / 去重 / 存檔，所以：啟動前既有的撤單不觸發、
+        # 需連續讀到才發、同一撤單不重發。
+        if last_complete is not None:
+            dir_hint = detect_cancel_after_signal(text, last_complete)
+            if dir_hint is not None:
+                cancel_key = "%s:%s:%s" % (CANCEL_PREFIX, dir_hint or "any", signal_to_canonical_text(last_complete))
+                if cancel_key not in seen_local:
+                    seen_local.add(cancel_key)
+                    current.append(cancel_key)
 
         seen_set = self._seen_set[w.name]
 

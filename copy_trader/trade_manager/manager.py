@@ -241,6 +241,25 @@ class TradeManager:
 
         return False
 
+    def cancel_latest_pending(self, direction: str = "", reason: str = "group_cancel") -> bool:
+        """撤掉「最近一筆」尚未成交的掛單 (只動 PENDING/SENT, 不碰已成交部位)。
+
+        對應群組發的「取消/撤」訊息。direction 給 'buy'/'sell' 時只撤該方向。
+        找不到符合的掛單就回 False (安全：什麼都不做, 不會誤平已成交部位)。
+        """
+        with self._lock:
+            candidates = [
+                (sid, o) for sid, o in self.orders.items()
+                if o.status in (OrderStatus.PENDING, OrderStatus.SENT)
+                and (not direction or getattr(o.signal, "direction", "") == direction)
+            ]
+        if not candidates:
+            logger.info("group_cancel: 沒有符合的未成交掛單可撤 (direction=%r)", direction or "any")
+            return False
+        candidates.sort(key=lambda kv: kv[1].created_at, reverse=True)
+        sid = candidates[0][0]
+        return self.cancel_order(sid, reason=reason)
+
     def _get_position_profit(self, ticket: int) -> float:
         """Get current profit of an open position."""
         positions = self._get_positions()
