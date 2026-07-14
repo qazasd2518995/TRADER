@@ -209,12 +209,6 @@ class Config:
                         name="gold_signal_1",
                         display_name="黃金報單🈲言群"
                     ),
-                    CaptureWindow(
-                        window_name="鄭",
-                        app_name="LINE",
-                        name="gold_signal_2",
-                        display_name="鄭"
-                    ),
                 ]
         else:
             if not self.capture_regions:
