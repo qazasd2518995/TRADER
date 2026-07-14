@@ -19,10 +19,30 @@ from typing import Dict, List, Optional, Tuple
 from copy_trader.config import Config, load_config
 from copy_trader.signal_capture.clipboard_reader import ClipboardReaderService, ClipboardWindow
 from copy_trader.signal_capture.line_text_parser import LineMessage
+from copy_trader.signal_capture.window_ocr_reader import _CANCEL_KWS
 from copy_trader.signal_parser.keyword_filter import is_potential_signal
 from copy_trader.signal_parser.regex_parser import ParsedSignal, RegexSignalParser
 
 logger = logging.getLogger(__name__)
+
+
+def _cancel_direction_from_message(body: str) -> Optional[str]:
+    """訊息本身若是「取消/撤」撤單指令 → 回傳方向 (''=不分/'buy'/'sell')，否則 None。
+
+    只認「短訊息且非訊號」，避免長文或訊號中提到相關字被誤判。
+    """
+    b = (body or "").strip()
+    if not b or len(b) > 30:
+        return None
+    if "止損" in b or "止盈" in b or "xauusd" in b.lower():
+        return None  # 這是訊號不是撤單
+    if not any(kw in b for kw in _CANCEL_KWS):
+        return None
+    if "空" in b:
+        return "sell"
+    if "多" in b:
+        return "buy"
+    return ""
 
 
 def _window_label(window) -> str:
@@ -224,27 +244,34 @@ class CentralSignalCollector:
 
     def _process_message(self, msg: LineMessage, source_name: str, source_display: str) -> int:
         body = (msg.body or "").strip()
-        if len(body) < 5:
-            return 0
 
-        # 撤單指令：reader 偵測到群組「取消/撤」訊息 → body 帶 __CANCEL__:<dir>:<訊號>
+        # 撤單指令 (在長度過濾之前, 因「取消」等只有2字)：
+        #   OCR 路徑 → body 帶 __CANCEL__:<dir>:<訊號> 標記
+        #   剪貼簿路徑 → 訊息本身就是「取消 / 撤掉 / 空單先撤掉」等
+        cancel_direction = None
         if body.startswith("__CANCEL__"):
             parts = body.split(":", 2)
-            direction = parts[1] if len(parts) > 1 else "any"
-            direction = direction if direction in ("buy", "sell") else ""
+            d = parts[1] if len(parts) > 1 else ""
+            cancel_direction = d if d in ("buy", "sell") else ""
+        else:
+            cancel_direction = _cancel_direction_from_message(body)
+        if cancel_direction is not None:
             payload = {
                 "type": "cancel_signal",
                 "source": source_display,
                 "source_name": source_name,
-                "direction": direction,
+                "direction": cancel_direction,
                 "captured_at": time.time(),
                 "raw_text": body,
             }
             response = self.publisher.publish(payload)
             if not response.get("ok"):
                 raise RuntimeError(f"hub rejected cancel: {response}")
-            logger.info("published cancel to hub: source=%s direction=%s", source_display, direction or "any")
+            logger.info("published cancel to hub: source=%s dir=%s (%r)", source_display, cancel_direction or "any", body[:20])
             return 1
+
+        if len(body) < 5:
+            return 0
 
         has_pending = source_name in self._pending
         is_signal, reason = is_potential_signal(body)
