@@ -26,16 +26,27 @@ from copy_trader.signal_parser.regex_parser import ParsedSignal, RegexSignalPars
 logger = logging.getLogger(__name__)
 
 
-def _cancel_direction_from_message(body: str) -> Optional[str]:
+# 撤單「討論/問句」排除詞：問句或描述才會出現這些，真正的撤單指令不會。
+_CANCEL_EXCLUDE = ("嗎", "?", "？", "有沒有", "會不會", "是不是", "設定", "後來", "怎麼", "為何", "被", "如果", "要不要")
+
+
+def _cancel_direction_from_message(body: str, sender: str = "") -> Optional[str]:
     """訊息本身若是「取消/撤」撤單指令 → 回傳方向 (''=不分/'buy'/'sell')，否則 None。
 
-    只認「短訊息且非訊號」，避免長文或訊號中提到相關字被誤判。
+    嚴格條件 (避免把討論/問句誤判成撤單 → 誤撤真單)：
+      1. 只認「訊號提供者(乘)」發的 — 其他人閒聊/討論撤單一律不算。
+      2. 短訊息 (≤20字)、含撤單關鍵字、非訊號、不含問句/描述詞。
     """
     b = (body or "").strip()
-    if not b or len(b) > 30:
+    if not b or len(b) > 20:
+        return None
+    # 只認提供者(乘)發的撤單, 擋掉「你有設定撤單嗎」「後來取消」這類他人討論
+    if "乘" not in (sender or ""):
         return None
     if "止損" in b or "止盈" in b or "xauusd" in b.lower():
         return None  # 這是訊號不是撤單
+    if any(x in b for x in _CANCEL_EXCLUDE):
+        return None  # 問句/描述, 非撤單指令
     if not any(kw in b for kw in _CANCEL_KWS):
         return None
     if "空" in b:
@@ -254,7 +265,7 @@ class CentralSignalCollector:
             d = parts[1] if len(parts) > 1 else ""
             cancel_direction = d if d in ("buy", "sell") else ""
         else:
-            cancel_direction = _cancel_direction_from_message(body)
+            cancel_direction = _cancel_direction_from_message(body, msg.sender)
         if cancel_direction is not None:
             payload = {
                 "type": "cancel_signal",
