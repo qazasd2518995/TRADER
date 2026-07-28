@@ -1493,9 +1493,14 @@ function paintStats() {
     floatingEl.className = toneClass(account.floating);
   } else { floatingEl.textContent = "—"; }
 
-  // 來源下拉：保留使用者選擇，來源清單變動時才重建
+  // 來源下拉：保留使用者選擇，來源清單變動時才重建。
+  // 清單要跟「各來源績效」一致 —— 用自動發現的完整來源，不能只列有成交紀錄的，
+  // 否則剛設定好、還沒平倉的群組會整個不見。
   const select = $("filterSource");
-  const names = [...new Set((stats.trades || []).map((t) => t.source || "未標記來源"))];
+  const names = [...new Set(
+    (stats.source_settings || []).map((r) => r.source)
+      .concat((stats.trades || []).map((t) => t.source || "未標記來源"))
+  )];
   const signature = names.join("|");
   if (select.dataset.signature !== signature) {
     select.dataset.signature = signature;
