@@ -26,6 +26,16 @@ Thumbs.db
 *.tmp
 *.log
 copy_trader_*.png
+_*.png
+_*.txt
+_ocr_*.png
+
+# Runtime artifacts / test state
+trade_journal.txt
+agent_test_state.json
+central_client_state.json
+central_ocr_seen.json
+*.ex5
 
 # Debug screenshots
 debug_*.png

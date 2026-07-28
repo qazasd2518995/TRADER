@@ -19,10 +19,41 @@ from typing import Dict, List, Optional, Tuple
 from copy_trader.config import Config, load_config
 from copy_trader.signal_capture.clipboard_reader import ClipboardReaderService, ClipboardWindow
 from copy_trader.signal_capture.line_text_parser import LineMessage
+from copy_trader.signal_capture.window_ocr_reader import _CANCEL_KWS
 from copy_trader.signal_parser.keyword_filter import is_potential_signal
 from copy_trader.signal_parser.regex_parser import ParsedSignal, RegexSignalParser
 
 logger = logging.getLogger(__name__)
+
+
+# 撤單「討論/問句」排除詞：問句或描述才會出現這些，真正的撤單指令不會。
+_CANCEL_EXCLUDE = ("嗎", "?", "？", "有沒有", "會不會", "是不是", "設定", "後來", "怎麼", "為何", "被", "如果", "要不要")
+
+
+def _cancel_direction_from_message(body: str, sender: str = "") -> Optional[str]:
+    """訊息本身若是「取消/撤」撤單指令 → 回傳方向 (''=不分/'buy'/'sell')，否則 None。
+
+    嚴格條件 (避免把討論/問句誤判成撤單 → 誤撤真單)：
+      1. 只認「訊號提供者(乘)」發的 — 其他人閒聊/討論撤單一律不算。
+      2. 短訊息 (≤20字)、含撤單關鍵字、非訊號、不含問句/描述詞。
+    """
+    b = (body or "").strip()
+    if not b or len(b) > 20:
+        return None
+    # 只認提供者(乘)發的撤單, 擋掉「你有設定撤單嗎」「後來取消」這類他人討論
+    if "乘" not in (sender or ""):
+        return None
+    if "止損" in b or "止盈" in b or "xauusd" in b.lower():
+        return None  # 這是訊號不是撤單
+    if any(x in b for x in _CANCEL_EXCLUDE):
+        return None  # 問句/描述, 非撤單指令
+    if not any(kw in b for kw in _CANCEL_KWS):
+        return None
+    if "空" in b:
+        return "sell"
+    if "多" in b:
+        return "buy"
+    return ""
 
 
 def _window_label(window) -> str:
@@ -152,11 +183,26 @@ class CentralSignalCollector:
         if not windows:
             raise RuntimeError("no capture_windows configured")
 
-        self.clipboard = ClipboardReaderService(
-            windows,
-            stale_seconds=float(stale_seconds if stale_seconds is not None else getattr(config, "clipboard_stale_seconds", 10.0) or 10.0),
-        )
-        logger.info("collector initialized: windows=%s copy_mode=%s", len(windows), copy_mode)
+        # 採集管道：
+        #   "window_ocr" = PrintWindow 背景截圖 + OCR (LINE 擋掉合成鍵鼠後的主管道)
+        #   其它 (clipboard) = 舊的剪貼板全選複製 (LINE 更新後已失效, 保留為備援)
+        signal_source = str(getattr(config, "signal_source", "clipboard") or "clipboard").strip().lower()
+        if signal_source == "window_ocr":
+            from copy_trader.signal_capture.window_ocr_reader import WindowOcrReaderService
+            self.clipboard = WindowOcrReaderService(
+                windows,
+                confirm_count=int(getattr(config, "ocr_confirm_count", 2) or 2),
+            )
+            logger.info(
+                "collector initialized (WINDOW_OCR): windows=%s confirm=%s",
+                len(windows), getattr(config, "ocr_confirm_count", 2),
+            )
+        else:
+            self.clipboard = ClipboardReaderService(
+                windows,
+                stale_seconds=float(stale_seconds if stale_seconds is not None else getattr(config, "clipboard_stale_seconds", 10.0) or 10.0),
+            )
+            logger.info("collector initialized (CLIPBOARD): windows=%s copy_mode=%s", len(windows), copy_mode)
 
     def _cleanup(self) -> None:
         now = time.time()
@@ -209,6 +255,38 @@ class CentralSignalCollector:
 
     def _process_message(self, msg: LineMessage, source_name: str, source_display: str) -> int:
         body = (msg.body or "").strip()
+
+        # 撤單指令 (在長度過濾之前, 因「取消」等只有2字)：
+        #   OCR 路徑 → body 帶 __CANCEL__:<dir>:<訊號> 標記
+        #   剪貼簿路徑 → 訊息本身就是「取消 / 撤掉 / 空單先撤掉」等
+        cancel_direction = None
+        if body.startswith("__CANCEL__"):
+            parts = body.split(":", 2)
+            d = parts[1] if len(parts) > 1 else ""
+            cancel_direction = d if d in ("buy", "sell") else ""
+        else:
+            cancel_direction = _cancel_direction_from_message(body, msg.sender)
+        if cancel_direction is not None:
+            # follow_group_cancel=False：撤單統一交給會員端的「逾時未進場自動刪單」，
+            # 這裡只把撤單訊息丟掉。務必 return，否則 __CANCEL__ 標記的 body
+            # 會往下被當成一般訊號解析。
+            if not getattr(self.config, "follow_group_cancel", False):
+                logger.debug("群組撤單偵測已停用，略過：%r", body[:20])
+                return 0
+            payload = {
+                "type": "cancel_signal",
+                "source": source_display,
+                "source_name": source_name,
+                "direction": cancel_direction,
+                "captured_at": time.time(),
+                "raw_text": body,
+            }
+            response = self.publisher.publish(payload)
+            if not response.get("ok"):
+                raise RuntimeError(f"hub rejected cancel: {response}")
+            logger.info("published cancel to hub: source=%s dir=%s (%r)", source_display, cancel_direction or "any", body[:20])
+            return 1
+
         if len(body) < 5:
             return 0
 

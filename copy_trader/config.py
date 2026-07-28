@@ -110,9 +110,12 @@ class CaptureWindow:
 class Config:
     """Copy Trader configuration."""
 
-    # Signal Source — "clipboard" (LINE 全選複製) / "screen_ocr" (舊方案)
-    # clipboard 是主要管道，OCR 目前保留為手動切換的備援。
-    signal_source: str = "clipboard"
+    # Signal Source —
+    #   "window_ocr" (PrintWindow 背景截圖 + OCR)：主要管道。
+    #   "clipboard"  (LINE 全選複製)：LINE 2026-06 更新後擋掉合成鍵鼠，已失效。
+    #   "screen_ocr" (舊的螢幕區域 OCR 方案)。
+    # 預設 window_ocr：剪貼簿法在新版 LINE 上拿不到任何文字 (empty_clipboard)。
+    signal_source: str = "window_ocr"
 
     # Screen Capture Settings
     capture_mode: str = "window"  # "region" or "window"
@@ -141,10 +144,17 @@ class Config:
     max_open_positions: int = 10
 
     # Cancellation Rules
+    # 撤單策略統一成一條：掛單逾時未進場就自動刪。
     # 掛單超過這個秒數還沒進場就自動刪單。會員端可在控制台改，0 = 不因逾時刪單。
     cancel_pending_after_seconds: int = 10800  # 3 小時
     # 價格偏離刪單已停用，統一只用上面的逾時規則。填 >0 可重新啟用（單位：%）。
     cancel_if_price_beyond_percent: float = 0.0
+    # 跟隨群組的「取消/撤」訊息撤單。已停用：改用上面的逾時規則統一處理，
+    # 避免 OCR 誤讀或群內討論被當成撤單指令而誤撤真單。True 可重新啟用。
+    follow_group_cancel: bool = False
+    # 同方向短時間改單防呆：新訊號下單前，撤掉這麼多分鐘內「同品種同方向」的
+    # 未成交舊掛單、只留最新一張 (擋乘改單/OCR怪異造成同方向多下一張)。0=關閉。
+    supersede_same_direction_minutes: int = 5
 
     # Multiple TP Settings
     partial_close_ratios: List[float] = field(default_factory=lambda: [0.5, 0.3, 0.2])
@@ -158,7 +168,10 @@ class Config:
     martingale_source_lots: dict = field(default_factory=dict)  # 各群自訂手數 {"群名": [0.01, 0.02, ...]}
 
     # OCR Confirmation Settings
-    ocr_confirm_count: int = 2       # Number of OCR reads to confirm a signal (2 = 1 initial + 1 confirmation)
+    # 需連續 N 次 OCR 讀到「完全一致」的訊號才發布，用來擋掉「瞬間誤讀」
+    # (訊號剛出現/捲動時 OCR 偶爾讀錯數字)。搭配 window_ocr_reader 的
+    # 「待確認時不跳過 OCR」守衛才能正常累積次數。2 = 讀到2次一致才發。
+    ocr_confirm_count: int = 2
     ocr_confirm_delay: float = 1.0   # Seconds between each confirmation OCR
 
     # Safety Settings
@@ -198,12 +211,6 @@ class Config:
                         app_name="LINE",
                         name="gold_signal_1",
                         display_name="黃金報單🈲言群"
-                    ),
-                    CaptureWindow(
-                        window_name="鄭",
-                        app_name="LINE",
-                        name="gold_signal_2",
-                        display_name="鄭"
                     ),
                 ]
         else:
@@ -286,6 +293,8 @@ def save_config(config: Config, path: Path = CONFIG_FILE):
         "max_open_positions": config.max_open_positions,
         "cancel_pending_after_seconds": config.cancel_pending_after_seconds,
         "cancel_if_price_beyond_percent": config.cancel_if_price_beyond_percent,
+        "follow_group_cancel": config.follow_group_cancel,
+        "supersede_same_direction_minutes": config.supersede_same_direction_minutes,
         "partial_close_ratios": config.partial_close_ratios,
         "use_martingale": config.use_martingale,
         "martingale_multiplier": config.martingale_multiplier,

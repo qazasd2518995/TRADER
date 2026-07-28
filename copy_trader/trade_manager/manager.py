@@ -243,6 +243,50 @@ class TradeManager:
 
         return False
 
+    def cancel_latest_pending(self, direction: str = "", reason: str = "group_cancel") -> bool:
+        """撤掉「最近一筆」尚未成交的掛單 (只動 PENDING/SENT, 不碰已成交部位)。
+
+        對應群組發的「取消/撤」訊息。direction 給 'buy'/'sell' 時只撤該方向。
+        找不到符合的掛單就回 False (安全：什麼都不做, 不會誤平已成交部位)。
+        """
+        with self._lock:
+            candidates = [
+                (sid, o) for sid, o in self.orders.items()
+                if o.status in (OrderStatus.PENDING, OrderStatus.SENT)
+                and (not direction or getattr(o.signal, "direction", "") == direction)
+            ]
+        if not candidates:
+            logger.info("group_cancel: 沒有符合的未成交掛單可撤 (direction=%r)", direction or "any")
+            return False
+        candidates.sort(key=lambda kv: kv[1].created_at, reverse=True)
+        sid = candidates[0][0]
+        return self.cancel_order(sid, reason=reason)
+
+    def cancel_pending_same_direction(self, direction: str, within_seconds: float, exclude_signal_id: str = "") -> int:
+        """撤掉 within_seconds 內、同方向的未成交舊掛單 (只動 PENDING/SENT)。
+
+        「同方向短時間改單防呆」：新訊號下單前呼叫，撤掉剛剛同方向的舊掛單，
+        避免乘改單/OCR怪異造成同方向多下一張。回傳撤掉的張數。
+        """
+        if not direction or within_seconds <= 0:
+            return 0
+        now = time.time()
+        with self._lock:
+            victims = [
+                sid for sid, o in self.orders.items()
+                if sid != exclude_signal_id
+                and o.status in (OrderStatus.PENDING, OrderStatus.SENT)
+                and getattr(o.signal, "direction", "") == direction
+                and (now - o.created_at) <= within_seconds
+            ]
+        n = 0
+        for sid in victims:
+            if self.cancel_order(sid, reason="superseded_same_direction"):
+                n += 1
+        if n:
+            logger.info("同方向改單防呆：撤掉 %d 張 %s 舊掛單 (被新訊號取代)", n, direction)
+        return n
+
     def _get_position_profit(self, ticket: int) -> float:
         """Get current profit of an open position."""
         positions = self._get_positions()
