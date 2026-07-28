@@ -381,10 +381,13 @@ class LauncherState:
         if pcr:
             tm.partial_close_ratios = pcr
 
+        # martingale_per_source 只從 config.json 來 (面板沒有這個欄位), 這裡不覆寫,
+        # 但要印出來 — 跟多個報單群時這個值決定虧損會不會互相放大手數。
         logger.info(
-            "套用會員設定：基礎手數=%s 馬丁=%s 倍數=%s 最大層數=%s 每層手數=%s 分批=%s",
+            "套用會員設定：基礎手數=%s 馬丁=%s 倍數=%s 最大層數=%s 每層手數=%s 分批=%s 馬丁計算=%s",
             tm.default_lot_size, tm.use_martingale, tm.martingale_multiplier,
             tm.martingale_max_level, tm.martingale_lots, tm.partial_close_ratios,
+            "各群獨立" if tm.martingale_per_source else "全域共用",
         )
 
     def _run_client(self) -> None:

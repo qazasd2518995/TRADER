@@ -428,10 +428,17 @@ class TradeManager:
         logger.info(f"Order {signal_id} cancelled - martingale level unchanged ({self.current_martingale_level})")
 
     def reset_martingale(self):
-        """Reset martingale to base level (manual reset)."""
+        """Reset martingale to base level (manual reset).
+
+        每群獨立模式下也要一併清掉各來源的層級 — 否則手動重置在該模式等於沒作用
+        (下單走的是 _source_martingale, 不是 current_martingale_level)。
+        """
         logger.info(f"Manual martingale reset from level {self.current_martingale_level} to 0")
         self.current_martingale_level = 0
         self.consecutive_losses = 0
+        if self._source_martingale:
+            logger.info("同時重置各群馬丁層級: %s", list(self._source_martingale.keys()))
+            self._source_martingale = {}
         self._save_martingale_state()
 
     def _load_martingale_state(self):
