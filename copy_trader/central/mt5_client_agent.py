@@ -157,6 +157,8 @@ class MT5ClientAgent:
         )
 
         self.trade_manager = TradeManager(self.config.mt5_files_dir)
+        # 重開後的孤兒掛單也要照同一個逾時刪掉 (見 _sweep_orphan_pending_orders)
+        self.trade_manager.pending_cancel_after_seconds = int(self.config.cancel_pending_after_seconds or 0)
         self.trade_manager.default_lot_size = self.config.default_lot_size
         self.trade_manager.set_symbol_name(getattr(self.config, "symbol_name", DEFAULT_SYMBOL))
         self.trade_manager.partial_close_ratios = self.config.partial_close_ratios
