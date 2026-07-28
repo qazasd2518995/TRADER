@@ -315,6 +315,11 @@ main { max-width: 1240px; margin: 0 auto; padding: 22px 24px 72px; }
 .src-table input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--gold-mark); }
 .src-name { font-weight: 600; white-space: nowrap; }
 .src-meta { font-size: 11px; color: var(--muted); font-weight: 400; }
+.src-add { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.src-add input {
+  font: inherit; font-size: 12.5px; padding: 6px 10px; flex: 1 1 280px; min-width: 0;
+  border: 1px solid var(--rule); border-radius: 7px; background: var(--paper); color: var(--ink);
+}
 
 .ladder-foot {
   display: flex; gap: 22px; flex-wrap: wrap;
@@ -1334,10 +1339,42 @@ function renderSourceSettings(rows) {
         '<td><input type="number" class="sp-mult" step="0.1" min="1" value="' + r.multiplier + '" /></td>' +
         '<td><input type="number" class="sp-max" step="1" min="1" max="12" value="' + r.max_level + '" /></td>' +
       "</tr>").join("") +
-    "</tbody></table>";
+    "</tbody></table>" +
+    '<div class="src-add">' +
+      '<input type="text" id="newSourceName" placeholder="群組名稱（要跟訊號中心的顯示名稱完全一致）" />' +
+      '<button type="button" class="btn" id="addSource">新增來源</button>' +
+    "</div>";
 
   box.addEventListener("change", syncSourceProfiles);
   box.addEventListener("input", syncSourceProfiles);
+  $("addSource").onclick = addSourceRow;
+  $("newSourceName").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); addSourceRow(); } };
+  syncSourceProfiles();
+}
+
+/* 手動新增：讓還沒發過訊號的群組可以「先設定好再上線」。
+   不然只能等它發第一筆才會出現在表上，而那第一筆已經照全域設定下出去了。 */
+function addSourceRow() {
+  const input = $("newSourceName");
+  const name = (input.value || "").trim();
+  if (!name) return;
+  if (document.querySelector('[data-source-row="' + CSS.escape(name) + '"]')) {
+    alert("「" + name + "」已經在清單裡了");
+    return;
+  }
+  const tr = document.createElement("tr");
+  tr.dataset.sourceRow = name;
+  tr.innerHTML =
+    '<td><div class="src-name">' + esc(name) + "</div>" +
+      '<div class="src-meta">手動新增 · 尚未收過訊號</div></td>' +
+    '<td><input type="checkbox" class="sp-enabled" checked /></td>' +
+    '<td><select class="sp-mode"><option value="martingale">馬丁</option>' +
+      '<option value="flat" selected>均注</option></select></td>' +
+    '<td><input type="number" class="sp-base" step="0.01" min="0.01" value="0.01" /></td>' +
+    '<td><input type="number" class="sp-mult" step="0.1" min="1" value="2" /></td>' +
+    '<td><input type="number" class="sp-max" step="1" min="1" max="12" value="5" /></td>';
+  document.querySelector(".src-table tbody").appendChild(tr);
+  input.value = "";
   syncSourceProfiles();
 }
 
