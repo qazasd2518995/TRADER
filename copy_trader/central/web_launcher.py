@@ -457,6 +457,13 @@ class LauncherState:
                 return
 
             self._apply_client_trade_settings()
+            # 重啟後把 MT5 上還活著的單接回追蹤，否則會變成沒人管的孤兒單：
+            # 不會逾時自動刪，成交後的輸贏也不會計入馬丁層級。
+            cfg = self.client_agent.config
+            self.client_agent.trade_manager.adopt_open_orders(
+                cancel_after_seconds=cfg.cancel_pending_after_seconds,
+                cancel_if_price_beyond=cfg.cancel_if_price_beyond_percent,
+            )
             self.client_agent.trade_manager.start()
             logger.info("會員端已啟動，Hub=%s，last_seq=%s", hub_url, self.client_agent.last_seq)
             self.status = "運行中"

@@ -335,12 +335,59 @@ def _by_day(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 # 主入口
 # --------------------------------------------------------------------------
 
-def pending_orders(trade_manager: Any) -> List[Dict[str, Any]]:
+def pending_orders(trade_manager: Any, mt5_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
     """還沒進場的掛單，附上距離自動刪單還剩幾秒。
 
-    這份資料只存在跑著的 TradeManager 記憶體裡（MT5 的 orders.json 沒有「何時送出」，
-    也就算不出倒數），所以服務沒啟動時回空陣列。
+    以 TradeManager 追蹤中的單為主（只有它知道倒數）。另外把 MT5 上存在、但沒被
+    追蹤到的本系統掛單也一併列出並標記 tracked=False —— 面板叫「待成交掛單」，
+    就該反映 MT5 的實況，不能因為程式沒追蹤到就假裝沒有。
     """
+    rows: List[Dict[str, Any]] = []
+    tracked_tickets = set()
+    rows.extend(_tracked_pending(trade_manager, tracked_tickets))
+    rows.extend(_untracked_pending(mt5_dir, tracked_tickets))
+    rows.sort(key=lambda r: r["created_at"])
+    return rows
+
+
+def _untracked_pending(mt5_dir: Optional[Path], tracked: set) -> List[Dict[str, Any]]:
+    """MT5 上有、但 TradeManager 沒在追的本系統掛單（例如重啟後沒認領成功的）。"""
+    if mt5_dir is None:
+        return []
+    data = _read_json(Path(mt5_dir) / "orders.json") or {}
+    out = []
+    for raw in (data.get("orders") or []):
+        if not isinstance(raw, dict):
+            continue
+        ticket = raw.get("ticket")
+        if ticket in tracked:
+            continue
+        try:
+            side = "sell" if int(raw.get("type") or 0) % 2 else "buy"
+        except (TypeError, ValueError):
+            side = ""
+        out.append({
+            "signal_id": str(raw.get("comment") or ""),
+            "ticket": ticket,
+            "status": "untracked",
+            "tracked": False,
+            "side": side,
+            "symbol": raw.get("symbol") or "",
+            "entry_price": _float(raw.get("price"), 0.0),
+            "sl": _float(raw.get("sl"), 0.0),
+            "tp": _float(raw.get("tp"), 0.0),
+            "source": "",
+            "created_at": 0.0,
+            "elapsed_seconds": None,
+            "cancel_after_seconds": 0,
+            "remaining_seconds": None,
+            "cancel_if_price_beyond": None,
+            "setup_time": raw.get("time_setup") or "",
+        })
+    return out
+
+
+def _tracked_pending(trade_manager: Any, tracked: set) -> List[Dict[str, Any]]:
     if trade_manager is None:
         return []
     try:
@@ -355,10 +402,13 @@ def pending_orders(trade_manager: Any) -> List[Dict[str, Any]]:
             signal = order.signal
             limit = order.cancel_after_seconds or 0
             elapsed = now - order.created_at
+            if order.ticket is not None:
+                tracked.add(order.ticket)
             rows.append({
                 "signal_id": order.signal_id,
                 "ticket": order.ticket,
                 "status": order.status.value,
+                "tracked": True,
                 "side": str(getattr(signal, "direction", "") or "").lower(),
                 "symbol": getattr(signal, "symbol", "") or "",
                 "entry_price": _float(getattr(signal, "entry_price", 0), 0.0),
@@ -372,7 +422,6 @@ def pending_orders(trade_manager: Any) -> List[Dict[str, Any]]:
                 "remaining_seconds": int(max(0, limit - elapsed)) if limit else None,
                 "cancel_if_price_beyond": order.cancel_if_price_beyond,
             })
-        rows.sort(key=lambda r: r["created_at"])
         return rows
     except Exception:
         return []
@@ -545,7 +594,7 @@ def build_stats(settings: Dict[str, Any], trade_manager: Any = None) -> Dict[str
         "cycles": _cycles(trades),
         "trades": trades,
         "positions": positions,
-        "pending": pending_orders(trade_manager),
+        "pending": pending_orders(trade_manager, mt5_dir),
         "source_settings": source_settings(settings, trades, sources_raw, martingale_raw),
         "cancel_rules": {
             "after_seconds": _int(settings.get("cancel_pending_after_seconds"), 10800),

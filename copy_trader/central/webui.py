@@ -434,6 +434,7 @@ tbody tr:hover { background: var(--sunk); }
 }
 .tag-win  { background: var(--win-wash);  color: var(--win); }
 .tag-loss { background: var(--loss-wash); color: var(--loss); }
+.tag-warn { background: var(--sunk); color: var(--gold); border: 1px solid var(--gold-mark); }
 .tag-lv {
   background: var(--sunk); color: var(--gold); border: 1px solid var(--hair);
   font-variant-numeric: tabular-nums;
@@ -1166,25 +1167,35 @@ function renderPending(pending, running) {
   }
   const rows = pending.map((p) => {
     const deadline = p.remaining_seconds == null ? null : Date.now() + p.remaining_seconds * 1000;
+    // tracked=false 是 MT5 上真的有、但會員端沒在管的單，不能假裝它有倒數
+    const countdown = p.tracked === false
+      ? '<span class="tag tag-warn">未追蹤</span>'
+      : (deadline ? durationText(p.remaining_seconds) : "不自動刪單");
     return "<tr>" +
       '<td class="' + (p.side === "buy" ? "side-buy" : "side-sell") + '">' + (p.side === "buy" ? "買進" : "賣出") + "</td>" +
       "<td>" + esc(p.symbol || "XAUUSD") + "</td>" +
       '<td class="num mono">' + (p.entry_price ? n2.format(p.entry_price) : "—") + "</td>" +
       '<td class="num mono">' + (p.sl ? n2.format(p.sl) : "—") + "</td>" +
       '<td class="num mono">' + (p.tp ? n2.format(p.tp) : "—") + "</td>" +
-      '<td class="mono">' + durationText(p.elapsed_seconds) + "</td>" +
-      '<td class="num countdown"' + (deadline ? ' data-deadline="' + deadline + '"' : "") + ">" +
-        (deadline ? durationText(p.remaining_seconds) : "不自動刪單") + "</td>" +
+      '<td class="mono">' + (p.elapsed_seconds == null ? esc(p.setup_time || "—") : durationText(p.elapsed_seconds)) + "</td>" +
+      '<td class="num countdown"' + (deadline ? ' data-deadline="' + deadline + '"' : "") + ">" + countdown + "</td>" +
       "<td>" + esc(p.source || "—") + "</td>" +
       '<td class="mono">' + esc(p.ticket == null ? "尚未取得" : p.ticket) + "</td>" +
     "</tr>";
   }).join("");
+  const untracked = pending.filter((p) => p.tracked === false).length;
   box.innerHTML =
     '<div class="table-scroll"><table><thead><tr>' +
       "<th>方向</th><th>商品</th><th class=\"num\">掛單價</th><th class=\"num\">停損</th>" +
       "<th class=\"num\">停利</th><th>已等待</th><th class=\"num\">距自動刪單</th>" +
       "<th>訊號來源</th><th>單號</th>" +
-    "</tr></thead><tbody>" + rows + "</tbody></table></div>";
+    "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
+    (untracked
+      ? '<div class="notice" style="margin:12px 14px 14px">' +
+        "<div><b>有 " + untracked + " 張單在 MT5 上，但會員端沒有在管</b>" +
+        "這些單不會逾時自動刪，成交後的輸贏也不會計入馬丁層級。按「停止」再「開始跟單」" +
+        "會重新認領它們。</div></div>"
+      : "");
   tickCountdowns();
 }
 

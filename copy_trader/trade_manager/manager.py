@@ -2,13 +2,14 @@
 Trade Manager for Copy Trading System
 Handles order lifecycle, partial closes, and cancellation.
 """
+import calendar
 import json
 import time
 import threading
 import logging
 from datetime import datetime
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict
+from typing import Any, Optional, List, Dict
 from pathlib import Path
 from enum import Enum
 from pathlib import Path
@@ -296,6 +297,132 @@ class TradeManager:
         if n:
             logger.info("同方向改單防呆：撤掉 %d 張 %s 舊掛單 (被新訊號取代)", n, direction)
         return n
+
+    # MT5 order type: 偶數=buy 系列(0 BUY / 2 BUY_LIMIT / 4 BUY_STOP), 奇數=sell 系列
+    @staticmethod
+    def _direction_from_mt5_type(raw_type: Any) -> str:
+        try:
+            return "sell" if int(raw_type) % 2 else "buy"
+        except (TypeError, ValueError):
+            return ""
+
+    def _broker_time_to_epoch(self, text: str) -> Optional[float]:
+        """把 EA 寫的券商牆上時間字串 (2026.07.28 20:41) 轉成真正的 epoch。
+
+        EA 記的是券商當地時間，要扣掉 gmt_offset 才會對上 time.time()。
+        """
+        text = str(text or "").strip()
+        if not text:
+            return None
+        for fmt in ("%Y.%m.%d %H:%M:%S", "%Y.%m.%d %H:%M"):
+            try:
+                naive = datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+            wall = calendar.timegm(naive.timetuple())   # 當成 UTC 讀 = 券商牆上時間
+            info = self._read_json_file(self.mt5_files_dir / "account_info.json") or {}
+            try:
+                offset = int(info.get("gmt_offset") or 0)
+            except (TypeError, ValueError):
+                offset = 0
+            return wall - offset
+        return None
+
+    def adopt_open_orders(
+        self,
+        cancel_after_seconds: Optional[int] = None,
+        cancel_if_price_beyond: Optional[float] = None,
+    ) -> int:
+        """重啟後把 MT5 上還活著的本系統單接回追蹤清單。
+
+        沒有這一步的話，每次重啟都會留下「孤兒單」：MT5 上掛著，但會員端不認得它，
+        於是既不會逾時自動刪單，成交後的輸贏也不會計入馬丁層級。
+
+        靠 magic number 認自己的單，comment 裡帶著原本的 signal_id。
+        回傳認領的張數。
+        """
+        from copy_trader.signal_parser.groq_parser import ParsedSignal
+
+        adopted = 0
+        pending = self._read_json_file(self.pending_orders_file) or {}
+        positions = self._read_json_file(self.positions_file) or {}
+
+        def _signal_id(raw: dict, ticket: Any) -> str:
+            comment = str(raw.get("comment") or "")
+            if comment.startswith("copy_copy_"):
+                return comment[5:]
+            return comment or f"adopted_{ticket}"
+
+        def _register(raw: dict, status: OrderStatus, created_at: Optional[float]) -> bool:
+            ticket = raw.get("ticket")
+            try:
+                if int(raw.get("magic") or 0) != self.magic_number:
+                    return False
+            except (TypeError, ValueError):
+                return False
+            signal_id = _signal_id(raw, ticket)
+            with self._lock:
+                if signal_id in self.orders:
+                    return False
+            direction = self._direction_from_mt5_type(raw.get("type"))
+            entry = raw.get("price") if raw.get("price") is not None else raw.get("price_open")
+            tp = raw.get("tp")
+            signal = ParsedSignal(
+                is_valid=True,
+                symbol=str(raw.get("symbol") or self.symbol_name),
+                direction=direction,
+                entry_price=float(entry) if entry else None,
+                stop_loss=float(raw.get("sl")) if raw.get("sl") else None,
+                take_profit=[float(tp)] if tp else [],
+                confidence=1.0,
+                raw_text="adopted from MT5 on restart",
+            )
+            volume = float(raw.get("volume") or 0.0)
+            order = ManagedOrder(
+                signal_id=signal_id,
+                signal=signal,
+                status=status,
+                ticket=int(ticket) if ticket is not None else None,
+                remaining_volume=volume,
+                initial_volume=volume,
+                source_window=self._signal_sources.get(signal_id, ""),
+                cancel_after_seconds=cancel_after_seconds,
+                cancel_if_price_beyond=cancel_if_price_beyond,
+                created_at=created_at if created_at else time.time(),
+            )
+            if status is OrderStatus.FILLED:
+                order.entry_time = order.created_at
+                order.entry_price = signal.entry_price
+            with self._lock:
+                self.orders[signal_id] = order
+            return True
+
+        for raw in (pending.get("orders") or []):
+            if isinstance(raw, dict) and _register(
+                raw, OrderStatus.SENT, self._broker_time_to_epoch(raw.get("time_setup"))
+            ):
+                adopted += 1
+                logger.info(
+                    "認領 MT5 掛單 ticket=%s %s %s @%s (%.1f 分鐘前掛出)",
+                    raw.get("ticket"), raw.get("symbol"),
+                    self._direction_from_mt5_type(raw.get("type")), raw.get("price"),
+                    (time.time() - (self._broker_time_to_epoch(raw.get("time_setup")) or time.time())) / 60.0,
+                )
+
+        for raw in (positions.get("positions") or []):
+            if isinstance(raw, dict):
+                created = raw.get("open_timestamp") or raw.get("time")
+                try:
+                    created = float(created) if created else None
+                except (TypeError, ValueError):
+                    created = None
+                if _register(raw, OrderStatus.FILLED, created):
+                    adopted += 1
+                    logger.info("認領 MT5 持倉 ticket=%s %s", raw.get("ticket"), raw.get("symbol"))
+
+        if adopted:
+            logger.info("重啟後共認領 %d 張 MT5 既有單，恢復追蹤", adopted)
+        return adopted
 
     def _get_position_profit(self, ticket: int) -> float:
         """Get current profit of an open position."""
