@@ -319,6 +319,14 @@ class RegexSignalParser:
                 return True
         return False
 
+    def split_message_blocks(self, text: str) -> List[str]:
+        """公開版的訊息區塊切分。
+
+        給需要「逐則訊息比對」的採集端用 (例：OCR 路徑要先確認某一則含提供者的
+        模板指紋，才從那一則抽訊號 — 否則同一畫面上別人的單會被一起收進來)。
+        """
+        return self._split_by_timestamps(text)
+
     def _split_by_timestamps(self, text: str) -> List[str]:
         """
         Split OCR text into message blocks using LINE timestamps, date headers,

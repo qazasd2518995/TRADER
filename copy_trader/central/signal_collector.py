@@ -30,18 +30,24 @@ logger = logging.getLogger(__name__)
 _CANCEL_EXCLUDE = ("嗎", "?", "？", "有沒有", "會不會", "是不是", "設定", "後來", "怎麼", "為何", "被", "如果", "要不要")
 
 
-def _cancel_direction_from_message(body: str, sender: str = "") -> Optional[str]:
+def _cancel_direction_from_message(
+    body: str,
+    sender: str = "",
+    sender_verified: bool = False,
+) -> Optional[str]:
     """訊息本身若是「取消/撤」撤單指令 → 回傳方向 (''=不分/'buy'/'sell')，否則 None。
 
     嚴格條件 (避免把討論/問句誤判成撤單 → 誤撤真單)：
-      1. 只認「訊號提供者(乘)」發的 — 其他人閒聊/討論撤單一律不算。
+      1. 只認訊號提供者發的 — 其他人閒聊/討論撤單一律不算。
+         sender_verified=True 代表該來源已設發送者白名單、上游擷取層過濾過了；
+         否則沿用舊的預設 (只認「乘」) 給沒設白名單的來源。
       2. 短訊息 (≤20字)、含撤單關鍵字、非訊號、不含問句/描述詞。
     """
     b = (body or "").strip()
     if not b or len(b) > 20:
         return None
-    # 只認提供者(乘)發的撤單, 擋掉「你有設定撤單嗎」「後來取消」這類他人討論
-    if "乘" not in (sender or ""):
+    # 只認提供者發的撤單, 擋掉「你有設定撤單嗎」「後來取消」這類他人討論
+    if not sender_verified and "乘" not in (sender or ""):
         return None
     if "止損" in b or "止盈" in b or "xauusd" in b.lower():
         return None  # 這是訊號不是撤單
@@ -168,6 +174,10 @@ class CentralSignalCollector:
         self._processed_ttl = max(60, int(config.signal_dedup_minutes or 10) * 60)
         # 訊號時效鎖: 訊息時間超過這麼久就不發布 (擋歷史洪水/延遲/過期)。0=不限。
         self.max_signal_age_sec = max(0, int(getattr(config, "signal_max_age_minutes", 10) or 0) * 60)
+        # 是否跟群組的「取消/撤」訊息。預設關 — 撤單統一交給會員端的逾時刪單。
+        self.follow_group_cancel = bool(getattr(config, "follow_group_cancel", False))
+        if not self.follow_group_cancel:
+            logger.info("訊息撤單已停用 (follow_group_cancel=False) — 掛單改由逾時自動刪單處理")
 
         windows = [
             ClipboardWindow(
@@ -177,11 +187,24 @@ class CentralSignalCollector:
                 window_id=getattr(w, "window_id", None),
                 screens=int(getattr(config, "clipboard_screens", 2) or 2),
                 copy_mode=copy_mode,
+                allowed_senders=list(getattr(w, "allowed_senders", []) or []),
+                required_patterns=list(getattr(w, "required_patterns", []) or []),
             )
             for w in (config.capture_windows or [])
         ]
         if not windows:
             raise RuntimeError("no capture_windows configured")
+
+        # 有設發送者白名單或模板指紋的來源 → 擷取層已確認過是誰報的單,
+        # 撤單偵測不必再套「只認乘」的預設。
+        self._sender_filtered = {
+            w.name for w in windows if w.allowed_senders or w.required_patterns
+        }
+        for w in windows:
+            if w.allowed_senders:
+                logger.info("來源 %r 只跟這些發送者: %s", w.label, w.allowed_senders)
+            if w.required_patterns:
+                logger.info("來源 %r 只跟符合模板指紋的訊息: %s", w.label, w.required_patterns)
 
         # 採集管道：
         #   "window_ocr" = PrintWindow 背景截圖 + OCR (LINE 擋掉合成鍵鼠後的主管道)
@@ -259,13 +282,21 @@ class CentralSignalCollector:
         # 撤單指令 (在長度過濾之前, 因「取消」等只有2字)：
         #   OCR 路徑 → body 帶 __CANCEL__:<dir>:<訊號> 標記
         #   剪貼簿路徑 → 訊息本身就是「取消 / 撤掉 / 空單先撤掉」等
+        # 預設 follow_group_cancel=False → 完全不理訊息撤單, 改由會員端「掛單逾時
+        # 未成交自動刪單」統一處理 (跟多個來源時, 訊息撤單會撤到別群的掛單)。
         cancel_direction = None
-        if body.startswith("__CANCEL__"):
+        if not self.follow_group_cancel:
+            if body.startswith("__CANCEL__"):
+                logger.debug("已停用訊息撤單, 忽略 OCR 撤單標記: %r", body[:40])
+                return 0
+        elif body.startswith("__CANCEL__"):
             parts = body.split(":", 2)
             d = parts[1] if len(parts) > 1 else ""
             cancel_direction = d if d in ("buy", "sell") else ""
         else:
-            cancel_direction = _cancel_direction_from_message(body, msg.sender)
+            cancel_direction = _cancel_direction_from_message(
+                body, msg.sender, sender_verified=source_name in self._sender_filtered,
+            )
         if cancel_direction is not None:
             payload = {
                 "type": "cancel_signal",

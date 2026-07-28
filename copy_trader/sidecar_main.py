@@ -599,6 +599,8 @@ class JsonRpcSidecar:
                     name=w.get("name", f"win_{i}"),
                     window_id=w.get("window_id"),
                     display_name=w.get("display_name", w.get("window_name", "")),
+                    allowed_senders=list(w.get("allowed_senders") or []),
+                    required_patterns=list(w.get("required_patterns") or []),
                 )
                 for i, w in enumerate(params["capture_windows"])
             ]

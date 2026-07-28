@@ -199,6 +199,8 @@ class WindowOcrReaderService:
         self._confirm: Dict[str, Dict[str, int]] = {w.name: {} for w in windows}
         # baseline 狀態
         self._baselined: Set[str] = set()
+        # 已警告過「白名單在 OCR 管道無效」的來源 (只吼一次, 不洗版)
+        self._warned_sender_filter: Set[str] = set()
         # 節流
         self._last_lookup_at: Dict[str, float] = {}
         self._last_ocr_at: Dict[str, float] = {w.name: 0.0 for w in windows}
@@ -399,6 +401,14 @@ class WindowOcrReaderService:
         t0 = time.time()
         cap = OcrCapture(source_name=w.name, display_name=w.label, window_id=w.window_id)
 
+        # 發送者白名單 + OCR = 認不出誰發的 → 整個來源跳過, 不亂跟
+        # (改用模板指紋 required_patterns 的視窗不受此限 — 見 _sender_filter_unsupported)
+        if self._sender_filter_unsupported(w):
+            cap.ok = True
+            cap.skipped = True
+            cap.skip_reason = "sender_filter_needs_clipboard"
+            return cap
+
         # 節流：距上次 OCR 未達 min_interval 就跳過 (baseline 除外)
         if w.name in self._baselined and (time.time() - self._last_ocr_at.get(w.name, 0.0)) < self.min_interval:
             cap.ok = True
@@ -461,7 +471,7 @@ class WindowOcrReaderService:
         current: List[str] = []
         seen_local: Set[str] = set()
         last_complete: Optional[ParsedSignal] = None
-        for s in self.parser.parse_all_latest(text):
+        for s in self._parse_signals(w, text):
             if not _is_complete(s):
                 continue
             last_complete = s
@@ -512,6 +522,44 @@ class WindowOcrReaderService:
             logger.info("OCR %r: %d 則新訊號確認發布 (elapsed %.0fms)", w.label, len(emitted), cap.elapsed_ms)
         return cap
 
+    def _parse_signals(self, w: ClipboardWindow, text: str) -> List[ParsedSignal]:
+        """從 OCR 全文抽訊號；有設模板指紋的視窗則「逐訊息區塊」比對後才抽。
+
+        不能直接拿整頁 OCR 文字比對指紋 —— 畫面上同時有提供者的單和群友的單時,
+        整頁必然含指紋, 於是別人的單也一起被收進來。所以先切成訊息區塊
+        (依 LINE 時間戳/日期/氣泡邊界), 只解析「自己就帶指紋」的那幾塊。
+        """
+        if not getattr(w, "required_patterns", None):
+            return self.parser.parse_all_latest(text)
+
+        out: List[ParsedSignal] = []
+        for block in self.parser.split_message_blocks(text):
+            if not w.matches_template(block):
+                continue
+            out.extend(self.parser.parse_all_latest(block))
+        if not out:
+            logger.debug("OCR %r: 本輪沒有區塊符合模板指紋 %s", w.label, w.required_patterns)
+        return out
+
+    def _sender_filter_unsupported(self, w: ClipboardWindow) -> bool:
+        """OCR 認不出發送者 → 有設白名單的視窗一律跳過 (寧可不跟, 不可跟錯人)。
+
+        例外：改用「模板指紋」(required_patterns) 的視窗不受影響 — 那是比對內容,
+        OCR 讀得到內容, 所以在 OCR 管道也能正確只跟指定的提供者。
+        """
+        if not getattr(w, "allowed_senders", None):
+            return False
+        if getattr(w, "required_patterns", None):
+            return False
+        if w.name not in self._warned_sender_filter:
+            self._warned_sender_filter.add(w.name)
+            logger.warning(
+                "%r 設了發送者白名單 %s, 但 OCR 管道讀不出發送者 → 這個來源整個跳過。"
+                "請改用 required_patterns (模板指紋), 或把 signal_source 設成 clipboard。",
+                w.label, w.allowed_senders,
+            )
+        return True
+
     def _make_msg(self, w: ClipboardWindow, canonical: str) -> LineMessage:
         return LineMessage(
             index=0,
@@ -532,5 +580,7 @@ def make_ocr_windows_from_config(config_windows) -> List[ClipboardWindow]:
             window_name=getattr(w, "window_name", "") or "",
             display_name=getattr(w, "display_name", "") or getattr(w, "window_name", "") or "",
             window_id=getattr(w, "window_id", None),
+            allowed_senders=list(getattr(w, "allowed_senders", []) or []),
+            required_patterns=list(getattr(w, "required_patterns", []) or []),
         ))
     return out
