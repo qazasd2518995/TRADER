@@ -378,6 +378,59 @@ def pending_orders(trade_manager: Any) -> List[Dict[str, Any]]:
         return []
 
 
+def source_settings(
+    settings: Dict[str, Any],
+    trades: List[Dict[str, Any]],
+    sources_raw: Dict[str, Any],
+    martingale_raw: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """每個訊號來源的下單設定 + 目前馬丁層級。
+
+    來源清單是「自動發現」的：把設定裡有的、歷史成交出現過的、signal_sources.json
+    收過的全部聯集起來。這樣使用者不必手打群組名——打錯字會靜默套用全域設定，
+    是這種以字串當 key 的設計最容易踩的坑。
+    """
+    try:
+        profiles = json.loads(str(settings.get("source_profiles") or "{}"))
+        if not isinstance(profiles, dict):
+            profiles = {}
+    except (TypeError, ValueError):
+        profiles = {}
+
+    known: List[str] = []
+    for name in list(profiles.keys()) + [t["source"] for t in trades] + list(sources_raw.values()):
+        name = str(name or "").strip()
+        if name and name not in known:
+            known.append(name)
+
+    per_source = martingale_raw.get("per_source") or {}
+    base_lot = _float(settings.get("default_lot_size"), 0.01)
+    multiplier = _float(settings.get("martingale_multiplier"), 2.0)
+    max_level = _int(settings.get("martingale_max_level"), 5)
+    global_martingale = str(settings.get("use_martingale", "")).lower() in ("true", "1", "yes", "on")
+
+    rows = []
+    for name in known:
+        raw = profiles.get(name) or {}
+        mode = str(raw.get("mode") or "").strip().lower()
+        if mode not in ("martingale", "flat"):
+            mode = "martingale" if global_martingale else "flat"
+        state = per_source.get(name) or {}
+        rows.append({
+            "source": name,
+            "configured": bool(raw),
+            "enabled": bool(raw.get("enabled", True)),
+            "mode": mode,
+            "base_lot": _float(raw.get("base_lot"), base_lot),
+            "multiplier": _float(raw.get("multiplier"), multiplier),
+            "max_level": _int(raw.get("max_level"), max_level),
+            "level": _int(state.get("level"), 0),
+            "losses": _int(state.get("losses"), 0),
+            "trades": sum(1 for t in trades if t["source"] == name),
+        })
+    return rows
+
+
 def build_stats(settings: Dict[str, Any], trade_manager: Any = None) -> Dict[str, Any]:
     mt5_dir = resolve_mt5_dir(str(settings.get("mt5_files_dir") or ""))
     now = time.time()
@@ -490,6 +543,7 @@ def build_stats(settings: Dict[str, Any], trade_manager: Any = None) -> Dict[str
         "trades": trades,
         "positions": positions,
         "pending": pending_orders(trade_manager),
+        "source_settings": source_settings(settings, trades, sources_raw, martingale_raw),
         "cancel_rules": {
             "after_seconds": _int(settings.get("cancel_pending_after_seconds"), 10800),
             "price_beyond_percent": _float(settings.get("cancel_if_price_beyond_percent"), 1.0),

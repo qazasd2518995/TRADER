@@ -129,6 +129,8 @@ class LauncherState:
             "partial_close_ratios": "0.5,0.3,0.2",
             "cancel_pending_after_seconds": "10800",
             "cancel_if_price_beyond_percent": "0",
+            # 每個訊號來源各自的下單模式，存成 JSON 字串（設定檔全部是字串型別）
+            "source_profiles": "{}",
         }
 
     def _load_settings(self) -> Dict[str, Any]:
@@ -385,6 +387,28 @@ class LauncherState:
         pcr = _lots("partial_close_ratios")
         if pcr:
             tm.partial_close_ratios = pcr
+
+        # 每個訊號來源各自的下單模式（均注 / 馬丁）。壞掉的 JSON 就當沒設定，
+        # 讓全域設定接手，不要因為一個欄位打錯就讓整個跟單起不來。
+        profiles = {}
+        raw_profiles = str(self.settings.get("source_profiles") or "").strip()
+        if raw_profiles:
+            try:
+                parsed = json.loads(raw_profiles)
+                if isinstance(parsed, dict):
+                    profiles = {str(k): v for k, v in parsed.items() if isinstance(v, dict)}
+                else:
+                    logger.warning("source_profiles 不是物件，已忽略")
+            except json.JSONDecodeError as exc:
+                logger.warning("source_profiles JSON 解析失敗，已忽略：%s", exc)
+        tm.source_profiles = profiles
+        if profiles:
+            # 混用均注/馬丁時，層級一定要各群分開算，否則會互相污染
+            tm.martingale_per_source = True
+            for name, p in profiles.items():
+                mode = "均注" if str(p.get("mode", "")).lower() == "flat" else "馬丁"
+                on = "跟單" if p.get("enabled", True) else "已停用"
+                logger.info("來源設定：%s → %s / %s / 基礎手數 %s", name, on, mode, p.get("base_lot", "(全域)"))
 
         # 刪單規則讀的是 agent 的 config（submit_signal 送單當下才取值），不是 TradeManager。
         # 這兩個值會寫進每一筆新掛單；已經送出的舊單沿用當初的設定。

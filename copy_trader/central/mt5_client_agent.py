@@ -237,6 +237,11 @@ class MT5ClientAgent:
                 continue
 
             source = str(item.get("source") or item.get("source_name") or "central")
+            # 該來源被關掉就不跟這一單（仍要 mark_seq，否則會卡在同一筆重試）
+            if not self.trade_manager.is_source_enabled(source):
+                logger.info("來源「%s」已停用，略過 seq=%s", source, seq)
+                self._mark_seq(seq)
+                continue
             # 同方向短時間改單防呆: 下這筆前, 撤掉同方向的近期未成交舊掛單, 只留最新
             if self.supersede_window_sec > 0 and signal.direction in ("buy", "sell"):
                 self.trade_manager.cancel_pending_same_direction(signal.direction, self.supersede_window_sec)

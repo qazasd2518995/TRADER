@@ -43,6 +43,12 @@ CLIENT_FIELDS = """
         </div>
       </div>
       <div class="field-group">
+        <h3>訊號來源設定</h3>
+        <div id="sourceSettings"></div>
+        <input type="hidden" id="source_profiles" />
+        <p class="hint">每個 LINE 群組可以各自設定。選「均注」= 每筆固定手數、不進關卡；選「馬丁」= 逐關加碼，各群層級獨立計算，互不影響。沒有列出來的來源會套用上方的全域設定。</p>
+      </div>
+      <div class="field-group">
         <h3>自動刪單</h3>
         <div class="field-grid">
           <label>幾秒未進場刪單<input id="cancel_pending_after_seconds" placeholder="10800（3 小時）；0 = 不刪" /></label>
@@ -224,6 +230,8 @@ main { max-width: 1240px; margin: 0 auto; padding: 22px 24px 72px; }
   display: flex; align-items: flex-end; gap: 10px;
   height: 158px; margin: 22px 0 12px;   /* 上緣留給「現在」標記 */
 }
+/* display:flex 會蓋掉 hidden 屬性預設的 display:none，要明寫 */
+.rungs[hidden] { display: none; }
 .rung {
   flex: 1 1 0; min-width: 0;
   display: flex; flex-direction: column; justify-content: flex-end; align-items: center;
@@ -266,6 +274,48 @@ main { max-width: 1240px; margin: 0 auto; padding: 22px 24px 72px; }
 }
 .rung.is-lit .rung-lot { color: var(--ink); }
 .rung-tag { font-size: 10.5px; color: var(--muted); letter-spacing: .04em; }
+.ladder-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 2px; }
+.ladder-tabs:empty { display: none; }
+.src-tab {
+  font: inherit; font-size: 12px; padding: 4px 11px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--hair); background: var(--sunk); color: var(--ink-2);
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.src-tab:hover { color: var(--ink); }
+.src-tab.is-on { background: var(--card); color: var(--ink); font-weight: 600; border-color: var(--gold-mark); }
+.src-tab.is-off { opacity: .5; text-decoration: line-through; }
+.src-tab .badge {
+  font-size: 10px; font-weight: 700; letter-spacing: .04em;
+  padding: 1px 5px; border-radius: 4px; background: var(--card); color: var(--gold);
+  border: 1px solid var(--hair);
+}
+/* 均注沒有關卡可以爬，用一張說明卡取代階梯 */
+.flat-note {
+  display: flex; align-items: center; gap: 16px;
+  height: 158px; margin: 22px 0 12px; padding: 0 22px;
+  border: 1px dashed var(--rule); border-radius: 10px; background: var(--sunk);
+}
+.flat-note[hidden] { display: none; }
+.flat-note .big { font-size: 34px; font-weight: 650; letter-spacing: -.02em; }
+.flat-note p { margin: 4px 0 0; font-size: 12.5px; color: var(--muted); max-width: 30ch; }
+
+/* 每群下單設定表 */
+.src-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.src-table th {
+  text-align: left; font-size: 11px; font-weight: 600; letter-spacing: .06em;
+  color: var(--muted); padding: 6px 10px; border-bottom: 1px solid var(--hair); white-space: nowrap;
+}
+.src-table td { padding: 8px 10px; border-bottom: 1px solid var(--hair); }
+.src-table tr:last-child td { border-bottom: none; }
+.src-table input[type="number"], .src-table select {
+  font: inherit; font-size: 12.5px; padding: 5px 8px; width: 100%; min-width: 72px;
+  border: 1px solid var(--rule); border-radius: 6px; background: var(--paper); color: var(--ink);
+}
+.src-table input[disabled], .src-table select[disabled] { opacity: .4; cursor: not-allowed; }
+.src-table input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--gold-mark); }
+.src-name { font-weight: 600; white-space: nowrap; }
+.src-meta { font-size: 11px; color: var(--muted); font-weight: 400; }
+
 .ladder-foot {
   display: flex; gap: 22px; flex-wrap: wrap;
   padding-top: 14px; border-top: 1px solid var(--hair);
@@ -460,10 +510,12 @@ body[data-role="central"] .client-only { display: none; }
   <section class="card hero">
     <div class="ladder client-only">
       <div class="ladder-head">
-        <h2>馬丁階梯</h2>
+        <h2 id="ladderTitle">馬丁階梯</h2>
         <span class="ladder-level" id="ladderLevel">—</span>
       </div>
+      <div class="ladder-tabs" id="ladderTabs"></div>
       <div class="rungs" id="rungs"></div>
+      <div class="flat-note" id="flatNote" hidden></div>
       <dl class="ladder-foot">
         <div><dt>下一筆手數</dt><dd id="nextLot">—</dd></div>
         <div><dt>連續虧損</dt><dd id="consecLoss">—</dd></div>
@@ -586,7 +638,7 @@ body[data-role="central"] .client-only { display: none; }
 "use strict";
 const ROLE = __ROLE_JSON__;
 const IS_CLIENT = ROLE !== "central";
-const S = { status: null, stats: null, period: "today", source: "all", from: "", to: "",
+const S = { status: null, stats: null, period: "today", source: "all", from: "", to: "", ladderSource: "",
             filled: false, heroShown: null };
 const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -600,7 +652,7 @@ function ids() {
     ? ["hub_url", "host", "port", "token", "copy_mode", "interval", "cloudflare_tunnel", "cloudflared_path", "auto_start"]
     : ["hub_url", "token", "mt5_files_dir", "interval", "auto_start", "default_lot_size", "use_martingale",
        "martingale_multiplier", "martingale_max_level", "martingale_lots", "partial_close_ratios",
-       "cancel_pending_after_seconds", "cancel_if_price_beyond_percent"];
+       "cancel_pending_after_seconds", "cancel_if_price_beyond_percent", "source_profiles"];
 }
 function collect() {
   const out = {};
@@ -1161,9 +1213,67 @@ function renderPositions(positions, currency) {
     "</tr></thead><tbody>" + rows + "</tbody></table></div>";
 }
 
-function renderLadder(mg, cycles) {
-  const ladder = (mg && mg.ladder) || [];
-  const level = (mg && mg.level) || 0;
+/* 有設定每群模式時，階梯改成一個來源一組，用上方的來源鈕切換。
+   預設顯示層級最高的那一群——會員最該先看到的就是壓最深的那一關。 */
+function ladderForSource(row) {
+  const lots = [];
+  const max = Math.max(1, Math.min(row.max_level || 5, 12));
+  for (let i = 0; i < max; i++) lots.push(round2(row.base_lot * Math.pow(row.multiplier || 2, i)));
+  return lots;
+}
+function round2(v) { return Math.round(v * 100) / 100; }
+
+function renderLadder(mg, cycles, sources) {
+  const configured = (sources || []).filter((s) => s.configured);
+  const tabs = $("ladderTabs");
+
+  if (!configured.length) {                       // 沒設定每群模式 → 維持單一全域階梯
+    tabs.innerHTML = "";
+    $("ladderTitle").textContent = "馬丁階梯";
+    $("flatNote").hidden = true;
+    $("rungs").hidden = false;
+    return renderRungs((mg && mg.ladder) || [], (mg && mg.level) || 0, mg, cycles);
+  }
+
+  if (!configured.some((s) => s.source === S.ladderSource)) {
+    const martins = configured.filter((s) => s.mode === "martingale");
+    const pick = martins.slice().sort((a, b) => b.level - a.level)[0] || configured[0];
+    S.ladderSource = pick.source;
+  }
+  const row = configured.find((s) => s.source === S.ladderSource);
+
+  tabs.innerHTML = configured.map((s) => {
+    const on = s.source === S.ladderSource ? "is-on" : "";
+    const off = s.enabled ? "" : "is-off";
+    const badge = s.mode === "flat" ? "均注" : "第 " + (s.level + 1) + " 關";
+    return '<button type="button" class="src-tab ' + on + " " + off + '" data-src="' + esc(s.source) + '">' +
+      esc(s.source) + '<span class="badge">' + badge + "</span></button>";
+  }).join("");
+
+  $("ladderTitle").textContent = row.mode === "flat" ? "均注模式" : "馬丁階梯";
+  if (row.mode === "flat") {
+    $("rungs").hidden = true;
+    const note = $("flatNote");
+    note.hidden = false;
+    note.innerHTML =
+      "<div><div class=\"big\">" + lots(row.base_lot) + " 手</div>" +
+      "<p>這個來源每一筆都下固定手數，輸贏都不加碼、不進關卡。</p></div>";
+    $("ladderLevel").textContent = row.enabled ? "固定手數，不進關" : "此來源已停用，不跟單";
+    $("nextLot").textContent = lots(row.base_lot) + " 手";
+    $("consecLoss").textContent = "—";
+    $("openCycle").textContent = "均注無回合";
+    return;
+  }
+  $("flatNote").hidden = true;
+  $("rungs").hidden = false;
+  renderRungs(ladderForSource(row), row.level, {
+    enabled: true, multiplier: row.multiplier,
+    next_lot: ladderForSource(row)[Math.min(row.level, row.max_level - 1)],
+    consecutive_losses: row.losses,
+  }, cycles, row.enabled ? "" : "此來源已停用，不跟單");
+}
+
+function renderRungs(ladder, level, mg, cycles, overrideNote) {
   const box = $("rungs");
   if (!ladder.length) { box.innerHTML = ""; return; }
   // 手數是每關 ×2 的指數序列，所以階高走對數刻度：一階 = 一次加倍。
@@ -1183,9 +1293,9 @@ function renderLadder(mg, cycles) {
     "</div>";
   }).join("");
 
-  $("ladderLevel").textContent = mg.enabled
+  $("ladderLevel").textContent = overrideNote ? overrideNote : (mg.enabled
     ? "第 " + (level + 1) + " 關 / 共 " + ladder.length + " 關 · 倍數 ×" + n1.format(mg.multiplier)
-    : "馬丁格爾已關閉，固定手數";
+    : "馬丁格爾已關閉，固定手數");
   $("nextLot").textContent = lots(mg.next_lot) + " 手";
   $("consecLoss").textContent = (mg.consecutive_losses || 0) + " 筆";
   const openEl = $("openCycle");
@@ -1195,6 +1305,62 @@ function renderLadder(mg, cycles) {
   } else {
     openEl.textContent = "回合已結清";
   }
+}
+
+/* 每群下單設定表。來源清單是自動發現的（會員端收過的訊號都會列出來），
+   使用者不用手打群組名——打錯字只會靜默套用全域設定，很難察覺。 */
+function renderSourceSettings(rows) {
+  const box = $("sourceSettings");
+  if (!rows.length) {
+    box.innerHTML = '<div class="empty" style="padding:20px"><b>還沒收過任何訊號來源</b>' +
+      "收到第一筆訊號後，來源會自動出現在這裡讓你設定</div>";
+    return;
+  }
+  box.innerHTML =
+    '<table class="src-table"><thead><tr>' +
+      "<th>訊號來源</th><th>跟單</th><th>模式</th><th>基礎手數</th><th>馬丁倍數</th><th>關卡數</th>" +
+    "</tr></thead><tbody>" +
+    rows.map((r) => '' +
+      '<tr data-source-row="' + esc(r.source) + '">' +
+        '<td><div class="src-name">' + esc(r.source) + "</div>" +
+          '<div class="src-meta">已成交 ' + r.trades + " 筆" +
+          (r.configured ? "" : " · 目前套用全域設定") + "</div></td>" +
+        '<td><input type="checkbox" class="sp-enabled"' + (r.enabled ? " checked" : "") + " /></td>" +
+        '<td><select class="sp-mode">' +
+          '<option value="martingale"' + (r.mode === "martingale" ? " selected" : "") + ">馬丁</option>" +
+          '<option value="flat"' + (r.mode === "flat" ? " selected" : "") + ">均注</option>" +
+        "</select></td>" +
+        '<td><input type="number" class="sp-base" step="0.01" min="0.01" value="' + r.base_lot + '" /></td>' +
+        '<td><input type="number" class="sp-mult" step="0.1" min="1" value="' + r.multiplier + '" /></td>' +
+        '<td><input type="number" class="sp-max" step="1" min="1" max="12" value="' + r.max_level + '" /></td>' +
+      "</tr>").join("") +
+    "</tbody></table>";
+
+  box.addEventListener("change", syncSourceProfiles);
+  box.addEventListener("input", syncSourceProfiles);
+  syncSourceProfiles();
+}
+
+function syncSourceProfiles() {
+  const out = {};
+  for (const row of document.querySelectorAll("[data-source-row]")) {
+    const mode = row.querySelector(".sp-mode").value;
+    const martingale = mode === "martingale";
+    // 均注沒有倍數與關卡可言，把欄位鎖住比留著讓人填了沒作用好
+    row.querySelector(".sp-mult").disabled = !martingale;
+    row.querySelector(".sp-max").disabled = !martingale;
+    const entry = {
+      enabled: row.querySelector(".sp-enabled").checked,
+      mode,
+      base_lot: parseFloat(row.querySelector(".sp-base").value) || 0.01,
+    };
+    if (martingale) {
+      entry.multiplier = parseFloat(row.querySelector(".sp-mult").value) || 2;
+      entry.max_level = parseInt(row.querySelector(".sp-max").value, 10) || 5;
+    }
+    out[row.dataset.sourceRow] = entry;
+  }
+  $("source_profiles").value = JSON.stringify(out);
 }
 
 /* -------------------------------------------------------------- painting */
@@ -1241,7 +1407,15 @@ function paintStats() {
     ? sum.total + " 筆已平倉 · 勝率 " + pct(sum.win_rate) + (isAll ? "" : " · " + esc(rangeLabel()))
     : (stats.connected ? esc(rangeLabel()) + " 尚無平倉紀錄" : "等待 MT5 回報交易資料");
 
-  renderLadder(stats.martingale || {}, isAll ? stats.cycles : null);
+  // 設定表只在來源清單變動時重建，否則每 3 秒輪詢會把使用者正在打的字洗掉
+  const srcRows = stats.source_settings || [];
+  const srcSig = srcRows.map((r) => r.source).join("|");
+  if ($("sourceSettings").dataset.signature !== srcSig) {
+    $("sourceSettings").dataset.signature = srcSig;
+    renderSourceSettings(srcRows);
+  }
+
+  renderLadder(stats.martingale || {}, isAll ? stats.cycles : null, srcRows);
   renderPending(stats.pending || [], !!(S.status && S.status.running));
   renderPositions(stats.positions || [], CURRENCY);
   renderTiles(sum, isAll ? stats.cycles : null);
@@ -1358,6 +1532,12 @@ for (const id of ["dateFrom", "dateTo"]) {
   });
 }
 $("filterSource").addEventListener("change", (evt) => { S.source = evt.target.value; paintStats(); });
+$("ladderTabs").addEventListener("click", (evt) => {
+  const btn = evt.target.closest("[data-src]");
+  if (!btn) return;
+  S.ladderSource = btn.dataset.src;
+  paintStats();
+});
 
 $("start").onclick = () => post("/api/start", collect()).then(refreshStatus).catch((e) => alert(e.message));
 $("stop").onclick = () => post("/api/stop").then(refreshStatus).catch((e) => alert(e.message));

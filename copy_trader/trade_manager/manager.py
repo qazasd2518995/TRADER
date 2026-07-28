@@ -97,6 +97,13 @@ class TradeManager:
         self.martingale_per_source = False  # True=per source, False=global
         self.martingale_source_lots: Dict[str, List[float]] = {}  # per-source lot tables
 
+        # 每個訊號來源(LINE 群組)各自的下單模式。key 必須等於訊號帶的 source_window。
+        #   {"昊哥": {"enabled": True, "mode": "martingale",
+        #             "base_lot": 1.0, "multiplier": 2.0, "max_level": 5, "lots": []},
+        #    "YU":  {"enabled": True, "mode": "flat", "base_lot": 0.5}}
+        # 沒設定的來源回退到上面的全域值。mode="flat" = 均注，每次固定手數、不進關。
+        self.source_profiles: Dict[str, dict] = {}
+
         # Global martingale state
         self.current_martingale_level = 0
         self.consecutive_losses = 0
@@ -305,6 +312,43 @@ class TradeManager:
         with self._lock:
             return list(self.orders.values())
 
+    def profile_for(self, source_window: str = "") -> dict:
+        """把某個來源的下單設定解析成完整的一份（沒設定的欄位回退全域值）。
+
+        mode: "martingale" = 逐關加碼；"flat" = 均注，每筆固定手數、不進關。
+        """
+        raw = self.source_profiles.get(source_window) or {} if source_window else {}
+        mode = str(raw.get("mode") or "").strip().lower()
+        if mode not in ("martingale", "flat"):
+            mode = "martingale" if self.use_martingale else "flat"
+
+        def _num(key, fallback):
+            try:
+                v = float(raw.get(key))
+                return v if v > 0 else fallback
+            except (TypeError, ValueError):
+                return fallback
+
+        lots = raw.get("lots") or []
+        if not isinstance(lots, list):
+            lots = []
+        return {
+            "source": source_window,
+            "configured": bool(raw),
+            "enabled": bool(raw.get("enabled", True)),
+            "mode": mode,
+            "base_lot": _num("base_lot", self.default_lot_size),
+            "multiplier": _num("multiplier", self.martingale_multiplier),
+            "max_level": int(_num("max_level", self.martingale_max_level)),
+            "lots": [float(x) for x in lots if float(x) > 0]
+                    or self.martingale_source_lots.get(source_window, [])
+                    or [],
+        }
+
+    def is_source_enabled(self, source_window: str = "") -> bool:
+        """該來源是否要跟單。未設定的來源預設跟。"""
+        return self.profile_for(source_window)["enabled"]
+
     def get_martingale_lot_size(self, source_window: str = "") -> float:
         """
         Calculate current lot size based on Martingale level.
@@ -312,6 +356,30 @@ class TradeManager:
         Args:
             source_window: If martingale_per_source=True, use this source's level.
         """
+        profile = self.profile_for(source_window)
+
+        # 均注：固定手數，完全不看馬丁層級
+        if profile["mode"] == "flat":
+            lot = round(profile["base_lot"], 2)
+            tag = f" [{source_window}]" if source_window else ""
+            logger.info(f"均注{tag}: Lot size = {lot}")
+            return lot
+
+        # 這個來源有自己的馬丁設定 → 用它的 base/倍數/關卡數
+        if profile["configured"]:
+            state = self._source_martingale.get(source_window, {"level": 0, "losses": 0})
+            level = state["level"]
+            lots = profile["lots"]
+            if lots:
+                level = min(level, len(lots) - 1)
+                lot = round(lots[level], 2)
+                logger.info(f"馬丁 Level {level} [{source_window}]: Lot size = {lot} (該群自訂手數)")
+                return lot
+            level = min(level, profile["max_level"] - 1)
+            lot = round(profile["base_lot"] * (profile["multiplier"] ** level), 2)
+            logger.info(f"馬丁 Level {level} [{source_window}]: Lot size = {lot} (該群設定)")
+            return lot
+
         if not self.use_martingale:
             return self.default_lot_size
 
@@ -356,6 +424,49 @@ class TradeManager:
             signal_id: Optional signal ID for logging
             source_window: Source window for per-source martingale
         """
+        profile = self.profile_for(source_window)
+
+        # 均注來源：輸贏都不進關、也不能去動全域層級，否則會污染跑馬丁的那一群。
+        if profile["mode"] == "flat":
+            logger.info(
+                "%s [%s]: 均注模式，不調整馬丁層級",
+                "WIN" if is_win else "LOSS", source_window or "全域",
+            )
+            self._write_journal(
+                f"TRADE_CLOSED_{'WIN' if is_win else 'LOSS'}",
+                f"signal_id={signal_id} | 來源={source_window} | 模式=均注 "
+                f"| 下一手數={self.get_martingale_lot_size(source_window)}"
+            )
+            return
+
+        # 這個來源有自己的馬丁設定 → 一律走各群獨立層級，
+        # 不受全域 martingale_per_source 影響（混用模式時共用層級一定是錯的）。
+        if profile["configured"] and source_window:
+            state = self._source_martingale.get(source_window, {"level": 0, "losses": 0})
+            top = (len(profile["lots"]) - 1) if profile["lots"] else (profile["max_level"] - 1)
+            if is_win:
+                if state["level"] > 0:
+                    logger.info(f"WIN [{source_window}]: 馬丁層級 {state['level']} → 0")
+                state["level"] = 0
+                state["losses"] = 0
+            else:
+                state["losses"] += 1
+                if state["level"] < top:
+                    state["level"] += 1
+                    logger.info(f"LOSS [{source_window}]: 馬丁層級 → {state['level']}")
+                else:
+                    logger.warning(f"LOSS [{source_window}]: 已達最大層級 {top}，重置")
+                    state["level"] = 0
+                    state["losses"] = 0
+            self._source_martingale[source_window] = state
+            self._save_martingale_state()
+            self._write_journal(
+                f"TRADE_CLOSED_{'WIN' if is_win else 'LOSS'}",
+                f"signal_id={signal_id} | 來源={source_window} | 馬丁層級={state['level']} "
+                f"| 下一手數={self.get_martingale_lot_size(source_window)}"
+            )
+            return
+
         if not self.use_martingale:
             return
 
