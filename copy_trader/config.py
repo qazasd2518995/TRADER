@@ -141,8 +141,10 @@ class Config:
     max_open_positions: int = 10
 
     # Cancellation Rules
-    cancel_pending_after_seconds: int = 7200
-    cancel_if_price_beyond_percent: float = 1.0  # Percent away from entry before auto-cancel
+    # 掛單超過這個秒數還沒進場就自動刪單。會員端可在控制台改，0 = 不因逾時刪單。
+    cancel_pending_after_seconds: int = 10800  # 3 小時
+    # 價格偏離刪單已停用，統一只用上面的逾時規則。填 >0 可重新啟用（單位：%）。
+    cancel_if_price_beyond_percent: float = 0.0
 
     # Multiple TP Settings
     partial_close_ratios: List[float] = field(default_factory=lambda: [0.5, 0.3, 0.2])
@@ -150,7 +152,7 @@ class Config:
     # Martingale Settings
     use_martingale: bool = True
     martingale_multiplier: float = 2.0
-    martingale_max_level: int = 4
+    martingale_max_level: int = 5  # 關卡數: 5關 => 最大 base×2^4 = 16x
     martingale_lots: List[float] = field(default_factory=list)  # 全域自訂每層手數
     martingale_per_source: bool = False  # True=每群各自馬丁, False=全域共用
     martingale_source_lots: dict = field(default_factory=dict)  # 各群自訂手數 {"群名": [0.01, 0.02, ...]}

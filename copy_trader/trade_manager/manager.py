@@ -38,6 +38,8 @@ class ManagedOrder:
     entry_price: Optional[float] = None
     current_tp_index: int = 0
     remaining_volume: float = 0.0
+    initial_volume: float = 0.0  # 成交當下的手數；分批比例以「這個」為基準(佔原始)
+    partial_plan: List[float] = field(default_factory=list)  # 各中間 TP 要平的手數(預先算好)
     partial_closes: List[dict] = field(default_factory=list)
     last_known_profit: float = 0.0  # Last profit seen while position was open
     pending_partial_close: bool = False  # True while waiting for EA to confirm partial close
@@ -90,7 +92,7 @@ class TradeManager:
         # Martingale Settings
         self.use_martingale = True
         self.martingale_multiplier = 2.0  # 2x after each loss
-        self.martingale_max_level = 5     # Max 5 levels (0.01 -> 0.02 -> 0.04 -> 0.08 -> 0.16)
+        self.martingale_max_level = 5     # 關卡數(總關數): 5關 => 手數 base×2^0..2^4, 最大 base×16
         self.martingale_lots: List[float] = []  # 自訂每層手數（優先使用）
         self.martingale_per_source = False  # True=per source, False=global
         self.martingale_source_lots: Dict[str, List[float]] = {}  # per-source lot tables
@@ -293,7 +295,8 @@ class TradeManager:
             return lot
 
         # 退回公式計算
-        level = min(level, self.martingale_max_level)
+        # martingale_max_level 是「關卡數」, 有效層索引為 0..(關卡數-1), 最大手數 = base×2^(關卡數-1)
+        level = min(level, self.martingale_max_level - 1)
         lot = self.default_lot_size * (self.martingale_multiplier ** level)
         lot = round(lot, 2)
 
@@ -313,7 +316,7 @@ class TradeManager:
             return
 
         src_tag = f" [{source_window}]" if self.martingale_per_source and source_window else ""
-        max_level = (len(self.martingale_lots) - 1) if self.martingale_lots else self.martingale_max_level
+        max_level = (len(self.martingale_lots) - 1) if self.martingale_lots else (self.martingale_max_level - 1)
 
         if self.martingale_per_source and source_window:
             # Per-source mode
@@ -453,18 +456,17 @@ class TradeManager:
             lot_size = signal.lot_size or self.default_lot_size
 
         tps = signal.take_profit or []
-        # Check if lot size is large enough for partial closes (need at least 0.02 to split)
-        can_partial_close = lot_size >= 0.02 and len(tps) > 1
-        if can_partial_close:
-            # Multiple TPs + enough volume: set MT5 TP to the LAST level (safety net).
-            # Intermediate TPs are managed by _check_partial_tp_hits.
+        # 分批計畫以「原始手數」為基準；空計畫=手數不足以乾淨分割 → 退回整包在 TP1 平。
+        partial_plan = self._plan_partial_chunks(lot_size, tps)
+        if partial_plan:
+            # 多 TP + 可分割：MT5 TP 設在最後一關(當尾段的安全網),中間關由 _check_partial_tp_hits 處理。
             mt5_tp = tps[-1]
-            logger.info(f"Multiple TPs with {lot_size} lots — partial close enabled, MT5 TP set to last: {mt5_tp}")
+            logger.info(f"分批平倉啟用: {lot_size} 手, 中間關計畫={partial_plan} + 尾段, MT5 TP=最後 {mt5_tp}")
         elif len(tps) >= 1:
-            # Single TP, or lot too small for partial close: use first TP, close all at once
+            # 單一 TP,或手數不足以分批:用第一個 TP,整包一次平。
             mt5_tp = tps[0]
             if len(tps) > 1:
-                logger.info(f"Multiple TPs but lot {lot_size} too small for partial close — using TP1: {mt5_tp}")
+                logger.info(f"多 TP 但 {lot_size} 手不足以分批(每塊需≥0.01)→ 退回整包在 TP1 平: {mt5_tp}")
         else:
             mt5_tp = None
 
@@ -794,6 +796,11 @@ class TradeManager:
                         order.entry_price = pos.get('price_open')
                         order.entry_time = time.time()
                         order.remaining_volume = pos.get('volume', 0)
+                        order.initial_volume = order.remaining_volume
+                        # 用「實際成交量」重算分批計畫(佔原始),空=不分批
+                        order.partial_plan = self._plan_partial_chunks(
+                            order.initial_volume, order.signal.take_profit
+                        )
                         logger.info(f"Order filled: {signal_id} @ {order.entry_price}")
                         self._write_journal(
                             "ORDER_FILLED",
@@ -907,37 +914,61 @@ class TradeManager:
                 if hit:
                     self._execute_partial_close(order)
 
+    def _plan_partial_chunks(self, volume: float, tps: List[float]) -> List[float]:
+        """
+        預先算好「中間各 TP(除了最後一關)」要平的手數,比例以【原始成交量】為基準。
+
+        規則:
+          - 中間關數 = TP 數 - 1(最後一關由 MT5 的 TP 整包平掉尾段)。
+          - 每一關 close = round(原始量 × 比例, 2),必須 ≥ 0.01(券商最低)。
+          - 全部中間關平完後,尾段(給最後一關)也必須 ≥ 0.01。
+          - 任一條件不滿足 → 回傳 []，代表「無法乾淨分批」,呼叫端會退回整包在 TP1 平。
+
+        這樣 50/30/20 就是名副其實的「佔原始」,不會像舊版「佔剩餘」而被扭曲。
+        """
+        volume = round(volume or 0.0, 2)
+        tps = tps or []
+        num_intermediate = len(tps) - 1
+        if num_intermediate < 1 or volume < 0.02:
+            return []
+
+        chunks: List[float] = []
+        allocated = 0.0
+        for i in range(num_intermediate):
+            if i >= len(self.partial_close_ratios):
+                # 中間關比原始比例表還多 → 無法規劃乾淨分割
+                return []
+            chunk = round(volume * self.partial_close_ratios[i], 2)
+            if chunk < 0.01:
+                return []
+            chunks.append(chunk)
+            allocated = round(allocated + chunk, 2)
+
+        final = round(volume - allocated, 2)
+        if final < 0.01:
+            return []
+        return chunks
+
     def _execute_partial_close(self, order: ManagedOrder):
         """
-        Send a partial close command to EA.
+        送出分批平倉指令給 EA。
 
-        Does NOT update order state immediately — waits for EA confirmation
-        in _check_partial_tp_hits phase 2.
+        手數取自預先算好的 order.partial_plan(佔原始量),所以 50/30/20 不論已平多少
+        都維持 50/30/20。不立即更新狀態 — 等 _check_partial_tp_hits 第二階段確認 EA 已減倉。
         """
-        if order.current_tp_index >= len(self.partial_close_ratios):
+        if order.current_tp_index >= len(order.partial_plan):
             return
 
-        close_ratio = self.partial_close_ratios[order.current_tp_index]
-        close_volume = round(order.remaining_volume * close_ratio, 2)
+        close_volume = order.partial_plan[order.current_tp_index]
 
-        # Minimum lot check: broker minimum is typically 0.01
-        if close_volume < 0.01:
-            logger.info(
-                f"Partial close skipped (volume {close_volume} < 0.01): "
-                f"{order.signal_id} — lot too small for partial close"
-            )
-            return
-
-        # Don't close more than what's left minus minimum lot
-        # (need at least 0.01 remaining for the final TP)
+        # 安全網:永遠保留至少 0.01 給最後一關,不要一次平光。
         if order.remaining_volume - close_volume < 0.01:
             close_volume = round(order.remaining_volume - 0.01, 2)
-            if close_volume < 0.01:
-                logger.info(
-                    f"Partial close skipped: {order.signal_id} "
-                    f"— remaining {order.remaining_volume} too small to split"
-                )
-                return
+        if close_volume < 0.01:
+            logger.info(
+                f"分批平倉跳過: {order.signal_id} 剩餘 {order.remaining_volume} 手不足以再分"
+            )
+            return
 
         # Mark as pending BEFORE sending command to prevent monitor thread
         # from seeing the volume change and double-processing

@@ -116,17 +116,19 @@ class LauncherState:
                 "auto_start": "false",
             }
         return {
-            "hub_url": "http://中央電腦IP:8765",
-            "token": "",
+            "hub_url": "https://gold-signal-hub-tw.fly.dev",
+            "token": "79yy4q8ldFRUqPZT",
             "mt5_files_dir": "",
             "interval": "1.0",
             "auto_start": "false",
             "default_lot_size": "0.01",
             "use_martingale": "true",
             "martingale_multiplier": "2.0",
-            "martingale_max_level": "4",
+            "martingale_max_level": "5",
             "martingale_lots": "",
             "partial_close_ratios": "0.5,0.3,0.2",
+            "cancel_pending_after_seconds": "10800",
+            "cancel_if_price_beyond_percent": "0",
         }
 
     def _load_settings(self) -> Dict[str, Any]:
@@ -142,7 +144,10 @@ class LauncherState:
         return data
 
     def save_settings(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        # 先鋪目前設定再蓋上這次送來的欄位：只送部分欄位時，其餘設定必須留著。
+        # （原本直接蓋在 defaults() 上，少送一個欄位就會被悄悄重設成預設值。）
         merged = self.defaults()
+        merged.update({k: v for k, v in self.settings.items() if k in merged})
         merged.update({k: v for k, v in data.items() if k in merged})
         self.settings_path.parent.mkdir(parents=True, exist_ok=True)
         with self.settings_path.open("w", encoding="utf-8") as f:
@@ -381,6 +386,18 @@ class LauncherState:
         if pcr:
             tm.partial_close_ratios = pcr
 
+        # 刪單規則讀的是 agent 的 config（submit_signal 送單當下才取值），不是 TradeManager。
+        # 這兩個值會寫進每一筆新掛單；已經送出的舊單沿用當初的設定。
+        cfg = self.client_agent.config
+        cfg.cancel_pending_after_seconds = int(_flt("cancel_pending_after_seconds", cfg.cancel_pending_after_seconds))
+        cfg.cancel_if_price_beyond_percent = _flt("cancel_if_price_beyond_percent", cfg.cancel_if_price_beyond_percent)
+        logger.info(
+            "刪單規則：逾時 %s 秒未進場自動刪單（%.1f 小時）｜價格偏離 %s%% 自動刪單",
+            cfg.cancel_pending_after_seconds or "關閉",
+            (cfg.cancel_pending_after_seconds or 0) / 3600.0,
+            cfg.cancel_if_price_beyond_percent or "關閉",
+        )
+
         logger.info(
             "套用會員設定：基礎手數=%s 馬丁=%s 倍數=%s 最大層數=%s 每層手數=%s 分批=%s",
             tm.default_lot_size, tm.use_martingale, tm.martingale_multiplier,
@@ -519,6 +536,21 @@ def make_handler(state: LauncherState):
             if parsed.path == "/api/status":
                 _json_response(self, 200, {"ok": True, **state.snapshot()})
                 return
+            if parsed.path == "/api/stats":
+                # 績效統計純粹是讀檔彙整，MT5 沒開就回空資料，不該讓控制台整頁掛掉
+                try:
+                    from copy_trader.central.stats import build_stats
+
+                    agent = state.client_agent
+                    stats = build_stats(
+                        state.settings,
+                        trade_manager=agent.trade_manager if agent is not None else None,
+                    )
+                    _json_response(self, 200, {"ok": True, "stats": stats})
+                except Exception as exc:
+                    logger.exception("stats failed: %s", exc)
+                    _json_response(self, 500, {"ok": False, "error": str(exc)})
+                return
             _json_response(self, 404, {"ok": False, "error": "not_found"})
 
         def do_POST(self) -> None:
@@ -562,142 +594,10 @@ def make_handler(state: LauncherState):
 
 
 def _page_html(state: LauncherState) -> str:
-    is_central = state.role == "central"
-    fields = """
-      <label>雲端 Hub URL<input id="hub_url" placeholder="留空 = 本機自架 Hub；雲端填 https://...fly.dev" /></label>
-      <label>Hub 密碼<input id="token" type="password" /></label>
-      <label>複製模式<select id="copy_mode"><option value="all">全選複製</option><option value="tail">底部幾屏</option></select></label>
-      <label>輪詢秒數<input id="interval" /></label>
-      <hr style="grid-column:1/3;border:none;border-top:1px solid #e3e8ec;margin:6px 0" />
-      <label>Hub 監聽 IP<input id="host" placeholder="本機自架時用；0.0.0.0" /></label>
-      <label>Hub Port<input id="port" placeholder="本機自架時用；8765" /></label>
-      <label>Cloudflare Tunnel<input id="cloudflare_tunnel" type="checkbox" /></label>
-      <label>cloudflared 路徑<input id="cloudflared_path" placeholder="可留空自動搜尋" /></label>
-      <label>開啟程式後自動開始<input id="auto_start" type="checkbox" /></label>
-    """ if is_central else """
-      <label>中央 Hub URL<input id="hub_url" placeholder="http://中央電腦IP:8765" /></label>
-      <label>Hub 密碼<input id="token" type="password" /></label>
-      <label>MT5 Files 路徑<input id="mt5_files_dir" placeholder="可留空自動偵測" /></label>
-      <label>輪詢秒數<input id="interval" /></label>
-      <label>開啟程式後自動開始<input id="auto_start" type="checkbox" /></label>
-      <hr style="grid-column:1/3;border:none;border-top:1px solid #e3e8ec;margin:6px 0" />
-      <label>基礎手數<input id="default_lot_size" placeholder="0.01" /></label>
-      <label>啟用馬丁格爾<input id="use_martingale" type="checkbox" /></label>
-      <label>馬丁倍數<input id="martingale_multiplier" placeholder="2.0（每層 × 倍數）" /></label>
-      <label>馬丁最大層數<input id="martingale_max_level" placeholder="4（關卡數）" /></label>
-      <label>每層自訂手數<input id="martingale_lots" placeholder="留空=用倍數；例 0.01,0.02,0.04,0.08" /></label>
-      <label>多TP分批平倉<input id="partial_close_ratios" placeholder="例 0.5,0.3,0.2" /></label>
-    """
-    extra_button = "<button id=\"openHub\">開啟 Hub 頁面</button>" if is_central else "<button id=\"testHub\">測試 Hub</button>"
-    return f"""<!doctype html>
-<html lang="zh-Hant">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{state.title}</title>
-  <style>
-    :root {{ color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
-    body {{ margin: 0; background: #f5f7f8; color: #17202a; }}
-    header {{ padding: 18px 24px; background: #fff; border-bottom: 1px solid #dfe4e8; display: flex; justify-content: space-between; align-items: center; }}
-    h1 {{ margin: 0; font-size: 21px; }}
-    main {{ max-width: 920px; margin: 0 auto; padding: 22px; }}
-    section {{ background: #fff; border: 1px solid #dfe4e8; border-radius: 8px; padding: 18px; margin-bottom: 14px; }}
-    label {{ display: grid; grid-template-columns: 160px 1fr; align-items: center; gap: 12px; margin: 10px 0; color: #52616f; }}
-    input, select {{ font: inherit; padding: 9px 10px; border: 1px solid #cad2d8; border-radius: 6px; }}
-    button {{ font: inherit; padding: 9px 14px; border: 1px solid #9aa7b2; border-radius: 6px; background: #fff; cursor: pointer; margin-right: 8px; }}
-    button.primary {{ background: #1450a3; color: #fff; border-color: #1450a3; }}
-    button.danger {{ color: #a12a2a; border-color: #d7a4a4; }}
-    #logs {{ height: 240px; overflow: auto; white-space: pre-wrap; background: #111820; color: #d7e3ee; padding: 12px; border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }}
-    .muted {{ color: #6b7785; }}
-  </style>
-</head>
-<body>
-  <header><h1>{state.title}</h1><strong id="status">載入中</strong></header>
-  <main>
-    <section>
-      <h2>設定</h2>
-      {fields}
-      <p class="muted" id="hint"></p>
-    </section>
-    <section>
-      <button class="primary" id="start">開始</button>
-      <button id="stop">停止</button>
-      {extra_button}
-      <button class="danger" id="quit">關閉程式</button>
-    </section>
-    <section><h2>狀態紀錄</h2><div id="logs"></div></section>
-  </main>
-  <script>
-    const role = {json.dumps(state.role)};
-    let snapshot = null;
-    let didFill = false;
-    function ids() {{ return role === "central" ? ["hub_url","host","port","token","copy_mode","interval","cloudflare_tunnel","cloudflared_path","auto_start"] : ["hub_url","token","mt5_files_dir","interval","auto_start","default_lot_size","use_martingale","martingale_multiplier","martingale_max_level","martingale_lots","partial_close_ratios"]; }}
-    function collect() {{
-      const out = {{}};
-      for (const id of ids()) {{
-        const el = document.getElementById(id);
-        out[id] = el.type === "checkbox" ? (el.checked ? "true" : "false") : el.value;
-      }}
-      return out;
-    }}
-    function fill(settings) {{
-      for (const id of ids()) if (document.getElementById(id)) {{
-        const el = document.getElementById(id);
-        if (el.type === "checkbox") el.checked = ["true", "1", "yes", "on"].includes(String(settings[id] || "").toLowerCase());
-        else el.value = settings[id] || "";
-      }}
-    }}
-    async function post(path, data={{}}) {{
-      const res = await fetch(path, {{ method: "POST", headers: {{ "Content-Type": "application/json" }}, body: JSON.stringify(data) }});
-      const json = await res.json();
-      if (!json.ok) throw new Error(json.error || "request failed");
-      return json;
-    }}
-    async function refresh() {{
-      const res = await fetch("/api/status");
-      snapshot = await res.json();
-      if (!snapshot.ok) return;
-      if (!didFill) {{
-        fill(snapshot.settings);
-        didFill = true;
-      }}
-      document.getElementById("status").textContent = snapshot.status + (snapshot.running ? ` (${{snapshot.uptime_seconds}}s)` : "");
-      document.getElementById("logs").textContent = (snapshot.logs || []).join("\\n");
-      document.getElementById("logs").scrollTop = document.getElementById("logs").scrollHeight;
-      if (role === "central") {{
-        const remoteHub = String(snapshot.settings.hub_url || "").trim();
-        const port = snapshot.settings.port || "8765";
-        const host = String(snapshot.settings.host || "").trim();
-        const loopbackOnly = host === "127.0.0.1" || host === "localhost" || host === "::1";
-        if (remoteHub) {{
-          document.getElementById("hint").textContent = `雲端 Hub 模式：訊號發布到 ${{remoteHub}}；會員端 Hub URL 也填這個。`;
-        }} else if (snapshot.cloudflare_url) {{
-          document.getElementById("hint").textContent = `會員端 Hub URL：${{snapshot.cloudflare_url}}`;
-        }} else if (["true", "1", "yes", "on"].includes(String(snapshot.settings.cloudflare_tunnel || "").toLowerCase())) {{
-          document.getElementById("hint").textContent = "Cloudflare Tunnel 啟動中；公開 Hub URL 會出現在狀態紀錄。";
-        }} else if (loopbackOnly) {{
-          document.getElementById("hint").textContent = "Hub 只監聽本機，會員端無法連線 — 請把「Hub 監聽 IP」改成 0.0.0.0，或勾選 Cloudflare Tunnel。";
-        }} else {{
-          document.getElementById("hint").textContent = `會員端 Hub URL 可填：http://${{snapshot.lan_ip}}:${{port}}（限同一區網）`;
-        }}
-      }}
-    }}
-    document.getElementById("start").onclick = () => post("/api/start", collect()).then(refresh).catch(e => alert(e.message));
-    document.getElementById("stop").onclick = () => post("/api/stop").then(refresh).catch(e => alert(e.message));
-    document.getElementById("quit").onclick = () => post("/api/quit").then(() => document.body.innerHTML = "<main><section><h1>程式已關閉</h1></section></main>").catch(e => alert(e.message));
-    if (document.getElementById("testHub")) document.getElementById("testHub").onclick = () => post("/api/test-hub", collect()).then(j => alert(`連線成功 latest_seq=${{j.health.latest_seq}}`)).catch(e => alert(e.message));
-    if (document.getElementById("openHub")) document.getElementById("openHub").onclick = () => {{
-      const s = collect();
-      let remoteHub = String(s.hub_url || "").trim();
-      if (remoteHub.endsWith("/")) remoteHub = remoteHub.slice(0, -1);
-      const base = remoteHub || `http://127.0.0.1:${{s.port || "8765"}}`;
-      window.open(`${{base}}/?token=${{encodeURIComponent(s.token || "")}}`, "_blank");
-    }};
-    refresh();
-    setInterval(refresh, 1000);
-  </script>
-</body>
-</html>"""
+    """整頁前端在 copy_trader.central.webui，這裡只負責把 state 交出去。"""
+    from copy_trader.central.webui import render
+
+    return render(state)
 
 
 def _install_logging(state: LauncherState) -> None:
