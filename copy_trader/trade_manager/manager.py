@@ -201,6 +201,9 @@ class TradeManager:
         # so cancel keywords can match pending orders to their source
         if source_window:
             self._signal_sources[signal_id] = source_window
+            # 立刻寫檔：原本只在成交時才存，導致新群組要等到第一筆成交
+            # 才會出現在「訊號來源設定」清單裡（沒開 MT5 就永遠不出現）。
+            self._save_signal_sources()
 
         logger.info(f"Signal submitted: {signal_id} - {signal}")
 

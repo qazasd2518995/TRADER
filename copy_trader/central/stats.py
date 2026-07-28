@@ -441,8 +441,11 @@ def build_stats(settings: Dict[str, Any], trade_manager: Any = None) -> Dict[str
     martingale_raw = _read_json(mt5_dir / "martingale_state.json") or {}
     sources_raw = _read_json(mt5_dir / "signal_sources.json") or {}
 
+    # EA 寫的 timestamp 是「券商牆上時間」當成 epoch（GMT+3 就會比 UTC 快 3 小時），
+    # 不扣掉時差的話，停擺 3 小時內的檔案都會被誤判成「連線中」。
     account_stamp = _float(account_raw.get("timestamp"), 0.0)
-    stale_seconds = int(now - account_stamp) if account_stamp else None
+    broker_offset = _int(account_raw.get("gmt_offset"), 0)
+    stale_seconds = int(now + broker_offset - account_stamp) if account_stamp else None
     connected = bool(
         account_raw
         and account_raw.get("terminal_connected")
