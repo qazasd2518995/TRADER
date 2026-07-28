@@ -50,6 +50,9 @@ class ManagedOrder:
     # Close confirmation: wait for closed_trades.json before deciding win/loss
     close_detected_at: Optional[float] = None  # Timestamp when position disappeared
 
+    # 掛單從 MT5 消失（被手動刪或券商撤）的偵測時間，用來過濾「成交瞬間」的空窗
+    vanish_detected_at: Optional[float] = None
+
     # Signal source window
     source_window: str = ""  # Display name of the window that produced this signal
 
@@ -871,12 +874,17 @@ class TradeManager:
             return None
         return []
 
-    def _get_pending_orders(self) -> List[dict]:
-        """Get current pending orders from MT5."""
+    def _get_pending_orders(self, allow_none: bool = False) -> List[dict]:
+        """Get current pending orders from MT5.
+
+        allow_none=True 時，讀檔失敗回 None（而不是空清單）。對帳用途必須分得出
+        「MT5 真的沒有掛單」和「檔案剛好被鎖住讀不到」，否則會把讀取失敗當成
+        單被刪掉。
+        """
         data = self._read_json_file(self.pending_orders_file)
         if data:
             return data.get('orders', [])
-        return []
+        return None if allow_none else []
 
     def _close_position(self, ticket: int, volume: float = None) -> bool:
         """Close a position (full or partial)."""
@@ -910,6 +918,8 @@ class TradeManager:
                 self._check_order_fills()
                 self._check_closed_positions()  # Check for wins/losses
                 self._check_partial_tp_hits()
+                # 先偵測成交(上面)，再對帳消失的掛單，避免把「剛成交」誤判成「被刪除」
+                self._check_vanished_orders()
                 self._check_cancellation_conditions()
 
                 # Periodically clean up finished orders to prevent memory growth
@@ -1113,6 +1123,56 @@ class TradeManager:
                                 self._signal_sources[str(order.ticket)] = order.source_window
                                 self._save_signal_sources()
                             break
+
+    # 掛單從 MT5 消失後，要連續看不到這麼久才認定它真的沒了。
+    # 成交的瞬間掛單會先從 orders.json 消失、稍後才出現在 positions.json，
+    # 這段空窗如果不等就會被誤判成「被刪掉」。
+    VANISH_CONFIRM_SECONDS = 4
+
+    def _check_vanished_orders(self):
+        """對帳：掛單在 MT5 被手動刪掉（或券商撤掉）時，把追蹤狀態同步過來。
+
+        沒有這一步的話，使用者在 MT5 手動刪單後，會員端會一直顯示那張掛單還在等，
+        倒數也還在跑——面板跟現實對不起來。
+        """
+        pending = self._get_pending_orders(allow_none=True)
+        if pending is None:
+            return  # 檔案讀不到，這輪跳過，不能當成「掛單都不見了」
+        positions = self._get_positions(allow_none=True)
+        if positions is None:
+            return
+
+        live_tickets = {o.get("ticket") for o in pending}
+        live_tickets |= {p.get("ticket") for p in positions}
+        now = time.time()
+        vanished = []
+
+        with self._lock:
+            for signal_id, order in self.orders.items():
+                # 只看「MT5 已經確認過、拿得到 ticket」的未成交單
+                if order.status not in (OrderStatus.PENDING, OrderStatus.SENT) or not order.ticket:
+                    continue
+                if order.ticket in live_tickets:
+                    order.vanish_detected_at = None
+                    continue
+                if order.vanish_detected_at is None:
+                    order.vanish_detected_at = now
+                    continue
+                if now - order.vanish_detected_at >= self.VANISH_CONFIRM_SECONDS:
+                    order.status = OrderStatus.CANCELLED
+                    vanished.append((signal_id, order))
+
+        for signal_id, order in vanished:
+            logger.info(
+                "掛單已從 MT5 消失（在 MT5 端被刪除）：%s ticket=%s — 同步標記為已撤銷",
+                signal_id, order.ticket,
+            )
+            self.on_order_cancelled(signal_id)
+            self._write_journal(
+                "ORDER_REMOVED_IN_MT5",
+                f"signal_id={signal_id} | ticket={order.ticket} | 原因=在 MT5 端被刪除或撤銷 "
+                f"| 信號={order.signal} | 來源={order.source_window}"
+            )
 
     # Max time (seconds) to wait for EA to confirm a partial close before retrying
     PARTIAL_CLOSE_TIMEOUT = 10

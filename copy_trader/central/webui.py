@@ -412,6 +412,30 @@ main { max-width: 1240px; margin: 0 auto; padding: 22px 24px 72px; }
 .key-win { background: var(--win); }
 .key-loss { background: var(--loss); }
 
+/* 各來源績效：小倍數卡片，一個來源一張，點了就把下方全部篩選到那個來源 */
+.source-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(258px, 1fr)); gap: 12px; }
+.source-card {
+  font: inherit; text-align: left; cursor: pointer;
+  background: var(--card); border: 1px solid var(--hair); border-radius: 12px;
+  padding: 14px 16px; box-shadow: var(--shadow);
+  display: flex; flex-direction: column; gap: 8px;
+  transition: border-color .15s, transform .08s;
+}
+.source-card:hover { border-color: var(--rule); }
+.source-card:active { transform: translateY(1px); }
+.source-card.is-on { border-color: var(--gold-mark); box-shadow: 0 0 0 1px var(--gold-mark), var(--shadow); }
+.sc-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.sc-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc-net { font-size: 27px; font-weight: 650; letter-spacing: -.02em; line-height: 1.1; }
+.sc-chart { height: 54px; }
+.sc-blank { height: 54px; display: grid; place-items: center; font-size: 11.5px; color: var(--muted); }
+.sc-stats {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 0;
+  padding-top: 10px; border-top: 1px solid var(--hair);
+}
+.sc-stats dt { font-size: 10.5px; color: var(--muted); margin-bottom: 2px; white-space: nowrap; }
+.sc-stats dd { margin: 0; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
 /* ---------------------------------------------------------------- tables */
 .table-scroll { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -592,24 +616,24 @@ body[data-role="central"] .client-only { display: none; }
       </div>
     </div>
 
-    <div class="chart-row" style="margin-top:14px">
-      <div class="card">
-        <p class="eyebrow">每筆損益</p>
-        <div class="chart-wrap" id="barsWrap">
-          <svg id="tradeBars" role="img" aria-label="每筆交易損益"></svg>
-          <div class="tip" id="barsTip"></div>
-        </div>
-        <div class="legend">
-          <span><i class="key key-win"></i>贏（獲利）</span>
-          <span><i class="key key-loss"></i>輸（虧損）</span>
-          <span style="color:var(--muted)">數值見下方交易紀錄表</span>
-        </div>
+    <div class="card" style="margin-top:14px">
+      <p class="eyebrow">每筆損益</p>
+      <div class="chart-wrap" id="barsWrap">
+        <svg id="tradeBars" role="img" aria-label="每筆交易損益"></svg>
+        <div class="tip" id="barsTip"></div>
       </div>
-      <div class="card">
-        <p class="eyebrow">訊號來源戰績</p>
-        <div id="sources"></div>
+      <div class="legend">
+        <span><i class="key key-win"></i>贏（獲利）</span>
+        <span><i class="key key-loss"></i>輸（虧損）</span>
+        <span style="color:var(--muted)">數值見下方交易紀錄表</span>
       </div>
     </div>
+
+    <div class="section-head">
+      <h2>各來源績效</h2>
+      <p>每個訊號群組各自獨立計算，點卡片可把下方全部篩選到那一個來源</p>
+    </div>
+    <div class="source-grid" id="sourcePerf"></div>
 
     <div class="section-head">
       <h2>交易紀錄</h2>
@@ -1036,39 +1060,75 @@ function renderBars(trades) {
   });
 }
 
-function renderSources(trades) {
-  const box = $("sources");
+/* 各來源績效：小倍數。每個來源一張卡，各自獨立算損益曲線與統計。
+   刻意不做成「一張圖多條彩色線」——來源識別色會跟紅贏綠輸的語意打架
+   （驗證器實測橘色距離贏紅只有 ΔE 12，會被讀成獲利色）。分開畫就沒這問題。 */
+function miniCurve(trades, width, height) {
+  if (!trades.length) return "";
+  const pad = 4;
+  const pts = [];
+  let cum = 0;
+  trades.forEach((t, i) => { cum += t.profit; pts.push({ i, cum }); });
+  const lo = Math.min(0, ...pts.map((p) => p.cum));
+  const hi = Math.max(0, ...pts.map((p) => p.cum));
+  const span = (hi - lo) || 1;
+  const X = (i) => pad + (pts.length === 1 ? (width - pad * 2) / 2 : (i / (pts.length - 1)) * (width - pad * 2));
+  const Y = (v) => pad + (height - pad * 2) - ((v - lo) / span) * (height - pad * 2);
+  const line = pts.map((p, i) => (i ? "L" : "M") + X(p.i).toFixed(1) + " " + Y(p.cum).toFixed(1)).join(" ");
+  const zero = Y(0).toFixed(1);
+  const color = pts[pts.length - 1].cum >= 0 ? "var(--win)" : "var(--loss)";
+  return '<svg viewBox="0 0 ' + width + " " + height + '" width="100%" height="' + height +
+      '" preserveAspectRatio="none" aria-hidden="true">' +
+    '<path d="' + line + " L" + X(pts.length - 1).toFixed(1) + " " + zero + " L" + X(0).toFixed(1) + " " + zero +
+      ' Z" fill="' + color + '" fill-opacity=".10" />' +
+    '<line x1="' + pad + '" x2="' + (width - pad) + '" y1="' + zero + '" y2="' + zero +
+      '" stroke="var(--rule)" stroke-width="1" />' +
+    '<path d="' + line + '" fill="none" stroke="' + color + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />' +
+  "</svg>";
+}
+
+function renderSourcePerformance(trades, sourceRows) {
+  const box = $("sourcePerf");
   const groups = new Map();
   for (const t of trades) {
     const name = t.source || "未標記來源";
-    const g = groups.get(name) || { name, wins: 0, losses: 0, profit: 0 };
-    g.profit += t.profit;
-    if (t.is_win) g.wins += 1; else g.losses += 1;
-    groups.set(name, g);
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(t);
   }
-  const rows = [...groups.values()].sort((a, b) => b.profit - a.profit);
-  if (!rows.length) { box.innerHTML = '<div class="empty">' + esc(rangeLabel()) + ' 沒有交易</div>'; return; }
+  // 已設定但這區間還沒成交的來源也要列出來，否則會以為它不存在
+  for (const row of sourceRows || []) {
+    if (!groups.has(row.source)) groups.set(row.source, []);
+  }
+  if (!groups.size) {
+    box.innerHTML = '<div class="card"><div class="empty">' + esc(rangeLabel()) + " 沒有任何來源的交易</div></div>";
+    return;
+  }
+  const cfgOf = {};
+  for (const row of sourceRows || []) cfgOf[row.source] = row;
 
-  box.innerHTML = rows.map((r) => {
-    const total = r.wins + r.losses;
-    const winPct = total ? (r.wins / total) * 100 : 0;
-    return '' +
-      '<div style="margin-bottom:15px">' +
-        '<div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline;margin-bottom:6px">' +
-          '<span style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(r.name) + "</span>" +
-          '<span class="num ' + toneClass(r.profit) + '" style="font-size:13px;font-weight:600">' + money(r.profit, { signed: true, compact: true }) + "</span>" +
+  box.innerHTML = [...groups.entries()]
+    .sort((a, b) => b[1].reduce((s, t) => s + t.profit, 0) - a[1].reduce((s, t) => s + t.profit, 0))
+    .map(([name, list]) => {
+      const sum = summarise(list);
+      const cfg = cfgOf[name] || {};
+      const badge = cfg.mode === "flat" ? "均注" : (cfg.mode ? "馬丁" : "");
+      return '<button type="button" class="source-card' + (S.source === name ? " is-on" : "") +
+          '" data-pick-source="' + esc(name) + '">' +
+        '<div class="sc-head"><span class="sc-name">' + esc(name) + "</span>" +
+          (badge ? '<span class="tag tag-lv">' + badge + (cfg.enabled === false ? " · 停用" : "") + "</span>" : "") +
         "</div>" +
-        '<div style="display:flex;height:9px;border-radius:5px;overflow:hidden;background:var(--sunk)">' +
-          (r.wins ? '<div style="width:' + winPct + '%;background:var(--win)"></div>' : "") +
-          (r.wins && r.losses ? '<div style="width:2px;background:var(--card);flex:none"></div>' : "") +
-          (r.losses ? '<div style="flex:1;background:var(--loss)"></div>' : "") +
-        "</div>" +
-        '<div style="display:flex;justify-content:space-between;margin-top:5px;font-size:11.5px;color:var(--muted)">' +
-          "<span>贏 " + r.wins + " · 輸 " + r.losses + "</span>" +
-          "<span>勝率 " + pct(winPct) + "</span>" +
-        "</div>" +
-      "</div>";
-  }).join("");
+        '<div class="sc-net ' + toneClass(sum.net) + '">' +
+          (list.length ? money(sum.net, { signed: true, compact: true }) : "—") + "</div>" +
+        '<div class="sc-chart">' +
+          (list.length ? miniCurve(list, 260, 54) : '<div class="sc-blank">此區間無成交</div>') + "</div>" +
+        '<dl class="sc-stats">' +
+          "<div><dt>筆數</dt><dd>" + sum.total + "</dd></div>" +
+          "<div><dt>勝率</dt><dd>" + (list.length ? pct(sum.win_rate) : "—") + "</dd></div>" +
+          '<div><dt>贏 / 輸</dt><dd><span class="up">' + sum.wins + '</span> / <span class="down">' + sum.losses + "</span></dd></div>" +
+          "<div><dt>最大連敗</dt><dd>" + sum.max_loss_streak + "</dd></div>" +
+        "</dl>" +
+      "</button>";
+    }).join("");
 }
 
 /* ----------------------------------------------------------- table & co. */
@@ -1469,7 +1529,7 @@ function paintStats() {
   renderTiles(sum, isAll ? stats.cycles : null);
   renderEquity(trades);
   renderBars(trades);
-  renderSources(trades);
+  renderSourcePerformance(trades, srcRows);
   renderRecords(trades);
 }
 
@@ -1580,6 +1640,16 @@ for (const id of ["dateFrom", "dateTo"]) {
   });
 }
 $("filterSource").addEventListener("change", (evt) => { S.source = evt.target.value; paintStats(); });
+/* 點來源卡片 = 把下方全部圖表與表格篩選到那個來源；再點一次取消 */
+$("sourcePerf").addEventListener("click", (evt) => {
+  const card = evt.target.closest("[data-pick-source]");
+  if (!card) return;
+  const name = card.dataset.pickSource;
+  S.source = S.source === name ? "all" : name;
+  const select = $("filterSource");
+  if ([...select.options].some((o) => o.value === S.source)) select.value = S.source;
+  paintStats();
+});
 $("ladderTabs").addEventListener("click", (evt) => {
   const btn = evt.target.closest("[data-src]");
   if (!btn) return;
