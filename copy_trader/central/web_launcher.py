@@ -415,12 +415,14 @@ class LauncherState:
         cfg = self.client_agent.config
         cfg.cancel_pending_after_seconds = int(_flt("cancel_pending_after_seconds", cfg.cancel_pending_after_seconds))
         cfg.cancel_if_price_beyond_percent = _flt("cancel_if_price_beyond_percent", cfg.cancel_if_price_beyond_percent)
-        logger.info(
-            "刪單規則：逾時 %s 秒未進場自動刪單（%.1f 小時）｜價格偏離 %s%% 自動刪單",
-            cfg.cancel_pending_after_seconds or "關閉",
-            (cfg.cancel_pending_after_seconds or 0) / 3600.0,
-            cfg.cancel_if_price_beyond_percent or "關閉",
+        timeout_text = (
+            f"{cfg.cancel_pending_after_seconds} 秒（{cfg.cancel_pending_after_seconds / 3600:.1f} 小時）"
+            if cfg.cancel_pending_after_seconds else "關閉"
         )
+        beyond_text = (
+            f"{cfg.cancel_if_price_beyond_percent}%" if cfg.cancel_if_price_beyond_percent else "關閉"
+        )
+        logger.info("刪單規則：逾時未進場 %s｜價格偏離 %s", timeout_text, beyond_text)
 
         logger.info(
             "套用會員設定：基礎手數=%s 馬丁=%s 倍數=%s 最大層數=%s 每層手數=%s 分批=%s",
