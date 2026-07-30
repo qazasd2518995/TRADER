@@ -189,6 +189,24 @@ class TradeManager:
         """
         signal_id = f"copy_{int(time.time() * 1000)}"
 
+        # 多 TP 一律重排成「由近到遠」（買遞增 / 賣遞減）。
+        # 分批平倉靠這個順序：MT5 的 TP 設在 tps[-1] 當尾段安全網，中間關由
+        # _check_partial_tp_hits 逐一處理。順序反了的話（賣單常見），MT5 的 TP
+        # 會落在最近的止盈上，整倉在第一個目標就平掉，分批完全失效。
+        # 這裡再排一次是防線：Hub 上舊訊號的順序是壞的，訊號中心也可能是舊版。
+        try:
+            from copy_trader.signal_parser.regex_parser import order_take_profits
+
+            fixed = order_take_profits(signal.direction, signal.take_profit or [])
+            if fixed != (signal.take_profit or []):
+                logger.info(
+                    "重排 %s 單的止盈順序（由近到遠）：%s → %s",
+                    signal.direction, signal.take_profit, fixed,
+                )
+                signal.take_profit = fixed
+        except Exception as exc:
+            logger.warning("止盈排序失敗，沿用原順序：%s", exc)
+
         order = ManagedOrder(
             signal_id=signal_id,
             signal=signal,

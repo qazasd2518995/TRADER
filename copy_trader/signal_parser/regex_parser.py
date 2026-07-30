@@ -33,6 +33,21 @@ class ParsedSignal:
         return f"{self.direction.upper()} {self.symbol} {entry_str} | SL: {self.stop_loss} | TP: [{tp_str}]"
 
 
+def order_take_profits(direction: str, take_profits: List[float]) -> List[float]:
+    """把多個止盈點排成「由近到遠」——買單遞增、賣單遞減。
+
+    這個順序是多 TP 分批平倉的前提：程式把 MT5 的 TP 設在 tps[-1] 當尾段安全網，
+    中間關卡由 _check_partial_tp_hits 逐一處理。所以 tps[-1] 必須是「最遠」的目標。
+
+    抽取階段一律遞增排序（那時還不知道方向），對買單剛好正確，但賣單完全相反：
+    遞增後 tps[-1] 反而是最近的止盈，MT5 就會在第一個目標把整倉平掉，分批完全失效。
+    """
+    cleaned = sorted({float(tp) for tp in (take_profits or []) if tp})
+    if str(direction or "").lower() == "sell":
+        cleaned.reverse()
+    return cleaned
+
+
 class RegexSignalParser:
     """Fast regex-based signal parser."""
 
@@ -418,6 +433,7 @@ class RegexSignalParser:
             )
 
         # 6. Build result
+        take_profits = order_take_profits(direction, take_profits)
         signal = ParsedSignal(
             is_valid=True,
             symbol="XAUUSD",
@@ -769,7 +785,8 @@ class RegexSignalParser:
                     except:
                         pass
 
-        # Sort TPs
+        # 先去重並遞增排序；真正的「由近到遠」順序要等方向判斷出來後才排得對，
+        # 見 order_take_profits()（買單遞增、賣單遞減）。
         take_profits.sort()
 
         return take_profits
