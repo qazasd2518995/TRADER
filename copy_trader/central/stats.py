@@ -480,6 +480,42 @@ def source_settings(
     return rows
 
 
+def _merge_partial_closes(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """把同一個 position 的多筆分批平倉合併成一筆。
+
+    多 TP 分批平倉會讓一個 position 產生好幾筆成交紀錄，而 EA 把「position 的
+    淨損益」寫進其中每一筆。直接加總會把同一筆損益重複計算好幾次。
+
+    實例 (2026-07-31)：0.5 手在 TP1 平、剩餘 0.5 手停損，兩筆紀錄都寫 -4.50。
+    加總得 -9.00，但帳戶餘額顯示這個 position 實際只賠了 4.50。
+
+    合併規則：損益取一次（每筆都是淨額）、手數加總、出場價與時間取最後一筆。
+    """
+    if not trades:
+        return trades
+
+    grouped: Dict[Any, List[Dict[str, Any]]] = {}
+    order: List[Any] = []
+    for trade in trades:
+        key = trade.get("position_id") or ("ticket", trade.get("ticket"))
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append(trade)
+
+    merged: List[Dict[str, Any]] = []
+    for key in order:
+        parts = sorted(grouped[key], key=lambda t: t["close_timestamp"])
+        head = dict(parts[-1])              # 出場價 / 平倉時間取最後一段
+        head["volume"] = round(sum(p["volume"] for p in parts), 2)
+        head["parts"] = len(parts)          # 分幾段平掉，前端可顯示
+        head["ticket"] = parts[0]["ticket"]
+        head["entry_price"] = parts[0]["entry_price"]
+        head["open_timestamp"] = parts[0]["open_timestamp"]
+        merged.append(head)
+    return merged
+
+
 def build_stats(settings: Dict[str, Any], trade_manager: Any = None) -> Dict[str, Any]:
     mt5_dir = resolve_mt5_dir(str(settings.get("mt5_files_dir") or ""))
     now = time.time()
@@ -519,6 +555,9 @@ def build_stats(settings: Dict[str, Any], trade_manager: Any = None) -> Dict[str
 
         trades.append({
             "ticket": raw.get("ticket"),
+            # 分批平倉的每一段都是獨立成交紀錄，但共用同一個 position_id，
+            # 用它把同一張單的多段合併回一筆（見 _merge_partial_closes）
+            "position_id": raw.get("position_id"),
             "signal_id": signal_id,
             "symbol": raw.get("symbol") or "",
             "side": str(raw.get("type") or "").lower(),
@@ -537,6 +576,7 @@ def build_stats(settings: Dict[str, Any], trade_manager: Any = None) -> Dict[str
             "level": _level_for_volume(volume, ladder),
         })
 
+    trades = _merge_partial_closes(trades)
     trades.sort(key=lambda t: (t["close_timestamp"], t["ticket"] or 0))
 
     cumulative = 0.0

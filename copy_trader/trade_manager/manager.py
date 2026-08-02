@@ -1023,7 +1023,11 @@ class TradeManager:
                     )
 
                 # Phase 2: Try to get actual profit from closed_trades.json
-                profit = self._get_closed_trade_profit(order.ticket)
+                # 帶上這張單原本的成交量：分批平倉要等所有段都寫進檔案才採信損益，
+                # 否則只會拿到第一段（例如 TP1 那 0.5 手獲利），把淨虧判成 WIN。
+                profit = self._get_closed_trade_profit(
+                    order.ticket, expected_volume=order.initial_volume or 0.0
+                )
 
                 if profit is not None:
                     # Got real profit from EA — use it
@@ -1053,12 +1057,15 @@ class TradeManager:
             )
             self.on_trade_result(is_win, signal_id=signal_id, source_window=source_window)
 
-    def _get_closed_trade_profit(self, ticket: int) -> Optional[float]:
+    def _get_closed_trade_profit(self, ticket: int, expected_volume: float = 0.0) -> Optional[float]:
         """
         Get the profit of a closed trade from MT5.
 
         Args:
             ticket: The position ticket number (from positions.json)
+            expected_volume: 這個 position 應該被平掉的總手數。分批平倉時 EA 會
+                分好幾筆寫入 closed_trades.json，手數湊不滿代表還沒寫完，
+                這時回 None 讓呼叫端再等一輪，避免拿到只涵蓋第一段的損益。
 
         Returns:
             Profit amount (negative = loss), or None if not found
@@ -1069,12 +1076,31 @@ class TradeManager:
         if data:
             trades = data.get('trades', [])
 
-            # Match by position_id first (correct field from EA)
-            for trade in trades:
-                if trade.get('position_id') == ticket:
-                    profit = float(trade.get('profit', 0))
-                    logger.info(f"Found closed trade profit by position_id: ticket={ticket}, profit={profit}")
-                    return profit
+            # Match by position_id first (correct field from EA)。
+            # EA 把「position 的淨損益」寫進該 position 的每一筆成交紀錄，所以取
+            # 任何一筆都是淨額——但前提是所有分批都已經寫進檔案。分批平倉的單會
+            # 分好幾筆陸續寫入，太早讀只會拿到第一段的損益。
+            #
+            # 實例 (2026-07-31)：0.5 手在 TP1 平掉 +245.50、剩餘 0.5 手停損 -250，
+            # position 淨額 -4.50 是「輸」。但部位消失當下只讀到 +245.50，被判成 WIN。
+            #
+            # 所以用「已平手數是否補齊」當閘門：湊不滿就回 None，讓呼叫端繼續等，
+            # 等不到再由 CLOSE_CONFIRM_TIMEOUT 走保底路徑。
+            matched = [t for t in trades if t.get('position_id') == ticket]
+            if matched:
+                closed_volume = sum(float(t.get('volume') or 0) for t in matched)
+                profit = float(matched[0].get('profit', 0))
+                if expected_volume and closed_volume + 1e-9 < expected_volume:
+                    logger.info(
+                        "position %s 分批尚未寫完（已平 %.2f / 應為 %.2f 手），先不採信損益 %.2f",
+                        ticket, closed_volume, expected_volume, profit,
+                    )
+                    return None
+                logger.info(
+                    f"Found closed trade profit by position_id: ticket={ticket}, "
+                    f"profit={profit} (共 {len(matched)} 筆成交, 已平 {closed_volume:.2f} 手)"
+                )
+                return profit
 
             # Fallback: match by deal ticket (legacy)
             for trade in trades:
