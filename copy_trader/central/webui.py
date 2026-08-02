@@ -1176,13 +1176,17 @@ function renderRecords(trades) {
       '<td><span class="tag ' + (t.is_win ? "tag-win" : "tag-loss") + '">' + (t.is_win ? "▲ 贏" : "▼ 輸") + "</span></td>" +
       '<td class="' + (t.side === "buy" ? "side-buy" : "side-sell") + '">' + (t.side === "buy" ? "買進" : "賣出") + "</td>" +
       '<td class="num mono">' + lots(t.volume) + "</td>" +
-      '<td><span class="tag tag-lv">第 ' + (t.level + 1) + " 關</span></td>" +
+      // 均注來源沒有關卡，顯示「第 N 關」會誤導
+      '<td><span class="tag tag-lv">' +
+        (t.mode === "flat" ? "均注" : "第 " + (t.level + 1) + " 關") +
+        (t.parts > 1 ? " · 分 " + t.parts + " 段" : "") + "</span></td>" +
       '<td class="num mono">' + n2.format(t.entry_price) + "</td>" +
       '<td class="num mono">' + n2.format(t.exit_price) + "</td>" +
       '<td class="num ' + toneClass(t.profit) + '" style="font-weight:600">' + money(t.profit, { signed: true }) + "</td>" +
       '<td class="num ' + toneClass(t.cumulative) + ' mono">' + money(t.cumulative, { signed: true, compact: true }) + "</td>" +
       "<td>" + esc(t.source || "—") + "</td>" +
-      '<td class="mono">' + esc(t.ticket) + "</td>" +
+      // 分批平倉時每段各有成交編號，用 position_id 才是穩定的那一張單
+      '<td class="mono">' + esc(t.position_id || t.ticket) + "</td>" +
     "</tr>").join("");
   box.innerHTML =
     "<table><thead><tr>" +

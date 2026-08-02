@@ -480,6 +480,21 @@ def source_settings(
     return rows
 
 
+def _position_side(close_deal_type: Any) -> str:
+    """從「平倉成交的方向」還原出當初持倉的方向。
+
+    MT5 的歷史成交記的是成交本身的方向：平掉一張買單是靠「賣出」成交完成的，
+    所以 closed_trades.json 裡 type=sell 的那筆，當初下的其實是買單。
+    直接拿 type 當方向顯示，每一筆都會是相反的。
+    """
+    raw = str(close_deal_type or "").strip().lower()
+    if raw in ("buy", "0"):
+        return "sell"
+    if raw in ("sell", "1"):
+        return "buy"
+    return ""
+
+
 def _merge_partial_closes(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """把同一個 position 的多筆分批平倉合併成一筆。
 
@@ -560,7 +575,9 @@ def build_stats(settings: Dict[str, Any], trade_manager: Any = None) -> Dict[str
             "position_id": raw.get("position_id"),
             "signal_id": signal_id,
             "symbol": raw.get("symbol") or "",
-            "side": str(raw.get("type") or "").lower(),
+            # closed_trades 的 type 是「平倉成交」的方向，跟持倉方向相反
+            # （平掉買單靠賣出成交）。要顯示成當初下的單，必須反過來。
+            "side": _position_side(raw.get("type")),
             "volume": volume,
             "entry_price": _float(raw.get("entry_price"), 0.0),
             "exit_price": _float(raw.get("exit_price"), 0.0),
@@ -575,6 +592,16 @@ def build_stats(settings: Dict[str, Any], trade_manager: Any = None) -> Dict[str
             "source": sources_raw.get(signal_id) or fields.get("來源") or "",
             "level": _level_for_volume(volume, ladder),
         })
+
+    # 均注來源沒有關卡可言，標記模式讓前端別顯示「第 N 關」
+    try:
+        profiles = json.loads(str(settings.get("source_profiles") or "{}"))
+    except (TypeError, ValueError):
+        profiles = {}
+    for trade in trades:
+        profile = profiles.get(trade["source"]) if isinstance(profiles, dict) else None
+        mode = str((profile or {}).get("mode") or "").lower()
+        trade["mode"] = mode if mode in ("flat", "martingale") else ""
 
     trades = _merge_partial_closes(trades)
     trades.sort(key=lambda t: (t["close_timestamp"], t["ticket"] or 0))
