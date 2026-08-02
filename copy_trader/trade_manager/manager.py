@@ -53,6 +53,10 @@ class ManagedOrder:
     # 掛單從 MT5 消失（被手動刪或券商撤）的偵測時間，用來過濾「成交瞬間」的空窗
     vanish_detected_at: Optional[float] = None
 
+    # 保本移損模式：已經因為觸及第幾關而推過停損（0=還沒推過）
+    sl_trail_index: int = 0
+    trailed_sl: Optional[float] = None   # 目前已送出的停損價，避免重複送同一張改單
+
     # Signal source window
     source_window: str = ""  # Display name of the window that produced this signal
 
@@ -483,11 +487,18 @@ class TradeManager:
         lots = raw.get("lots") or []
         if not isinstance(lots, list):
             lots = []
+        # 多 TP 的處理方式：
+        #   "partial"   = 依比例分批平倉（舊行為）
+        #   "breakeven" = 不分批，觸及 TP(n) 就把停損推到 TP(n-1)，TP1 推到成交價
+        tp_mode = str(raw.get("tp_mode") or "").strip().lower()
+        if tp_mode not in ("partial", "breakeven"):
+            tp_mode = "partial"
         return {
             "source": source_window,
             "configured": bool(raw),
             "enabled": bool(raw.get("enabled", True)),
             "mode": mode,
+            "tp_mode": tp_mode,
             "base_lot": _num("base_lot", self.default_lot_size),
             "multiplier": _num("multiplier", self.martingale_multiplier),
             "max_level": int(_num("max_level", self.martingale_max_level)),
@@ -762,19 +773,29 @@ class TradeManager:
             lot_size = signal.lot_size or self.default_lot_size
 
         tps = signal.take_profit or []
-        # 分批計畫以「原始手數」為基準；空計畫=手數不足以乾淨分割 → 退回整包在 TP1 平。
-        partial_plan = self._plan_partial_chunks(lot_size, tps)
-        if partial_plan:
-            # 多 TP + 可分割：MT5 TP 設在最後一關(當尾段的安全網),中間關由 _check_partial_tp_hits 處理。
+        partial_plan: List[float] = []
+        mt5_tp = None
+
+        if self.profile_for(order.source_window)["tp_mode"] == "breakeven" and len(tps) > 1:
+            # 保本移損：不分批、手數整筆保留。MT5 停利掛在最遠那關，中途由
+            # _check_trailing_sl 把停損往有利方向推（TP1→成交價、TP2→TP1…）。
             mt5_tp = tps[-1]
-            logger.info(f"分批平倉啟用: {lot_size} 手, 中間關計畫={partial_plan} + 尾段, MT5 TP=最後 {mt5_tp}")
-        elif len(tps) >= 1:
-            # 單一 TP,或手數不足以分批:用第一個 TP,整包一次平。
-            mt5_tp = tps[0]
-            if len(tps) > 1:
-                logger.info(f"多 TP 但 {lot_size} 手不足以分批(每塊需≥0.01)→ 退回整包在 TP1 平: {mt5_tp}")
+            logger.info(
+                "保本移損模式: %s 手整筆不分批, MT5 TP=最遠 %s（觸及 TP1 後停損移到成交價）",
+                lot_size, mt5_tp,
+            )
         else:
-            mt5_tp = None
+            # 分批計畫以「原始手數」為基準；空計畫=手數不足以乾淨分割 → 退回整包在 TP1 平。
+            partial_plan = self._plan_partial_chunks(lot_size, tps)
+            if partial_plan:
+                # 多 TP + 可分割：MT5 TP 設在最後一關(當尾段的安全網),中間關由 _check_partial_tp_hits 處理。
+                mt5_tp = tps[-1]
+                logger.info(f"分批平倉啟用: {lot_size} 手, 中間關計畫={partial_plan} + 尾段, MT5 TP=最後 {mt5_tp}")
+            elif tps:
+                # 單一 TP,或手數不足以分批:用第一個 TP,整包一次平。
+                mt5_tp = tps[0]
+                if len(tps) > 1:
+                    logger.info(f"多 TP 但 {lot_size} 手不足以分批(每塊需≥0.01)→ 退回整包在 TP1 平: {mt5_tp}")
 
         # Build command for MT5 bridge
         symbol = self.symbol_name or signal.symbol or "XAUUSD"
@@ -936,6 +957,7 @@ class TradeManager:
                 self._check_order_fills()
                 self._check_closed_positions()  # Check for wins/losses
                 self._check_partial_tp_hits()
+                self._check_trailing_sl()
                 # 先偵測成交(上面)，再對帳消失的掛單，避免把「剛成交」誤判成「被刪除」
                 self._check_vanished_orders()
                 self._check_cancellation_conditions()
@@ -1218,6 +1240,76 @@ class TradeManager:
                 f"| 信號={order.signal} | 來源={order.source_window}"
             )
 
+    def _check_trailing_sl(self):
+        """保本移損：觸及 TP(n) 就把停損推到 TP(n-1)，TP1 推到實際成交價。
+
+        手數完全不動——用「不會再賠」換「跑滿全程的機會」，跟分批平倉是二選一。
+        最後一關不處理：那一關由 MT5 的停利整筆平掉。
+        """
+        current_price = self._get_current_price()
+        if not current_price:
+            return
+
+        pending = []
+        with self._lock:
+            for signal_id, order in self.orders.items():
+                if order.status not in (OrderStatus.FILLED, OrderStatus.PARTIAL_CLOSED):
+                    continue
+                if not order.ticket or not order.entry_price:
+                    continue
+                if self.profile_for(order.source_window)["tp_mode"] != "breakeven":
+                    continue
+
+                signal = order.signal
+                tps = signal.take_profit or []
+                direction = str(getattr(signal, "direction", "") or "").lower()
+                if len(tps) < 2 or direction not in ("buy", "sell"):
+                    continue
+
+                # 從還沒推過的那一關往後看，一次可能跨過好幾關（跳空）
+                target_sl = None
+                reached = order.sl_trail_index
+                for index in range(order.sl_trail_index, len(tps) - 1):
+                    tp = tps[index]
+                    hit = current_price >= tp if direction == "buy" else current_price <= tp
+                    if not hit:
+                        break
+                    # 第一關推到實際成交價（保本），之後每一關推到前一關
+                    target_sl = order.entry_price if index == 0 else tps[index - 1]
+                    reached = index + 1
+
+                if target_sl is None:
+                    continue
+                # 停損只准往有利方向移，不可退回
+                previous = order.trailed_sl
+                if previous is not None:
+                    better = target_sl > previous if direction == "buy" else target_sl < previous
+                    if not better:
+                        order.sl_trail_index = reached
+                        continue
+                order.sl_trail_index = reached
+                order.trailed_sl = target_sl
+                pending.append((signal_id, order, target_sl, reached))
+
+        for signal_id, order, target_sl, reached in pending:
+            label = "成交價（保本）" if reached == 1 else f"第 {reached - 1} 關"
+            if self._modify_position(order.ticket, sl=target_sl):
+                logger.info(
+                    "保本移損：%s 觸及第 %d 關，停損移到 %s %s",
+                    signal_id, reached, target_sl, label,
+                )
+                self._write_journal(
+                    "SL_MOVED",
+                    f"signal_id={signal_id} | ticket={order.ticket} | 觸及第 {reached} 關 "
+                    f"| 停損移到 {target_sl}（{label}）| 來源={order.source_window}"
+                )
+            else:
+                # 送不出去就把狀態退回，下一輪重試
+                with self._lock:
+                    order.sl_trail_index = reached - 1
+                    order.trailed_sl = None
+                logger.warning("保本移損失敗（改單指令沒送出）：%s，下一輪重試", signal_id)
+
     # Max time (seconds) to wait for EA to confirm a partial close before retrying
     PARTIAL_CLOSE_TIMEOUT = 10
 
@@ -1244,6 +1336,9 @@ class TradeManager:
         with self._lock:
             for signal_id, order in self.orders.items():
                 if order.status not in [OrderStatus.FILLED, OrderStatus.PARTIAL_CLOSED]:
+                    continue
+                # 保本移損與分批平倉互斥，該來源選了保本就不在這裡分批
+                if self.profile_for(order.source_window)["tp_mode"] == "breakeven":
                     continue
 
                 signal = order.signal

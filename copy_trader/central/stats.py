@@ -464,12 +464,16 @@ def source_settings(
         mode = str(raw.get("mode") or "").strip().lower()
         if mode not in ("martingale", "flat"):
             mode = "martingale" if global_martingale else "flat"
+        tp_mode = str(raw.get("tp_mode") or "").strip().lower()
+        if tp_mode not in ("partial", "breakeven"):
+            tp_mode = "partial"
         state = per_source.get(name) or {}
         rows.append({
             "source": name,
             "configured": bool(raw),
             "enabled": bool(raw.get("enabled", True)),
             "mode": mode,
+            "tp_mode": tp_mode,
             "base_lot": _float(raw.get("base_lot"), base_lot),
             "multiplier": _float(raw.get("multiplier"), multiplier),
             "max_level": _int(raw.get("max_level"), max_level),

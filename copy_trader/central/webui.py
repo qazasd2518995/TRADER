@@ -1398,7 +1398,7 @@ function renderSourceSettings(rows) {
   }
   box.innerHTML =
     '<table class="src-table"><thead><tr>' +
-      "<th>訊號來源</th><th>跟單</th><th>模式</th><th>基礎手數</th><th>馬丁倍數</th><th>關卡數</th>" +
+      "<th>訊號來源</th><th>跟單</th><th>模式</th><th>基礎手數</th><th>馬丁倍數</th><th>關卡數</th><th>多 TP 處理</th>" +
     "</tr></thead><tbody>" +
     rows.map((r) => '' +
       '<tr data-source-row="' + esc(r.source) + '">' +
@@ -1413,6 +1413,10 @@ function renderSourceSettings(rows) {
         '<td><input type="number" class="sp-base" step="0.01" min="0.01" value="' + r.base_lot + '" /></td>' +
         '<td><input type="number" class="sp-mult" step="0.1" min="1" value="' + r.multiplier + '" /></td>' +
         '<td><input type="number" class="sp-max" step="1" min="1" max="12" value="' + r.max_level + '" /></td>' +
+        '<td><select class="sp-tpmode">' +
+          '<option value="partial"' + (r.tp_mode === "partial" ? " selected" : "") + ">分批平倉</option>" +
+          '<option value="breakeven"' + (r.tp_mode === "breakeven" ? " selected" : "") + ">保本移損</option>" +
+        "</select></td>" +
       "</tr>").join("") +
     "</tbody></table>" +
     '<div class="src-add">' +
@@ -1447,7 +1451,9 @@ function addSourceRow() {
       '<option value="flat" selected>均注</option></select></td>' +
     '<td><input type="number" class="sp-base" step="0.01" min="0.01" value="0.01" /></td>' +
     '<td><input type="number" class="sp-mult" step="0.1" min="1" value="2" /></td>' +
-    '<td><input type="number" class="sp-max" step="1" min="1" max="12" value="5" /></td>';
+    '<td><input type="number" class="sp-max" step="1" min="1" max="12" value="5" /></td>' +
+    '<td><select class="sp-tpmode"><option value="partial">分批平倉</option>' +
+      '<option value="breakeven" selected>保本移損</option></select></td>';
   document.querySelector(".src-table tbody").appendChild(tr);
   input.value = "";
   syncSourceProfiles();
@@ -1465,6 +1471,7 @@ function syncSourceProfiles() {
       enabled: row.querySelector(".sp-enabled").checked,
       mode,
       base_lot: parseFloat(row.querySelector(".sp-base").value) || 0.01,
+      tp_mode: row.querySelector(".sp-tpmode").value,
     };
     if (martingale) {
       entry.multiplier = parseFloat(row.querySelector(".sp-mult").value) || 2;
