@@ -88,6 +88,31 @@ def _md5(s: str) -> str:
     return hashlib.md5(s.encode("utf-8", errors="ignore")).hexdigest()
 
 
+# LINE 的附屬視窗程式。開圖 / 通話時它們會生出「標題跟聊天室一模一樣」的視窗，
+# 光看標題完全分不出來。實測過：群裡有人貼圖被點開後，
+#   hwnd=83821808 pid=LineMediaPlayer  title='（乘）黃金報單🈲言群'
+#   hwnd=132680   pid=LINE             title='（乘）黃金報單🈲言群'
+# 兩個標題長度相同，原本「標題最短」的排序等於隨機挑，挑到看圖視窗就永遠
+# 複製不到東西 (empty_clipboard) 或 OCR 到一張圖。
+_NON_CHAT_EXES = {"linemediaplayer.exe", "linecall.exe"}
+
+
+def pick_chat_window(hits: List[WindowInfo]) -> Optional[WindowInfo]:
+    """從同名視窗裡挑出真正的聊天視窗；只剩附屬視窗時回 None (寧可這輪不抓)。"""
+    if not hits:
+        return None
+    chat = [h for h in hits if (h.owner_name or "").lower() not in _NON_CHAT_EXES]
+    if not chat:
+        logger.debug(
+            "只剩 LINE 附屬視窗符合 (%s) → 本輪跳過, 等聊天視窗回來",
+            [h.owner_name for h in hits],
+        )
+        return None
+    # 標題最短 = 最貼近精確匹配；長度相同時取面積最大的 (聊天視窗比彈窗大)
+    chat.sort(key=lambda h: (len(h.title), -(h.bounds[2] * h.bounds[3])))
+    return chat[0]
+
+
 def normalize_for_match(text: str) -> str:
     """比對用正規化：去掉所有空白 + 轉小寫。
 
@@ -299,10 +324,14 @@ class ClipboardReaderService:
             logger.debug(f"no window matched: {w.window_name!r}")
             return None
 
-        # 與 screen_capture 一致：偏好標題最短（最貼近精確匹配）的那個
-        hits.sort(key=lambda h: len(h.title))
-        w.window_id = hits[0].window_id
-        logger.info(f"resolved clipboard window {w.label!r} → hwnd={w.window_id} ({hits[0].title!r})")
+        best = pick_chat_window(hits)
+        if best is None:
+            return None
+        w.window_id = best.window_id
+        logger.info(
+            f"resolved clipboard window {w.label!r} → hwnd={w.window_id} "
+            f"({best.title!r}, {best.owner_name or '?'})"
+        )
         return w.window_id
 
     # -------- title-only probe (cheap, no focus steal) --------

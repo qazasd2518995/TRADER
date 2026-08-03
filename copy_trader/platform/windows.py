@@ -52,6 +52,33 @@ except ImportError:
 class WindowsScreenCapture(ScreenCaptureBase):
     """Windows screen capture using win32gui / PrintWindow / GDI."""
 
+    @staticmethod
+    def _process_name_of(hwnd: int) -> tuple:
+        """(pid, 執行檔名) — 取不到就回 (0, "")。
+
+        用來分辨「同名但不同程式」的視窗：LINE 開圖時 LineMediaPlayer.exe 會
+        生一個標題跟聊天室**一模一樣**的看圖視窗，只靠標題完全分不出來。
+        用 PROCESS_QUERY_LIMITED_INFORMATION，不需要提權。
+        """
+        try:
+            pid = ctypes.c_ulong(0)
+            ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if not pid.value:
+                return 0, ""
+            h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid.value)
+            if not h:
+                return pid.value, ""
+            try:
+                buf = ctypes.create_unicode_buffer(512)
+                size = ctypes.c_ulong(512)
+                if ctypes.windll.kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                    return pid.value, os.path.basename(buf.value)
+            finally:
+                ctypes.windll.kernel32.CloseHandle(h)
+            return pid.value, ""
+        except Exception:
+            return 0, ""
+
     def enumerate_windows(self, title_filter: str = "") -> List[WindowInfo]:
         """List visible windows, optionally filtered by title substring."""
         if not WIN32_AVAILABLE:
@@ -69,13 +96,14 @@ class WindowsScreenCapture(ScreenCaptureBase):
                         bounds = (left, top, right - left, bottom - top)
                     except Exception:
                         bounds = (0, 0, 0, 0)
+                    pid, exe = self._process_name_of(hwnd)
                     results.append(WindowInfo(
                         window_id=hwnd,
                         title=title,
-                        owner_name="",
+                        owner_name=exe,
                         bounds=bounds,
                         is_visible=True,
-                        pid=0,
+                        pid=pid,
                     ))
 
         try:

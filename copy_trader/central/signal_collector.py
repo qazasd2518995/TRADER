@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 from copy_trader.config import Config, load_config
-from copy_trader.signal_capture.clipboard_reader import ClipboardReaderService, ClipboardWindow
+from copy_trader.signal_capture.clipboard_reader import ClipboardWindow
 from copy_trader.signal_capture.line_text_parser import LineMessage
 from copy_trader.signal_capture.window_ocr_reader import _CANCEL_KWS
 from copy_trader.signal_parser.keyword_filter import is_potential_signal
@@ -162,13 +162,11 @@ class CentralSignalCollector:
         self,
         config: Config,
         publisher: HubPublisher,
-        copy_mode: str = "all",
         stale_seconds: Optional[float] = None,
     ):
         self.config = config
         self.publisher = publisher
         self.parser = RegexSignalParser()
-        self.copy_mode = copy_mode
         self._pending: Dict[str, Dict] = {}
         self._processed: Dict[Tuple, float] = {}
         self._processed_ttl = max(60, int(config.signal_dedup_minutes or 10) * 60)
@@ -185,8 +183,6 @@ class CentralSignalCollector:
                 window_name=w.window_name,
                 display_name=_window_label(w),
                 window_id=getattr(w, "window_id", None),
-                screens=int(getattr(config, "clipboard_screens", 2) or 2),
-                copy_mode=copy_mode,
                 allowed_senders=list(getattr(w, "allowed_senders", []) or []),
                 required_patterns=list(getattr(w, "required_patterns", []) or []),
             )
@@ -206,26 +202,30 @@ class CentralSignalCollector:
             if w.required_patterns:
                 logger.info("來源 %r 只跟符合模板指紋的訊息: %s", w.label, w.required_patterns)
 
-        # 採集管道：
-        #   "window_ocr" = PrintWindow 背景截圖 + OCR (LINE 擋掉合成鍵鼠後的主管道)
-        #   其它 (clipboard) = 舊的剪貼板全選複製 (LINE 更新後已失效, 保留為備援)
-        signal_source = str(getattr(config, "signal_source", "clipboard") or "clipboard").strip().lower()
-        if signal_source == "window_ocr":
-            from copy_trader.signal_capture.window_ocr_reader import WindowOcrReaderService
-            self.clipboard = WindowOcrReaderService(
-                windows,
-                confirm_count=int(getattr(config, "ocr_confirm_count", 2) or 2),
+        # 採集管道只剩一條：PrintWindow 背景截圖 + OCR。
+        #
+        # 舊的「搶焦點 → 點聊天區 → Ctrl+A → Ctrl+C」剪貼板管道已經整條移除。
+        # 2026-07-30 在 LINE 26.3.0.3916 上實測：合成按鍵進得去 (Ctrl+F 叫得出搜尋列)、
+        # 焦點也搶得到，但 Ctrl+A 只會選到空的訊息輸入框，聊天內容完全沒反白 —
+        # 掃過 18 個不同的種子點擊位置全部複製到 0 字。而且那個種子點擊還會誤點到
+        # 群裡的圖片，開出一個標題跟聊天室一模一樣的 LineMediaPlayer 看圖視窗，
+        # 讓下一輪認錯視窗。留著只會讓人以為還有備援可切。
+        _src = str(getattr(config, "signal_source", "window_ocr") or "window_ocr").strip().lower()
+        if _src not in ("", "window_ocr"):
+            logger.warning(
+                "config.signal_source=%r 已不支援 (剪貼板管道在新版 LINE 上永遠拿到空字串) → 一律使用 window_ocr",
+                _src,
             )
-            logger.info(
-                "collector initialized (WINDOW_OCR): windows=%s confirm=%s",
-                len(windows), getattr(config, "ocr_confirm_count", 2),
-            )
-        else:
-            self.clipboard = ClipboardReaderService(
-                windows,
-                stale_seconds=float(stale_seconds if stale_seconds is not None else getattr(config, "clipboard_stale_seconds", 10.0) or 10.0),
-            )
-            logger.info("collector initialized (CLIPBOARD): windows=%s copy_mode=%s", len(windows), copy_mode)
+
+        from copy_trader.signal_capture.window_ocr_reader import WindowOcrReaderService
+        self.clipboard = WindowOcrReaderService(
+            windows,
+            confirm_count=int(getattr(config, "ocr_confirm_count", 2) or 2),
+        )
+        logger.info(
+            "collector initialized (WINDOW_OCR): windows=%s confirm=%s",
+            len(windows), getattr(config, "ocr_confirm_count", 2),
+        )
 
     def _cleanup(self) -> None:
         now = time.time()
@@ -255,9 +255,9 @@ class CentralSignalCollector:
                 except (urllib.error.URLError, TimeoutError, RuntimeError) as e:
                     logger.warning("message publish failed, will retry source=%s: %s", cap.display_name, e)
                     self.clipboard.force_retry(cap.source_name)
-                    # 全選複製模式的新訊息切點是「最後一則已 mark_seen 的訊息」；
-                    # 若這裡 continue 讓後面的訊息先被標記，這則失敗的訊號
-                    # 下一輪會被切點跳過而永久遺失。中斷本批，下一輪整批重試。
+                    # 採集層是靠「已 mark_seen 的訊息」判斷什麼算新的；若這裡 continue
+                    # 讓後面的訊息先被標記，這則失敗的訊號下一輪會被當成舊的跳過而永久
+                    # 遺失。中斷本批，下一輪整批重試。
                     abort_source = True
                 except Exception as e:
                     logger.exception("message processing failed: %s", e)
@@ -404,10 +404,9 @@ class CentralSignalCollector:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run central LINE clipboard signal collector.")
+    parser = argparse.ArgumentParser(description="Run central LINE window-OCR signal collector.")
     parser.add_argument("--hub-url", default=os.environ.get("COPY_TRADER_HUB_URL", "http://127.0.0.1:8765"))
     parser.add_argument("--token", default=os.environ.get("COPY_TRADER_HUB_TOKEN", ""))
-    parser.add_argument("--copy-mode", choices=["all", "tail"], default=os.environ.get("COPY_TRADER_COPY_MODE", "all"))
     parser.add_argument("--interval", type=float, default=float(os.environ.get("COPY_TRADER_COLLECTOR_INTERVAL", "1.0")))
     parser.add_argument("--stale-seconds", type=float, default=None)
     parser.add_argument("--once", action="store_true")
@@ -417,7 +416,7 @@ def main() -> None:
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     config = load_config()
     publisher = HubPublisher(args.hub_url, args.token)
-    collector = CentralSignalCollector(config, publisher, copy_mode=args.copy_mode, stale_seconds=args.stale_seconds)
+    collector = CentralSignalCollector(config, publisher, stale_seconds=args.stale_seconds)
     if args.once:
         collector.run_cycle()
     else:

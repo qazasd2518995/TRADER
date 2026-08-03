@@ -103,13 +103,19 @@ class OCRService:
         """Lazy-initialize RapidOCR on first use."""
         if self._rapid_ocr is None:
             logger.info("Loading RapidOCR model...")
+            # PP-OCRv6 small (2026-06 釋出, 7.7M 參數)。實測這台機器的 LINE 截圖：
+            #   v5 mobile 1143ms / v6 small 1007ms / v6 medium 18474ms / v5 server 19356ms
+            # small 比原本的 v5 mobile 又快又準, medium 與 server 在 i7-9700 純 CPU
+            # 上要 18~19 秒, 一輪掃三個視窗根本來不及 —— 所以不是挑最大的, 是挑
+            # 「延遲撐得住每秒輪詢」裡面最強的那個。
+            # 繁體也比較穩: 同一張圖 v5 server 把「止損」讀成簡體「止损」, v6 small 正確。
             self._rapid_ocr = _RapidOCR(
                 params={
                     "Global.log_level": "info",
-                    "Det.ocr_version": _RapidOCRVersion.PPOCRV5,
-                    "Det.model_type": _RapidModelType.MOBILE,
-                    "Rec.ocr_version": _RapidOCRVersion.PPOCRV5,
-                    "Rec.model_type": _RapidModelType.MOBILE,
+                    "Det.ocr_version": _RapidOCRVersion.PPOCRV6,
+                    "Det.model_type": _RapidModelType.SMALL,
+                    "Rec.ocr_version": _RapidOCRVersion.PPOCRV6,
+                    "Rec.model_type": _RapidModelType.SMALL,
                 }
             )
             logger.info("RapidOCR model loaded")

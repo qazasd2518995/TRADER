@@ -109,7 +109,6 @@ class LauncherState:
                 "host": "0.0.0.0",
                 "port": "8765",
                 "token": secrets.token_urlsafe(24),
-                "copy_mode": "all",
                 "interval": "1.0",
                 "cloudflare_tunnel": "true",
                 "cloudflared_path": "",
@@ -275,7 +274,6 @@ class LauncherState:
 
             token = str(self.settings.get("token") or "")
             interval = max(0.2, float(self.settings.get("interval") or 1.0))
-            copy_mode = str(self.settings.get("copy_mode") or "all")
             remote_hub = str(self.settings.get("hub_url") or "").strip().rstrip("/")
 
             if remote_hub:
@@ -316,7 +314,7 @@ class LauncherState:
                 logger.info("Hub 管理頁面：%s/?token=%s", local_url, token)
                 self._start_cloudflare_tunnel(port)
 
-            collector = CentralSignalCollector(load_config(), HubPublisher(publish_url, token), copy_mode=copy_mode)
+            collector = CentralSignalCollector(load_config(), HubPublisher(publish_url, token))
             self.status = "運行中"
             self.service_started_at = time.time()
 
@@ -569,7 +567,6 @@ def _page_html(state: LauncherState) -> str:
     fields = """
       <label>雲端 Hub URL<input id="hub_url" placeholder="留空 = 本機自架 Hub；雲端填 https://...fly.dev" /></label>
       <label>Hub 密碼<input id="token" type="password" /></label>
-      <label>複製模式<select id="copy_mode"><option value="all">全選複製</option><option value="tail">底部幾屏</option></select></label>
       <label>輪詢秒數<input id="interval" /></label>
       <hr style="grid-column:1/3;border:none;border-top:1px solid #e3e8ec;margin:6px 0" />
       <label>Hub 監聽 IP<input id="host" placeholder="本機自架時用；0.0.0.0" /></label>
@@ -634,7 +631,7 @@ def _page_html(state: LauncherState) -> str:
     const role = {json.dumps(state.role)};
     let snapshot = null;
     let didFill = false;
-    function ids() {{ return role === "central" ? ["hub_url","host","port","token","copy_mode","interval","cloudflare_tunnel","cloudflared_path","auto_start"] : ["hub_url","token","mt5_files_dir","interval","auto_start","default_lot_size","use_martingale","martingale_multiplier","martingale_max_level","martingale_lots","partial_close_ratios"]; }}
+    function ids() {{ return role === "central" ? ["hub_url","host","port","token","interval","cloudflare_tunnel","cloudflared_path","auto_start"] : ["hub_url","token","mt5_files_dir","interval","auto_start","default_lot_size","use_martingale","martingale_multiplier","martingale_max_level","martingale_lots","partial_close_ratios"]; }}
     function collect() {{
       const out = {{}};
       for (const id of ids()) {{

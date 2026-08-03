@@ -416,6 +416,22 @@ class RegexSignalParser:
                 raw_text_summary=text[:50]
             )
 
+        # 依方向排序止盈，讓 tps[0] 永遠是「最近的目標」、tps[-1] 永遠是「最遠的目標」。
+        # buy 價格往上走 → 升冪；sell 價格往下走 → 降冪。
+        #
+        # 下游 trade_manager 的分批平倉直接依賴這個假設：
+        #   manager.py:552  MT5 的 take_profit 設 tps[-1] 當安全網   → 必須是最遠的
+        #   manager.py:1007 第 N 次分批平倉等 tps[N]                → 必須由近排到遠
+        # 原本 _extract_take_profits 收尾是無條件 `take_profits.sort()` (永遠升冪)，
+        # 對 buy 剛好正確，對 sell 完全相反。實測 yuyu 的 "黃金 4070-4071空 /
+        # Tp 4065 4060 4055 / Sl 4076"：升冪排成 [4055,4060,4065] 後，MT5 的 TP 被設
+        # 成最近的 4065 → 整單在第一個目標就全平，4060/4055 永遠用不到；而分批平倉
+        # 在等 tps[0]=4055 這個最遠的價，倉位早就沒了 → 賣單等於完全沒有分批平倉。
+        # 排序放在這裡而不是 _extract_take_profits 裡面，是因為 direction 到這行才定案
+        # (第 404 行；而且 _infer_direction_from_sltp 本身不看順序)。
+        if take_profits:
+            take_profits = sorted(take_profits, reverse=(direction == "sell"))
+
         # 5. Validate
         if not stop_loss and not take_profits:
             return ParsedSignal(
@@ -777,7 +793,8 @@ class RegexSignalParser:
                     except:
                         pass
 
-        # Sort TPs
+        # 先做穩定的升冪排序（去重／比對用）。最終「由近到遠」的方向性排序在 parse()
+        # 裡 direction 定案之後才套用 — 這裡還不知道方向。
         take_profits.sort()
 
         return take_profits

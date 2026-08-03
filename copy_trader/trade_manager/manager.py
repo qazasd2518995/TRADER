@@ -184,18 +184,31 @@ class TradeManager:
         Returns:
             Signal ID for tracking
         """
-        signal_id = f"copy_{int(time.time() * 1000)}"
-
-        order = ManagedOrder(
-            signal_id=signal_id,
-            signal=signal,
-            source_window=source_window,
-            cancel_after_seconds=cancel_after_seconds,
-            cancel_if_price_beyond=cancel_if_price_beyond,
-            remaining_volume=signal.lot_size or self.default_lot_size
-        )
-
         with self._lock:
+            # id 必須在鎖內產生並確定唯一。原本是 f"copy_{int(time.time()*1000)}"，
+            # 毫秒解析度且沒有防撞：同一毫秒送出兩張單就會拿到同一個 id，
+            # self.orders[signal_id] = order 直接覆蓋前一張 —— 那張單從此不存在，
+            # 不會被監控、不會逾時撤單、來源對應也錯掉，而且完全無聲。
+            # 會員端從 hub 補抓積壓訊號時是連續迴圈送單，最容易踩到。
+            #
+            # 往後找第一個沒被占用的毫秒：格式不變、仍單調遞增，正常情況(不撞號)
+            # 產生的 id 與修改前完全相同。順便避開 _signal_sources 裡的舊鍵，
+            # 這樣即使系統時間往回跳，也不會複用到已清掉的訂單 id
+            # (comment 比對 manager.py:888 是用 `f"copy_{signal_id}" in comment`，
+            #  複用 id 會讓新單誤認成舊倉位)。
+            ms = int(time.time() * 1000)
+            while f"copy_{ms}" in self.orders or f"copy_{ms}" in self._signal_sources:
+                ms += 1
+            signal_id = f"copy_{ms}"
+
+            order = ManagedOrder(
+                signal_id=signal_id,
+                signal=signal,
+                source_window=source_window,
+                cancel_after_seconds=cancel_after_seconds,
+                cancel_if_price_beyond=cancel_if_price_beyond,
+                remaining_volume=signal.lot_size or self.default_lot_size
+            )
             self.orders[signal_id] = order
 
         # Save source_window mapping immediately (not just after fill)
@@ -547,8 +560,13 @@ class TradeManager:
         # Check if lot size is large enough for partial closes (need at least 0.02 to split)
         can_partial_close = lot_size >= 0.02 and len(tps) > 1
         if can_partial_close:
-            # Multiple TPs + enough volume: set MT5 TP to the LAST level (safety net).
+            # Multiple TPs + enough volume: set MT5 TP to the FARTHEST level (safety net).
             # Intermediate TPs are managed by _check_partial_tp_hits.
+            #
+            # 依賴 RegexSignalParser 的不變量：take_profit 一律「由近到遠」
+            # (buy 升冪 / sell 降冪)，所以 tps[-1] 必定是最遠的目標。
+            # 曾經 parser 無條件升冪，賣單的 tps[-1] 是最近的目標 → 整單在第一個
+            # 目標就被 MT5 全平，分批平倉形同虛設。
             mt5_tp = tps[-1]
             logger.info(f"Multiple TPs with {lot_size} lots — partial close enabled, MT5 TP set to last: {mt5_tp}")
         elif len(tps) >= 1:
@@ -988,7 +1006,9 @@ class TradeManager:
                         continue  # Still waiting
 
                 # --- Phase 1: Check if price hit current TP and send partial close ---
-                # Only process intermediate TPs (last TP is handled by MT5 safety net)
+                # Only process intermediate TPs (last TP is handled by MT5 safety net).
+                # tps 是「由近到遠」排序的 (見 RegexSignalParser.parse)，所以
+                # tps[current_tp_index] 依序就是下一個該被打到的目標。
                 if order.current_tp_index >= len(tps) - 1:
                     continue
 

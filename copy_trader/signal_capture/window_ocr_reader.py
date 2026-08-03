@@ -39,7 +39,7 @@ from typing import Deque, Dict, List, Optional, Set
 from copy_trader.platform import ScreenCapture, WindowInfo
 from copy_trader.signal_parser.regex_parser import ParsedSignal, RegexSignalParser
 
-from .clipboard_reader import ClipboardWindow  # 重用視窗設定型別
+from .clipboard_reader import ClipboardWindow, pick_chat_window  # 重用視窗設定型別 / 挑窗邏輯
 from .line_text_parser import LineMessage
 
 logger = logging.getLogger(__name__)
@@ -206,10 +206,17 @@ class WindowOcrReaderService:
         self._last_ocr_at: Dict[str, float] = {w.name: 0.0 for w in windows}
         # 上次「中下聊天區」縮圖 — 幾乎相同(容忍微動畫/廣告)就跳過 OCR
         self._last_thumb: Dict[str, object] = {w.name: None for w in windows}
+        # 已經為「被去重擋掉」印過 log 的鍵 — 每把鍵只提醒一次，不洗版
+        self._suppress_logged: Dict[str, Set[str]] = {w.name: set() for w in windows}
 
         # 跨重啟去重：把已發布/baseline 的訊號鍵存檔，重啟後載回。
         # 防「重啟後舊訊號(捲回畫面/重新 baseline)被當新單重發 → 會員重複下單」。
-        self._seen_retention_sec = 2 * 24 * 3600  # 保留 2 天
+        #
+        # 保留期 = 「同一組數字在這段時間內重複出現就視為同一單」。設 1 天：提供者
+        # 的區間單常常隔幾天回到同一個價位 (乘的 Buy 4050/4040/4065 就跨了 7/31 和
+        # 8/03)，保留 2 天會把隔日的真新單當成舊單吃掉。
+        # 這個值必須搭配 _expire_seen() 才有意義 — 見該函式的說明。
+        self._seen_retention_sec = 24 * 3600  # 保留 1 天
         self._seen_path: Optional[Path] = None
         try:
             from copy_trader.config import DATA_DIR
@@ -268,8 +275,47 @@ class WindowOcrReaderService:
         if changed or messages:
             self._save_seen()
 
+    def _expire_seen(self, source_name: str) -> int:
+        """把超過保留期的鍵，從「執行期」的去重集合裡淘汰掉。回傳淘汰筆數。
+
+        為什麼需要這個
+        --------------
+        保留期原本只在 _load_seen / _save_seen 套用，執行期的 _seen_set 沒有任何
+        時間淘汰 — mark_seen 只有在 deque 塞滿 SEEN_MAX 筆時才會擠掉最舊的。所以
+        程式只要不重啟，seen_set 就一直長大，幾天前發過的訊號永遠被視為「已讀」。
+
+        2026-08-03 的漏單就是這樣來的：乘在 7/31 17:26 發過
+        `Buy 4050 / 止損 4040 / 止盈 4065`，8/03 17:20 又發了一模一樣的數字，
+        正規化後的鍵一個字元都不差；而服務已經連續跑了 98 小時，那把鍵還在記憶體裡
+        → _capture_one 直接 `continue`，連 confirm 都不累加，完全沒有 log，
+        訊號就這樣無聲消失。存檔裡其實早就沒有那把鍵了（存檔有套保留期）——
+        檔案是乾淨的，髒的是記憶體。
+        """
+        ts_map = self._seen_ts.get(source_name)
+        seen_set = self._seen_set.get(source_name)
+        seen_deque = self._seen_keys.get(source_name)
+        if not ts_map or seen_set is None or seen_deque is None:
+            return 0
+        now = time.time()
+        stale = {k for k, ts in ts_map.items() if now - ts > self._seen_retention_sec}
+        if not stale:
+            return 0
+        for k in stale:
+            ts_map.pop(k, None)
+            seen_set.discard(k)
+            self._suppress_logged.get(source_name, set()).discard(k)
+        # deque 也要清，否則過期的鍵會一直佔著 SEEN_MAX 的名額
+        remaining = [k for k in seen_deque if k not in stale]
+        seen_deque.clear()
+        seen_deque.extend(remaining)
+        logger.info(
+            "去重淘汰 %r: %d 筆超過 %.0f 小時的舊鍵已釋放 (同數值的新單可以重新發布)",
+            source_name, len(stale), self._seen_retention_sec / 3600.0,
+        )
+        return len(stale)
+
     def _load_seen(self) -> None:
-        """重啟時載回近 2 天已發布/baseline 的訊號鍵，避免重複下單。"""
+        """重啟時載回保留期內已發布/baseline 的訊號鍵，避免重複下單。"""
         if not self._seen_path or not self._seen_path.exists():
             return
         try:
@@ -342,9 +388,14 @@ class WindowOcrReaderService:
         if not hits:
             logger.debug("no window matched: %r", w.window_name)
             return None
-        hits.sort(key=lambda h: len(h.title))
-        w.window_id = hits[0].window_id
-        logger.info("resolved OCR window %r → hwnd=%s (%r)", w.label, w.window_id, hits[0].title)
+        best = pick_chat_window(hits)
+        if best is None:
+            return None
+        w.window_id = best.window_id
+        logger.info(
+            "resolved OCR window %r → hwnd=%s (%r, %s)",
+            w.label, w.window_id, best.title, best.owner_name or "?",
+        )
         return w.window_id
 
     def _ensure_tall(self, hwnd: int, w: ClipboardWindow) -> None:
@@ -492,6 +543,8 @@ class WindowOcrReaderService:
                     seen_local.add(cancel_key)
                     current.append(cancel_key)
 
+        # 比對之前先淘汰過期的鍵 — 否則長時間不重啟時保留期形同虛設 (見 _expire_seen)
+        self._expire_seen(w.name)
         seen_set = self._seen_set[w.name]
 
         # 首輪 baseline：目前可見訊號全部視為已讀，不發布
@@ -509,6 +562,16 @@ class WindowOcrReaderService:
         emitted: List[LineMessage] = []
         for key in current:
             if key in seen_set:
+                # 每把鍵只講一次 — 「訊號被去重擋掉」原本完全無聲, 出事時 log 上
+                # 只看得到 Parsed signal 然後什麼都沒有, 極難查 (見 _expire_seen)。
+                logged = self._suppress_logged.setdefault(w.name, set())
+                if key not in logged:
+                    logged.add(key)
+                    age = time.time() - self._seen_ts.get(w.name, {}).get(key, time.time())
+                    logger.info(
+                        "%s: 訊號與 %.1f 小時前已發布的完全相同 → 去重跳過: %s",
+                        w.label, age / 3600.0, key.replace("\n", " ")[:70],
+                    )
                 continue
             c = confirm.get(key, 0) + 1
             new_confirm[key] = c
