@@ -52,6 +52,33 @@ except ImportError:
 class WindowsScreenCapture(ScreenCaptureBase):
     """Windows screen capture using win32gui / PrintWindow / GDI."""
 
+    @staticmethod
+    def _process_name_of(hwnd: int) -> tuple:
+        """(pid, 執行檔名) — 取不到就回 (0, "")。
+
+        用來分辨「同名但不同程式」的視窗：LINE 開圖時 LineMediaPlayer.exe 會
+        生一個標題跟聊天室**一模一樣**的看圖視窗，只靠標題完全分不出來。
+        用 PROCESS_QUERY_LIMITED_INFORMATION，不需要提權。
+        """
+        try:
+            pid = ctypes.c_ulong(0)
+            ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if not pid.value:
+                return 0, ""
+            h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid.value)
+            if not h:
+                return pid.value, ""
+            try:
+                buf = ctypes.create_unicode_buffer(512)
+                size = ctypes.c_ulong(512)
+                if ctypes.windll.kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                    return pid.value, os.path.basename(buf.value)
+            finally:
+                ctypes.windll.kernel32.CloseHandle(h)
+            return pid.value, ""
+        except Exception:
+            return 0, ""
+
     def enumerate_windows(self, title_filter: str = "") -> List[WindowInfo]:
         """List visible windows, optionally filtered by title substring."""
         if not WIN32_AVAILABLE:
@@ -69,13 +96,14 @@ class WindowsScreenCapture(ScreenCaptureBase):
                         bounds = (left, top, right - left, bottom - top)
                     except Exception:
                         bounds = (0, 0, 0, 0)
+                    pid, exe = self._process_name_of(hwnd)
                     results.append(WindowInfo(
                         window_id=hwnd,
                         title=title,
-                        owner_name="",
+                        owner_name=exe,
                         bounds=bounds,
                         is_visible=True,
-                        pid=0,
+                        pid=pid,
                     ))
 
         try:
@@ -979,6 +1007,12 @@ class WindowsClipboardControl(ClipboardControlBase):
             ])
             time.sleep(0.10)
 
+            # 前景在複製途中被搶走 → 按鍵打到別的視窗, 拿回來的文字不屬於這個來源。
+            # 同 copy_chat_all 的守衛, 見 _select_all_and_copy()。
+            if win32gui.GetForegroundWindow() != window_id:
+                logger.warning("複製期間前景視窗跑掉 (hwnd=%s) → 丟棄結果, 避免跨來源污染", window_id)
+                return ""
+
             text = self._read_clipboard_text(timeout=0.8)
         except Exception as e:
             logger.warning(f"copy_chat_tail failed for hwnd={window_id}: {e}")
@@ -1006,6 +1040,53 @@ class WindowsClipboardControl(ClipboardControlBase):
                     pass
 
         return text or ""
+
+    # 全選複製後低於這個字數就視為「沒選到聊天內容」(空輸入框只會給 0~1 個字)。
+    # 真實聊天室隨便都上千字, 訂在 20 不會誤判正常但很短的聊天室。
+    _MIN_CHAT_TEXT_LEN = 20
+
+    def _clipboard_has_leftover(self) -> bool:
+        """剪貼板該是空的卻還有文字 → 代表 _clear_clipboard() 沒成功。
+
+        _clear_clipboard() 在剪貼板被別的程序鎖住時是「靜默失敗」的。若接著
+        Ctrl+C 也沒生效，_read_clipboard_text() 會讀到上一個視窗留下的舊文字，
+        於是 B 視窗的內容被當成 A 來源的訊息 — 跨來源污染。寧可這次不複製。
+        """
+        return bool(self._read_clipboard_text(timeout=0.15).strip())
+
+    def _select_all_and_copy(self, expect_hwnd: int = 0) -> str:
+        """Ctrl+A → Ctrl+C → 讀剪貼板。呼叫端負責搶焦點。
+
+        前後各驗一次前景視窗：複製當下若前景不是目標視窗，按鍵會打到別人身上，
+        拿回來的文字就不屬於這個來源 (實測撞過：焦點利潤那一輪讀到了「鄭」的
+        整份對話)。驗不過一律回空字串，讓上層當成這次沒抓到、下一輪重試。
+        """
+        if expect_hwnd and win32gui.GetForegroundWindow() != expect_hwnd:
+            logger.debug("複製前前景已不是目標視窗 (hwnd=%s) → 放棄本次", expect_hwnd)
+            return ""
+        if self._clipboard_has_leftover():
+            logger.debug("剪貼板沒清乾淨 → 放棄本次複製, 以免讀到上個視窗的殘留")
+            return ""
+
+        self._send_input_keys([
+            (self.VK_CONTROL, False, False),
+            (ord('A'), False, False),
+            (ord('A'), True, False),
+            (self.VK_CONTROL, True, False),
+        ])
+        time.sleep(0.08)
+        self._send_input_keys([
+            (self.VK_CONTROL, False, False),
+            (ord('C'), False, False),
+            (ord('C'), True, False),
+            (self.VK_CONTROL, True, False),
+        ])
+        time.sleep(0.12)
+
+        if expect_hwnd and win32gui.GetForegroundWindow() != expect_hwnd:
+            logger.warning("複製期間前景視窗跑掉 (hwnd=%s) → 丟棄結果, 避免跨來源污染", expect_hwnd)
+            return ""
+        return self._read_clipboard_text(timeout=1.0) or ""
 
     def copy_chat_all(self, window_id: int) -> str:
         """
@@ -1041,21 +1122,21 @@ class WindowsClipboardControl(ClipboardControlBase):
             # 強制捲到最底（滾輪 + Ctrl+End 多輪），確保最新訊息已載入再全選
             self._scroll_to_bottom(window_id)
 
-            self._send_input_keys([
-                (self.VK_CONTROL, False, False),
-                (ord('A'), False, False),
-                (ord('A'), True, False),
-                (self.VK_CONTROL, True, False),
-            ])
-            time.sleep(0.08)
-            self._send_input_keys([
-                (self.VK_CONTROL, False, False),
-                (ord('C'), False, False),
-                (ord('C'), True, False),
-                (self.VK_CONTROL, True, False),
-            ])
-            time.sleep(0.12)
-            text = self._read_clipboard_text(timeout=1.0)
+            text = self._select_all_and_copy(expect_hwnd=window_id)
+
+            # SetForegroundWindow 只給視窗前景, 鍵盤焦點常留在側邊欄/輸入框 —
+            # 那時 Ctrl+A 選到的是空的輸入框, Ctrl+C 只複製到 0~1 個字。
+            # 實測: 三個 LINE 視窗輪流擷取時, 只有最後被點過的那個能複製到內容
+            # (另外兩個一直回 0/1 字, 等於整個來源在空轉)。
+            # 先不點 (焦點多半還在訊息面板, 省下一次點擊的干擾), 拿不到才點一下重試。
+            if len(text.strip()) < self._MIN_CHAT_TEXT_LEN:
+                logger.debug(
+                    "copy_chat_all: 只拿到 %d 字, 疑似焦點在輸入框 → 點一下訊息面板重試 (hwnd=%s)",
+                    len(text.strip()), window_id,
+                )
+                self._clear_clipboard()
+                self._click_chat_area(window_id)
+                text = self._select_all_and_copy(expect_hwnd=window_id)
         except Exception as e:
             logger.warning(f"copy_chat_all failed for hwnd={window_id}: {e}")
         finally:

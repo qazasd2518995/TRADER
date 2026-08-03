@@ -104,7 +104,6 @@ class OneClickLauncher:
                 "host": "0.0.0.0",
                 "port": "8765",
                 "token": secrets.token_urlsafe(24),
-                "copy_mode": "all",
                 "interval": "1.0",
                 "auto_start": False,
             }
@@ -142,7 +141,6 @@ class OneClickLauncher:
                 "host": self.host_var.get().strip() or "0.0.0.0",
                 "port": self.port_var.get().strip() or "8765",
                 "token": self.token_var.get().strip(),
-                "copy_mode": self.copy_mode_var.get().strip() or "all",
                 "interval": self.interval_var.get().strip() or "1.0",
                 "auto_start": bool(self.auto_start_var.get()),
             }
@@ -201,7 +199,6 @@ class OneClickLauncher:
     def _build_central_form(self, form: ttk.LabelFrame) -> None:
         self.host_var = tk.StringVar(value=str(self.settings.get("host", "0.0.0.0")))
         self.port_var = tk.StringVar(value=str(self.settings.get("port", "8765")))
-        self.copy_mode_var = tk.StringVar(value=str(self.settings.get("copy_mode", "all")))
 
         self._row(form, 0, "Hub 監聽 IP", ttk.Entry(form, textvariable=self.host_var))
         self._row(form, 1, "Hub Port", ttk.Entry(form, textvariable=self.port_var))
@@ -209,9 +206,8 @@ class OneClickLauncher:
         ttk.Entry(token_row, textvariable=self.token_var, show="*").pack(side=tk.LEFT, fill=tk.X, expand=True)
         ttk.Button(token_row, text="產生", command=self._generate_token).pack(side=tk.LEFT, padx=(6, 0))
         self._row(form, 2, "Hub 密碼", token_row)
-        self._row(form, 3, "複製模式", ttk.Combobox(form, textvariable=self.copy_mode_var, values=["all", "tail"], state="readonly"))
-        self._row(form, 4, "輪詢秒數", ttk.Entry(form, textvariable=self.interval_var))
-        ttk.Checkbutton(form, text="開啟程式後自動開始", variable=self.auto_start_var).grid(row=5, column=1, sticky=tk.W, pady=(8, 0))
+        self._row(form, 3, "輪詢秒數", ttk.Entry(form, textvariable=self.interval_var))
+        ttk.Checkbutton(form, text="開啟程式後自動開始", variable=self.auto_start_var).grid(row=4, column=1, sticky=tk.W, pady=(8, 0))
 
     def _build_client_form(self, form: ttk.LabelFrame) -> None:
         self.hub_url_var = tk.StringVar(value=str(self.settings.get("hub_url", "http://中央電腦IP:8765")))
@@ -277,7 +273,6 @@ class OneClickLauncher:
             port = int(settings["port"])
             token = settings["token"]
             interval = max(0.2, float(settings["interval"]))
-            copy_mode = settings["copy_mode"]
             store = DATA_DIR / "central_hub_signals.jsonl"
 
             self.httpd = HubHTTPServer((host, port), HubRequestHandler, SignalStore(store), token)
@@ -293,7 +288,6 @@ class OneClickLauncher:
             collector = CentralSignalCollector(
                 load_config(),
                 HubPublisher(local_url, token),
-                copy_mode=copy_mode,
             )
             self.root.after(0, lambda: self.status_var.set("運行中"))
 

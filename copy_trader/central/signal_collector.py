@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 from copy_trader.config import Config, load_config
-from copy_trader.signal_capture.clipboard_reader import ClipboardReaderService, ClipboardWindow
+from copy_trader.signal_capture.clipboard_reader import ClipboardWindow
 from copy_trader.signal_capture.line_text_parser import LineMessage
 from copy_trader.signal_capture.window_ocr_reader import _CANCEL_KWS
 from copy_trader.signal_parser.keyword_filter import is_potential_signal
@@ -30,18 +30,24 @@ logger = logging.getLogger(__name__)
 _CANCEL_EXCLUDE = ("嗎", "?", "？", "有沒有", "會不會", "是不是", "設定", "後來", "怎麼", "為何", "被", "如果", "要不要")
 
 
-def _cancel_direction_from_message(body: str, sender: str = "") -> Optional[str]:
+def _cancel_direction_from_message(
+    body: str,
+    sender: str = "",
+    sender_verified: bool = False,
+) -> Optional[str]:
     """訊息本身若是「取消/撤」撤單指令 → 回傳方向 (''=不分/'buy'/'sell')，否則 None。
 
     嚴格條件 (避免把討論/問句誤判成撤單 → 誤撤真單)：
-      1. 只認「訊號提供者(乘)」發的 — 其他人閒聊/討論撤單一律不算。
+      1. 只認訊號提供者發的 — 其他人閒聊/討論撤單一律不算。
+         sender_verified=True 代表該來源已設發送者白名單、上游擷取層過濾過了；
+         否則沿用舊的預設 (只認「乘」) 給沒設白名單的來源。
       2. 短訊息 (≤20字)、含撤單關鍵字、非訊號、不含問句/描述詞。
     """
     b = (body or "").strip()
     if not b or len(b) > 20:
         return None
-    # 只認提供者(乘)發的撤單, 擋掉「你有設定撤單嗎」「後來取消」這類他人討論
-    if "乘" not in (sender or ""):
+    # 只認提供者發的撤單, 擋掉「你有設定撤單嗎」「後來取消」這類他人討論
+    if not sender_verified and "乘" not in (sender or ""):
         return None
     if "止損" in b or "止盈" in b or "xauusd" in b.lower():
         return None  # 這是訊號不是撤單
@@ -156,18 +162,20 @@ class CentralSignalCollector:
         self,
         config: Config,
         publisher: HubPublisher,
-        copy_mode: str = "all",
         stale_seconds: Optional[float] = None,
     ):
         self.config = config
         self.publisher = publisher
         self.parser = RegexSignalParser()
-        self.copy_mode = copy_mode
         self._pending: Dict[str, Dict] = {}
         self._processed: Dict[Tuple, float] = {}
         self._processed_ttl = max(60, int(config.signal_dedup_minutes or 10) * 60)
         # 訊號時效鎖: 訊息時間超過這麼久就不發布 (擋歷史洪水/延遲/過期)。0=不限。
         self.max_signal_age_sec = max(0, int(getattr(config, "signal_max_age_minutes", 10) or 0) * 60)
+        # 是否跟群組的「取消/撤」訊息。預設關 — 撤單統一交給會員端的逾時刪單。
+        self.follow_group_cancel = bool(getattr(config, "follow_group_cancel", False))
+        if not self.follow_group_cancel:
+            logger.info("訊息撤單已停用 (follow_group_cancel=False) — 掛單改由逾時自動刪單處理")
 
         windows = [
             ClipboardWindow(
@@ -175,34 +183,49 @@ class CentralSignalCollector:
                 window_name=w.window_name,
                 display_name=_window_label(w),
                 window_id=getattr(w, "window_id", None),
-                screens=int(getattr(config, "clipboard_screens", 2) or 2),
-                copy_mode=copy_mode,
+                allowed_senders=list(getattr(w, "allowed_senders", []) or []),
+                required_patterns=list(getattr(w, "required_patterns", []) or []),
             )
             for w in (config.capture_windows or [])
         ]
         if not windows:
             raise RuntimeError("no capture_windows configured")
 
-        # 採集管道：
-        #   "window_ocr" = PrintWindow 背景截圖 + OCR (LINE 擋掉合成鍵鼠後的主管道)
-        #   其它 (clipboard) = 舊的剪貼板全選複製 (LINE 更新後已失效, 保留為備援)
-        signal_source = str(getattr(config, "signal_source", "clipboard") or "clipboard").strip().lower()
-        if signal_source == "window_ocr":
-            from copy_trader.signal_capture.window_ocr_reader import WindowOcrReaderService
-            self.clipboard = WindowOcrReaderService(
-                windows,
-                confirm_count=int(getattr(config, "ocr_confirm_count", 2) or 2),
+        # 有設發送者白名單或模板指紋的來源 → 擷取層已確認過是誰報的單,
+        # 撤單偵測不必再套「只認乘」的預設。
+        self._sender_filtered = {
+            w.name for w in windows if w.allowed_senders or w.required_patterns
+        }
+        for w in windows:
+            if w.allowed_senders:
+                logger.info("來源 %r 只跟這些發送者: %s", w.label, w.allowed_senders)
+            if w.required_patterns:
+                logger.info("來源 %r 只跟符合模板指紋的訊息: %s", w.label, w.required_patterns)
+
+        # 採集管道只剩一條：PrintWindow 背景截圖 + OCR。
+        #
+        # 舊的「搶焦點 → 點聊天區 → Ctrl+A → Ctrl+C」剪貼板管道已經整條移除。
+        # 2026-07-30 在 LINE 26.3.0.3916 上實測：合成按鍵進得去 (Ctrl+F 叫得出搜尋列)、
+        # 焦點也搶得到，但 Ctrl+A 只會選到空的訊息輸入框，聊天內容完全沒反白 —
+        # 掃過 18 個不同的種子點擊位置全部複製到 0 字。而且那個種子點擊還會誤點到
+        # 群裡的圖片，開出一個標題跟聊天室一模一樣的 LineMediaPlayer 看圖視窗，
+        # 讓下一輪認錯視窗。留著只會讓人以為還有備援可切。
+        _src = str(getattr(config, "signal_source", "window_ocr") or "window_ocr").strip().lower()
+        if _src not in ("", "window_ocr"):
+            logger.warning(
+                "config.signal_source=%r 已不支援 (剪貼板管道在新版 LINE 上永遠拿到空字串) → 一律使用 window_ocr",
+                _src,
             )
-            logger.info(
-                "collector initialized (WINDOW_OCR): windows=%s confirm=%s",
-                len(windows), getattr(config, "ocr_confirm_count", 2),
-            )
-        else:
-            self.clipboard = ClipboardReaderService(
-                windows,
-                stale_seconds=float(stale_seconds if stale_seconds is not None else getattr(config, "clipboard_stale_seconds", 10.0) or 10.0),
-            )
-            logger.info("collector initialized (CLIPBOARD): windows=%s copy_mode=%s", len(windows), copy_mode)
+
+        from copy_trader.signal_capture.window_ocr_reader import WindowOcrReaderService
+        self.clipboard = WindowOcrReaderService(
+            windows,
+            confirm_count=int(getattr(config, "ocr_confirm_count", 2) or 2),
+        )
+        logger.info(
+            "collector initialized (WINDOW_OCR): windows=%s confirm=%s",
+            len(windows), getattr(config, "ocr_confirm_count", 2),
+        )
 
     def _cleanup(self) -> None:
         now = time.time()
@@ -232,9 +255,9 @@ class CentralSignalCollector:
                 except (urllib.error.URLError, TimeoutError, RuntimeError) as e:
                     logger.warning("message publish failed, will retry source=%s: %s", cap.display_name, e)
                     self.clipboard.force_retry(cap.source_name)
-                    # 全選複製模式的新訊息切點是「最後一則已 mark_seen 的訊息」；
-                    # 若這裡 continue 讓後面的訊息先被標記，這則失敗的訊號
-                    # 下一輪會被切點跳過而永久遺失。中斷本批，下一輪整批重試。
+                    # 採集層是靠「已 mark_seen 的訊息」判斷什麼算新的；若這裡 continue
+                    # 讓後面的訊息先被標記，這則失敗的訊號下一輪會被當成舊的跳過而永久
+                    # 遺失。中斷本批，下一輪整批重試。
                     abort_source = True
                 except Exception as e:
                     logger.exception("message processing failed: %s", e)
@@ -259,13 +282,21 @@ class CentralSignalCollector:
         # 撤單指令 (在長度過濾之前, 因「取消」等只有2字)：
         #   OCR 路徑 → body 帶 __CANCEL__:<dir>:<訊號> 標記
         #   剪貼簿路徑 → 訊息本身就是「取消 / 撤掉 / 空單先撤掉」等
+        # 預設 follow_group_cancel=False → 完全不理訊息撤單, 改由會員端「掛單逾時
+        # 未成交自動刪單」統一處理 (跟多個來源時, 訊息撤單會撤到別群的掛單)。
         cancel_direction = None
-        if body.startswith("__CANCEL__"):
+        if not self.follow_group_cancel:
+            if body.startswith("__CANCEL__"):
+                logger.debug("已停用訊息撤單, 忽略 OCR 撤單標記: %r", body[:40])
+                return 0
+        elif body.startswith("__CANCEL__"):
             parts = body.split(":", 2)
             d = parts[1] if len(parts) > 1 else ""
             cancel_direction = d if d in ("buy", "sell") else ""
         else:
-            cancel_direction = _cancel_direction_from_message(body, msg.sender)
+            cancel_direction = _cancel_direction_from_message(
+                body, msg.sender, sender_verified=source_name in self._sender_filtered,
+            )
         if cancel_direction is not None:
             # follow_group_cancel=False：撤單統一交給會員端的「逾時未進場自動刪單」，
             # 這裡只把撤單訊息丟掉。務必 return，否則 __CANCEL__ 標記的 body
@@ -379,10 +410,9 @@ class CentralSignalCollector:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run central LINE clipboard signal collector.")
+    parser = argparse.ArgumentParser(description="Run central LINE window-OCR signal collector.")
     parser.add_argument("--hub-url", default=os.environ.get("COPY_TRADER_HUB_URL", "http://127.0.0.1:8765"))
     parser.add_argument("--token", default=os.environ.get("COPY_TRADER_HUB_TOKEN", ""))
-    parser.add_argument("--copy-mode", choices=["all", "tail"], default=os.environ.get("COPY_TRADER_COPY_MODE", "all"))
     parser.add_argument("--interval", type=float, default=float(os.environ.get("COPY_TRADER_COLLECTOR_INTERVAL", "1.0")))
     parser.add_argument("--stale-seconds", type=float, default=None)
     parser.add_argument("--once", action="store_true")
@@ -392,7 +422,7 @@ def main() -> None:
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     config = load_config()
     publisher = HubPublisher(args.hub_url, args.token)
-    collector = CentralSignalCollector(config, publisher, copy_mode=args.copy_mode, stale_seconds=args.stale_seconds)
+    collector = CentralSignalCollector(config, publisher, stale_seconds=args.stale_seconds)
     if args.once:
         collector.run_cycle()
     else:

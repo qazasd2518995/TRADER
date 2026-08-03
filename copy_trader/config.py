@@ -104,6 +104,17 @@ class CaptureWindow:
     name: str = "default"           # Identifier for this capture source
     window_id: Optional[int] = None # Stable while the source app window stays alive
     display_name: str = ""          # UI label shown to users
+    # 只跟這些人的單 (LINE 暱稱「子字串」比對, 不分大小寫)。空 = 不過濾, 全群都跟。
+    # 只有剪貼簿管道支援 (window_ocr 讀不出發送者 → 該視窗會被整個跳過)。
+    # 缺點：對方改暱稱就整組靜悄悄失效 —— 多人報單群優先用下面的 required_patterns。
+    allowed_senders: List[str] = field(default_factory=list)
+    # 模板指紋：訊息必須含「全部」這些片段才當訊號 (忽略空白/不分大小寫)。空 = 不比對。
+    # 認的是提供者的固定簽名檔 (例「個人建議不構成投資計畫」), 比暱稱穩:
+    #   1. 對方改暱稱不會失效
+    #   2. 內容型過濾 → OCR 管道也適用 (OCR 讀不出發送者, 但讀得到內容)
+    #   3. 擋得掉群友「轉貼別人的單」「自己報單」—— 那些沒有簽名檔
+    # 代價：提供者哪天忘了附簽名檔, 那一單會漏掉 (寧可漏, 不可跟錯人)。
+    required_patterns: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -143,18 +154,14 @@ class Config:
     symbol_name: str = DEFAULT_SYMBOL
     max_open_positions: int = 10
 
-    # Cancellation Rules
-    # 撤單策略統一成一條：掛單逾時未進場就自動刪。
-    # 掛單超過這個秒數還沒進場就自動刪單。會員端可在控制台改，0 = 不因逾時刪單。
-    cancel_pending_after_seconds: int = 10800  # 3 小時
-    # 價格偏離刪單已停用，統一只用上面的逾時規則。填 >0 可重新啟用（單位：%）。
-    cancel_if_price_beyond_percent: float = 0.0
-    # 跟隨群組的「取消/撤」訊息撤單。已停用：改用上面的逾時規則統一處理，
-    # 避免 OCR 誤讀或群內討論被當成撤單指令而誤撤真單。True 可重新啟用。
-    follow_group_cancel: bool = False
-    # 同方向短時間改單防呆：新訊號下單前，撤掉這麼多分鐘內「同品種同方向」的
-    # 未成交舊掛單、只留最新一張 (擋乘改單/OCR怪異造成同方向多下一張)。0=關閉。
-    supersede_same_direction_minutes: int = 5
+    # 撤單策略統一成一條：只留「掛單逾時未成交就自動刪單」，其餘全部關閉。
+    # 訊息撤單與同方向改單防呆都「不分來源」—— 同時跟兩個以上報單群時，
+    # A 群的訊息會撤掉 B 群的掛單（見 cancel_latest_pending /
+    # cancel_pending_same_direction），所以兩個都關掉。
+    cancel_pending_after_seconds: int = 10800    # 3 小時未成交 → 自動刪單；0=不因逾時刪
+    cancel_if_price_beyond_percent: float = 0.0  # 0=關閉價格偏離自動撤單
+    supersede_same_direction_minutes: int = 0    # 0=關閉同方向改單防呆
+    follow_group_cancel: bool = False            # False=不跟群組的「取消/撤」訊息
 
     # Multiple TP Settings
     partial_close_ratios: List[float] = field(default_factory=lambda: [0.5, 0.3, 0.2])
@@ -275,6 +282,8 @@ def save_config(config: Config, path: Path = CONFIG_FILE):
                 "name": w.name,
                 "window_id": w.window_id,
                 "display_name": w.display_name,
+                "allowed_senders": list(w.allowed_senders or []),
+                "required_patterns": list(w.required_patterns or []),
             }
             for w in config.capture_windows
         ],
@@ -293,8 +302,9 @@ def save_config(config: Config, path: Path = CONFIG_FILE):
         "max_open_positions": config.max_open_positions,
         "cancel_pending_after_seconds": config.cancel_pending_after_seconds,
         "cancel_if_price_beyond_percent": config.cancel_if_price_beyond_percent,
-        "follow_group_cancel": config.follow_group_cancel,
         "supersede_same_direction_minutes": config.supersede_same_direction_minutes,
+        "follow_group_cancel": config.follow_group_cancel,
+        "signal_max_age_minutes": config.signal_max_age_minutes,
         "partial_close_ratios": config.partial_close_ratios,
         "use_martingale": config.use_martingale,
         "martingale_multiplier": config.martingale_multiplier,
@@ -342,6 +352,16 @@ def load_config(path: Path = CONFIG_FILE) -> Config:
                         name=w.get("name", "default"),
                         window_id=w.get("window_id"),
                         display_name=w.get("display_name", w.get("window_name", "")),
+                        allowed_senders=[
+                            str(s).strip()
+                            for s in (w.get("allowed_senders") or [])
+                            if str(s).strip()
+                        ],
+                        required_patterns=[
+                            str(p).strip()
+                            for p in (w.get("required_patterns") or [])
+                            if str(p).strip()
+                        ],
                     )
                     for w in windows_data
                 ]

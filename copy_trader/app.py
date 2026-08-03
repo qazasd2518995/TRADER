@@ -105,6 +105,8 @@ class CopyTrader:
                     window_id=getattr(w, "window_id", None),
                     screens=int(getattr(config, "clipboard_screens", 2) or 2),
                     copy_mode=str(getattr(config, "clipboard_copy_mode", "tail") or "tail"),
+                    allowed_senders=list(getattr(w, "allowed_senders", []) or []),
+                    required_patterns=list(getattr(w, "required_patterns", []) or []),
                 )
                 for w in (config.capture_windows or [])
             ]
@@ -161,6 +163,8 @@ class CopyTrader:
             mt5_files_dir=config.mt5_files_dir
         )
         self.trade_manager.default_lot_size = config.default_lot_size
+        # 重開後的孤兒掛單也要照同一個逾時刪掉 (見 _sweep_orphan_pending_orders)
+        self.trade_manager.pending_cancel_after_seconds = int(config.cancel_pending_after_seconds or 0)
         self.trade_manager.set_symbol_name(getattr(config, "symbol_name", DEFAULT_SYMBOL))
         self.trade_manager.partial_close_ratios = config.partial_close_ratios
 

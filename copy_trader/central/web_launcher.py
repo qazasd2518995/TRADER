@@ -109,7 +109,6 @@ class LauncherState:
                 "host": "0.0.0.0",
                 "port": "8765",
                 "token": secrets.token_urlsafe(24),
-                "copy_mode": "all",
                 "interval": "1.0",
                 "cloudflare_tunnel": "true",
                 "cloudflared_path": "",
@@ -282,7 +281,6 @@ class LauncherState:
 
             token = str(self.settings.get("token") or "")
             interval = max(0.2, float(self.settings.get("interval") or 1.0))
-            copy_mode = str(self.settings.get("copy_mode") or "all")
             remote_hub = str(self.settings.get("hub_url") or "").strip().rstrip("/")
 
             if remote_hub:
@@ -323,7 +321,7 @@ class LauncherState:
                 logger.info("Hub 管理頁面：%s/?token=%s", local_url, token)
                 self._start_cloudflare_tunnel(port)
 
-            collector = CentralSignalCollector(load_config(), HubPublisher(publish_url, token), copy_mode=copy_mode)
+            collector = CentralSignalCollector(load_config(), HubPublisher(publish_url, token))
             self.status = "運行中"
             self.service_started_at = time.time()
 
@@ -424,10 +422,13 @@ class LauncherState:
         )
         logger.info("刪單規則：逾時未進場 %s｜價格偏離 %s", timeout_text, beyond_text)
 
+        # martingale_per_source 只從 config.json 或每群設定推導，面板沒有這個欄位；
+        # 跟多個報單群時這個值決定虧損會不會互相放大手數，所以印出來。
         logger.info(
-            "套用會員設定：基礎手數=%s 馬丁=%s 倍數=%s 最大層數=%s 每層手數=%s 分批=%s",
+            "套用會員設定：基礎手數=%s 馬丁=%s 倍數=%s 最大層數=%s 每層手數=%s 分批=%s 馬丁計算=%s",
             tm.default_lot_size, tm.use_martingale, tm.martingale_multiplier,
             tm.martingale_max_level, tm.martingale_lots, tm.partial_close_ratios,
+            "各群獨立" if tm.martingale_per_source else "全域共用",
         )
 
     def _run_client(self) -> None:

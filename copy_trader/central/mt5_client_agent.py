@@ -144,10 +144,21 @@ class MT5ClientAgent:
             self.config.mt5_files_dir = mt5_files_dir
         # 訊號時效鎖: hub 訊號擷取時間超過這麼久就不下單 (防會員端恢復後補到舊單)。0=不限。
         self.max_signal_age_sec = max(0, int(getattr(self.config, "signal_max_age_minutes", 10) or 0) * 60)
-        # 同方向短時間改單防呆: 下單前撤掉這麼久內同方向的舊掛單。0=關閉。
-        self.supersede_window_sec = max(0, int(getattr(self.config, "supersede_same_direction_minutes", 5) or 0) * 60)
+        # 同方向短時間改單防呆: 下單前撤掉這麼久內同方向的舊掛單。0=關閉 (預設)。
+        # 不分來源, 開著會讓 B 群的新單撤掉 A 群同方向的舊掛單 — 跟多群時務必留 0。
+        self.supersede_window_sec = max(0, int(getattr(self.config, "supersede_same_direction_minutes", 0) or 0) * 60)
+        # 是否理會群組撤單訊息。預設關 — 只靠掛單逾時未成交自動刪單。
+        self.follow_group_cancel = bool(getattr(self.config, "follow_group_cancel", False))
+        logger.info(
+            "撤單策略: 逾時刪單 %.1f 小時 / 訊息撤單=%s / 同方向改單防呆=%s",
+            (self.config.cancel_pending_after_seconds or 0) / 3600.0,
+            "開" if self.follow_group_cancel else "關",
+            f"{self.supersede_window_sec // 60}分" if self.supersede_window_sec else "關",
+        )
 
         self.trade_manager = TradeManager(self.config.mt5_files_dir)
+        # 重開後的孤兒掛單也要照同一個逾時刪掉 (見 _sweep_orphan_pending_orders)
+        self.trade_manager.pending_cancel_after_seconds = int(self.config.cancel_pending_after_seconds or 0)
         self.trade_manager.default_lot_size = self.config.default_lot_size
         self.trade_manager.set_symbol_name(getattr(self.config, "symbol_name", DEFAULT_SYMBOL))
         self.trade_manager.partial_close_ratios = self.config.partial_close_ratios
@@ -192,11 +203,13 @@ class MT5ClientAgent:
             seq = int(item.get("seq") or 0)
 
             # 群組撤單指令：撤掉最近一筆未成交掛單 (只動掛單, 不平已成交部位)
-            # follow_group_cancel=False 時整段跳過——撤單統一由「逾時未進場自動刪單」負責。
+            # 預設 follow_group_cancel=False → 一律忽略。撤單統一只靠「掛單逾時未成交
+            # 自動刪單」(cancel_pending_after_seconds)，因為訊息撤單不分來源，
+            # 跟兩個以上報單群時會撤到別群的掛單。
             # 舊版訊號中心可能還在發 cancel_signal，所以會員端這邊也要各自把關。
             if item.get("type") == "cancel_signal":
-                if not getattr(self.config, "follow_group_cancel", False):
-                    logger.info("群組撤單已停用，略過 seq=%s（改由逾時未進場自動刪單處理）", seq)
+                if not self.follow_group_cancel:
+                    logger.info("忽略群組撤單 seq=%s (訊息撤單已停用, 改用逾時刪單)", seq)
                     self._mark_seq(seq)
                     continue
                 direction = str(item.get("direction") or "").strip().lower()

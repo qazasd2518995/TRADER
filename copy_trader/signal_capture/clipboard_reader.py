@@ -88,6 +88,43 @@ def _md5(s: str) -> str:
     return hashlib.md5(s.encode("utf-8", errors="ignore")).hexdigest()
 
 
+# LINE 的附屬視窗程式。開圖 / 通話時它們會生出「標題跟聊天室一模一樣」的視窗，
+# 光看標題完全分不出來。實測過：群裡有人貼圖被點開後，
+#   hwnd=83821808 pid=LineMediaPlayer  title='（乘）黃金報單🈲言群'
+#   hwnd=132680   pid=LINE             title='（乘）黃金報單🈲言群'
+# 兩個標題長度相同，原本「標題最短」的排序等於隨機挑，挑到看圖視窗就永遠
+# 複製不到東西 (empty_clipboard) 或 OCR 到一張圖。
+_NON_CHAT_EXES = {"linemediaplayer.exe", "linecall.exe"}
+
+
+def pick_chat_window(hits: List[WindowInfo]) -> Optional[WindowInfo]:
+    """從同名視窗裡挑出真正的聊天視窗；只剩附屬視窗時回 None (寧可這輪不抓)。"""
+    if not hits:
+        return None
+    chat = [h for h in hits if (h.owner_name or "").lower() not in _NON_CHAT_EXES]
+    if not chat:
+        logger.debug(
+            "只剩 LINE 附屬視窗符合 (%s) → 本輪跳過, 等聊天視窗回來",
+            [h.owner_name for h in hits],
+        )
+        return None
+    # 標題最短 = 最貼近精確匹配；長度相同時取面積最大的 (聊天視窗比彈窗大)
+    chat.sort(key=lambda h: (len(h.title), -(h.bounds[2] * h.bounds[3])))
+    return chat[0]
+
+
+def normalize_for_match(text: str) -> str:
+    """比對用正規化：去掉所有空白 + 轉小寫。
+
+    用在兩個地方：
+      * 發送者 — LINE 暱稱常帶全形括號/表情/尾巴 (例 'yuyu（yu__o822')，複製出來
+        也可能被截斷，所以一律「子字串」比對，白名單填最穩定的那段即可。
+      * 模板指紋 — 簽名檔在 OCR 或不同版面下常被插入空白 (「個人 建議 不構成…」)，
+        去空白後才比得到。
+    """
+    return re.sub(r"\s+", "", (text or "")).lower()
+
+
 # -------------------- 設定與來源 --------------------
 
 @dataclass
@@ -99,10 +136,36 @@ class ClipboardWindow:
     window_id: Optional[int] = None  # 已經找到的 hwnd，下次復用；找不到時重新搜
     screens: int = 2             # Shift+PgUp 次數
     copy_mode: str = "tail"      # "tail" = 底部 N 屏, "all" = Ctrl+A 全選複製
+    # 只跟這些發送者的訊息 (LINE 暱稱子字串比對)；空 = 全群都收。
+    allowed_senders: List[str] = field(default_factory=list)
+    # 模板指紋：訊息要含「全部」這些片段才算訊號 (提供者的固定簽名檔)；空 = 不比對。
+    required_patterns: List[str] = field(default_factory=list)
 
     @property
     def label(self) -> str:
         return self.display_name or self.window_name or self.name
+
+    def accepts_sender(self, sender: str) -> bool:
+        """沒設白名單 → 全收；有設 → 暱稱必須含其中一個關鍵字 (寧可漏, 不可錯跟)。"""
+        if not self.allowed_senders:
+            return True
+        s = normalize_for_match(sender)
+        if not s:
+            return False
+        return any(normalize_for_match(a) in s for a in self.allowed_senders if str(a).strip())
+
+    def matches_template(self, body: str) -> bool:
+        """沒設模板 → 全收；有設 → 內文必須含「全部」指紋片段。
+
+        用 all() 而非 any()：多個片段是「這則訊息同時要具備的特徵」，
+        任一片段沒出現就代表不是這個提供者的固定模板。
+        """
+        if not self.required_patterns:
+            return True
+        b = normalize_for_match(body)
+        if not b:
+            return False
+        return all(normalize_for_match(p) in b for p in self.required_patterns if str(p).strip())
 
 
 # -------------------- 結果 --------------------
@@ -261,10 +324,14 @@ class ClipboardReaderService:
             logger.debug(f"no window matched: {w.window_name!r}")
             return None
 
-        # 與 screen_capture 一致：偏好標題最短（最貼近精確匹配）的那個
-        hits.sort(key=lambda h: len(h.title))
-        w.window_id = hits[0].window_id
-        logger.info(f"resolved clipboard window {w.label!r} → hwnd={w.window_id} ({hits[0].title!r})")
+        best = pick_chat_window(hits)
+        if best is None:
+            return None
+        w.window_id = best.window_id
+        logger.info(
+            f"resolved clipboard window {w.label!r} → hwnd={w.window_id} "
+            f"({best.title!r}, {best.owner_name or '?'})"
+        )
         return w.window_id
 
     # -------- title-only probe (cheap, no focus steal) --------
@@ -319,6 +386,38 @@ class ClipboardReaderService:
 
         # 4. 其他 — 跳過
         return False, "no_change", title, unread
+
+    # -------- sender allowlist / template fingerprint --------
+
+    def _message_allowed(self, w: ClipboardWindow, msg: LineMessage) -> bool:
+        """來源過濾：發送者白名單 + 模板指紋，兩關都要過。
+
+        擋掉時若「看起來像報單」就用 WARNING 提醒 — 提供者改暱稱、或改了簽名檔，
+        都會讓過濾條件靜悄悄地把訊號全丟掉；這行 log 就是要讓那件事被看見。
+        看到它就去更新對應視窗的 allowed_senders / required_patterns。
+        """
+        body = (msg.body or "").strip()
+        if w.accepts_sender(msg.sender) and w.matches_template(body):
+            return True
+
+        if not w.accepts_sender(msg.sender):
+            reason, expected = "非白名單發送者", w.allowed_senders
+        else:
+            reason, expected = "不符模板指紋", w.required_patterns
+
+        try:
+            from copy_trader.signal_parser.keyword_filter import is_potential_signal
+            looks_like_signal = is_potential_signal(body)[0]
+        except Exception:
+            looks_like_signal = False
+        if looks_like_signal:
+            logger.warning(
+                "%s: 擋下疑似報單 (%s) sender=%r 條件=%s: %s",
+                w.label, reason, msg.sender, expected, body.replace("\n", " | ")[:60],
+            )
+        else:
+            logger.debug("%s: 略過訊息 (%s) sender=%r", w.label, reason, msg.sender)
+        return False
 
     # -------- core capture --------
 
@@ -427,7 +526,11 @@ class ClipboardReaderService:
             seen = self._seen_set[w.name]
             new_msgs = diff_new_messages(parsed.messages, seen)
         # 過濾掉系統訊息（加入聊天 / Auto-reply），這些不會是交易信號
-        cap.new_messages = [m for m in new_msgs if not m.is_system]
+        # 再依發送者白名單 / 模板指紋過濾（多人報單群只跟指定的提供者）
+        cap.new_messages = [
+            m for m in new_msgs
+            if not m.is_system and self._message_allowed(w, m)
+        ]
         cap.ok = True
 
         if cap.new_messages:
@@ -454,5 +557,7 @@ def make_windows_from_config(config_windows) -> List[ClipboardWindow]:
             window_id=getattr(w, "window_id", None),
             screens=2,
             copy_mode=getattr(w, "copy_mode", "tail"),
+            allowed_senders=list(getattr(w, "allowed_senders", []) or []),
+            required_patterns=list(getattr(w, "required_patterns", []) or []),
         ))
     return out
