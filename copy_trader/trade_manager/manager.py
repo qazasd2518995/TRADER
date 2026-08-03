@@ -9,7 +9,7 @@ import threading
 import logging
 from datetime import datetime
 from dataclasses import dataclass, field
-from typing import Any, Optional, List, Dict
+from typing import Any, Optional, List, Dict, Tuple
 from pathlib import Path
 from enum import Enum
 from pathlib import Path
@@ -954,6 +954,7 @@ class TradeManager:
         last_cleanup = time.time()
         while self._running:
             try:
+                self._check_trade_results()
                 self._check_order_fills()
                 self._check_closed_positions()  # Check for wins/losses
                 self._check_partial_tp_hits()
@@ -1237,6 +1238,60 @@ class TradeManager:
             self._write_journal(
                 "ORDER_REMOVED_IN_MT5",
                 f"signal_id={signal_id} | ticket={order.ticket} | 原因=在 MT5 端被刪除或撤銷 "
+                f"| 信號={order.signal} | 來源={order.source_window}"
+            )
+
+    # EA 每執行一筆指令就往 trade_results.txt 追加一行：
+    #   2026.08.03 14:57 | sell | FAIL | 1.00 | XAUUSD | copy_1785758261661 | retcode:10016 | Invalid stops
+    # 只讀尾端這麼多行就夠——被標成 FAILED 的單不會再被比對到，重複讀不會有副作用。
+    TRADE_RESULTS_TAIL_LINES = 200
+
+    def _check_trade_results(self):
+        """讀 EA 的執行回報，把被券商拒絕的單標成失敗。
+
+        沒有這一步的話，拒單會變成幽靈：commands.json 被 EA 消化掉了，但 MT5 上
+        不會有任何訂單，會員端卻一直把它當成「等待成交」，直到三小時逾時才清掉。
+
+        實例 (2026-08-03)：市價賣單的停利 4035 落在市價 4030 之上（賣單的停利
+        必須低於進場價），MT5 回 retcode 10016 Invalid stops 直接拒單。
+        """
+        path = self.mt5_files_dir / "trade_results.txt"
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()[-self.TRADE_RESULTS_TAIL_LINES:]
+        except OSError:
+            return
+
+        failures: Dict[str, Tuple[str, str]] = {}
+        for line in lines:
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) < 6 or parts[2].upper() != "FAIL":
+                continue
+            signal_id = parts[5]
+            retcode = parts[6] if len(parts) > 6 else ""
+            message = parts[7] if len(parts) > 7 else ""
+            if signal_id:
+                failures[signal_id] = (retcode, message)
+        if not failures:
+            return
+
+        rejected = []
+        with self._lock:
+            for signal_id, (retcode, message) in failures.items():
+                order = self.orders.get(signal_id)
+                if order is None or order.status not in (OrderStatus.PENDING, OrderStatus.SENT):
+                    continue
+                order.status = OrderStatus.FAILED
+                rejected.append((signal_id, order, retcode, message))
+
+        for signal_id, order, retcode, message in rejected:
+            logger.error(
+                "MT5 拒單：%s（%s %s）— %s",
+                signal_id, retcode, message, order.signal,
+            )
+            self._write_journal(
+                "ORDER_REJECTED_BY_MT5",
+                f"signal_id={signal_id} | {retcode} | 原因={message} "
                 f"| 信號={order.signal} | 來源={order.source_window}"
             )
 
