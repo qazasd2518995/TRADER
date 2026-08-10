@@ -1052,8 +1052,18 @@ class TradeManager:
             if to_remove:
                 logger.info(f"Cleaned up {len(to_remove)} finished orders")
 
-    # Grace period (seconds) to wait for closed_trades.json after position disappears
-    CLOSE_CONFIRM_TIMEOUT = 5
+    # 部位從 positions.json 消失後，等 closed_trades.json 出現該筆成交的寬限秒數。
+    #
+    # 必須大於 EA 寫 closed_trades.json 的週期，否則「每一筆」都會等不到而退回
+    # last_known_profit（最後看到的浮動損益），拿到的是接近平倉但不等於平倉的數字。
+    # EA 是每 10 秒寫一次（MT5_File_Bridge_Enhanced.mq5:117 last_trades_write >= 10），
+    # 而 positions.json 每 2 秒寫一次 —— 部位消失最快 2 秒就被我們看到，最糟情況要
+    # 再等將近一整個 10 秒週期，所以留兩倍餘裕。
+    #
+    # 實例 (2026-08-10)：三筆全部走 fallback，帳上 +1500/-600/0 被記成
+    # +1494/-500/+16。均注來源只是紀錄失真，但馬丁來源會據此判 WIN/LOSS，
+    # 浮動損益剛好跨過零點就會把該進關的虧損誤判成獲利。
+    CLOSE_CONFIRM_TIMEOUT = 25
 
     def _check_closed_positions(self):
         """
