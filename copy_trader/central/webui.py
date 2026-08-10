@@ -468,6 +468,8 @@ tbody tr:hover { background: var(--sunk); }
 /* 倒數用金色而非紅綠——紅綠在這頁專門表示賺賠，不能拿去講「快到期」 */
 .countdown { font-variant-numeric: tabular-nums; color: var(--ink-2); }
 .countdown.urgent { color: var(--gold); font-weight: 700; }
+/* 掛單期間最接近過的差距，比目前更近時附註 */
+.near { color: var(--muted); font-size: 11px; }
 
 .empty {
   padding: 34px 20px; text-align: center; color: var(--muted); font-size: 13px;
@@ -1241,6 +1243,9 @@ function renderPending(pending, running) {
       '<td class="num mono">' + (p.entry_price ? n2.format(p.entry_price) : "—") + "</td>" +
       '<td class="num mono">' + (p.sl ? n2.format(p.sl) : "—") + "</td>" +
       '<td class="num mono">' + (p.tp ? n2.format(p.tp) : "—") + "</td>" +
+      '<td class="num mono">' + (p.distance == null ? "—" :
+        n2.format(p.distance) + (p.closest_gap != null && p.closest_gap < p.distance
+          ? '<span class="near"> ↓' + n2.format(p.closest_gap) + "</span>" : "")) + "</td>" +
       '<td class="mono">' + (p.elapsed_seconds == null ? esc(p.setup_time || "—") : durationText(p.elapsed_seconds)) + "</td>" +
       '<td class="num countdown"' + (deadline ? ' data-deadline="' + deadline + '"' : "") + ">" + countdown + "</td>" +
       "<td>" + esc(p.source || "—") + "</td>" +
@@ -1251,7 +1256,7 @@ function renderPending(pending, running) {
   box.innerHTML =
     '<div class="table-scroll"><table><thead><tr>' +
       "<th>方向</th><th>商品</th><th class=\"num\">掛單價</th><th class=\"num\">停損</th>" +
-      "<th class=\"num\">停利</th><th>已等待</th><th class=\"num\">距自動刪單</th>" +
+      "<th class=\"num\">停利</th><th class=\"num\">距成交</th><th>已等待</th><th class=\"num\">距自動刪單</th>" +
       "<th>訊號來源</th><th>單號</th>" +
     "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
     (untracked

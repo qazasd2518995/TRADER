@@ -395,6 +395,10 @@ def _tracked_pending(trade_manager: Any, tracked: set) -> List[Dict[str, Any]]:
 
         waiting = {OrderStatus.PENDING, OrderStatus.SENT}
         now = time.time()
+        try:
+            current_price = trade_manager._get_current_price()
+        except Exception:
+            current_price = None
         rows = []
         for order in trade_manager.get_all_orders():
             if order.status not in waiting:
@@ -421,6 +425,12 @@ def _tracked_pending(trade_manager: Any, tracked: set) -> List[Dict[str, Any]]:
                 # limit 為 0 = 不因逾時刪單，倒數就沒有意義
                 "remaining_seconds": int(max(0, limit - elapsed)) if limit else None,
                 "cancel_if_price_beyond": order.cancel_if_price_beyond,
+                # 離成交還差多少，以及掛單期間最接近過的價位
+                "current_price": current_price,
+                "distance": (abs(current_price - float(getattr(signal, "entry_price", 0) or 0))
+                             if current_price and getattr(signal, "entry_price", None) else None),
+                "closest_price": order.closest_price,
+                "closest_gap": order.closest_gap,
             })
         return rows
     except Exception:

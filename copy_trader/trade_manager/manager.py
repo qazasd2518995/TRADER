@@ -57,6 +57,12 @@ class ManagedOrder:
     sl_trail_index: int = 0
     trailed_sl: Optional[float] = None   # 目前已送出的停損價，避免重複送同一張改單
 
+    # 掛單期間市價最接近進場價的紀錄，逾時刪單時一併寫進日誌 ——
+    # 這樣才回答得出「刪掉時離成交還差多少」，不用事後翻 MT5 圖表。
+    closest_price: Optional[float] = None   # 最接近的那一刻的市價
+    closest_gap: Optional[float] = None     # 與進場價的差距（絕對值）
+    closest_at: Optional[float] = None      # 發生時間
+
     # Signal source window
     source_window: str = ""  # Display name of the window that produced this signal
 
@@ -1703,6 +1709,15 @@ class TradeManager:
                 should_cancel = False
                 cancel_reason = ""
 
+                # 記錄市價最接近進場價的一刻（每秒更新），供刪單時佐證用
+                entry = order.signal.entry_price
+                if current_price and entry:
+                    gap = abs(float(current_price) - float(entry))
+                    if order.closest_gap is None or gap < order.closest_gap:
+                        order.closest_gap = gap
+                        order.closest_price = float(current_price)
+                        order.closest_at = current_time
+
                 # Time-based cancellation
                 if order.cancel_after_seconds:
                     elapsed = current_time - order.created_at
@@ -1738,14 +1753,42 @@ class TradeManager:
 
                 if should_cancel:
                     order.status = OrderStatus.CANCELLED
+                    price_note = self._describe_miss(order, current_price)
                     if order.ticket:
                         self._delete_pending_order(order.ticket)
-                        logger.info(f"Order {signal_id} auto-cancelled + MT5 delete sent (ticket {order.ticket}): {cancel_reason}")
+                        logger.info(
+                            "Order %s auto-cancelled + MT5 delete sent (ticket %s): %s%s",
+                            signal_id, order.ticket, cancel_reason,
+                            f" | {price_note}" if price_note else "",
+                        )
                     else:
                         logger.warning(f"Order {signal_id} auto-cancelled but no MT5 ticket found: {cancel_reason}")
                     self.on_order_cancelled(signal_id)
                     self._write_journal(
                         "ORDER_AUTO_CANCELLED",
                         f"signal_id={signal_id} | ticket={order.ticket} | 原因={cancel_reason} "
-                        f"| 信號={order.signal} | 來源={order.source_window}"
+                        + (f"| {price_note} " if price_note else "")
+                        + f"| 信號={order.signal} | 來源={order.source_window}"
                     )
+
+    @staticmethod
+    def _describe_miss(order: 'ManagedOrder', current_price: Optional[float]) -> str:
+        """刪單當下的價格佐證：離成交還差多少、期間最接近到哪裡。
+
+        沒有這個，事後只能翻 MT5 圖表才知道「掛 4300 被刪掉時，行情到底有沒有靠近過」。
+        """
+        entry = order.signal.entry_price
+        if not entry:
+            return "市價單"
+        parts = [f"掛單價={entry}"]
+        if current_price:
+            parts.append(f"刪單當下市價={current_price:.2f}（差 {abs(current_price - entry):.2f}）")
+        if order.closest_price is not None:
+            when = ""
+            if order.closest_at:
+                when = time.strftime("%H:%M:%S", time.localtime(order.closest_at))
+            parts.append(
+                f"期間最接近={order.closest_price:.2f}（差 {order.closest_gap:.2f}"
+                + (f" 於 {when}" if when else "") + "）"
+            )
+        return " ".join(parts)
