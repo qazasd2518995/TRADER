@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from copy_trader.config import DATA_DIR, load_config
+from copy_trader.config import DATA_DIR, _instance_name, load_config
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,11 @@ class LauncherState:
     def __init__(self, role: str):
         self.role = role
         self.title = "黃金訊號中心" if role == "central" else "黃金跟單會員端"
+        # 多開時把實例名稱掛進標題 — 兩個控制台長得一模一樣, 分頁上分不出來
+        # 就很容易對著錯的那個改設定 (見 config._instance_name)。
+        _inst = _instance_name()
+        if _inst:
+            self.title = f"{self.title}（{_inst}）"
         self.settings_path = DATA_DIR / f"{role}_web_launcher_settings.json"
         self.settings = self._load_settings()
         self.log_queue: "queue.Queue[str]" = queue.Queue()
