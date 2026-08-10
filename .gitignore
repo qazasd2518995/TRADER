@@ -53,3 +53,10 @@ sidecar_err.txt
 
 # TS build info
 tsconfig.tsbuildinfo
+
+# 執行期設定與啟動腳本：含 Hub 密碼與個人路徑，不可進版控
+client_web_launcher_settings.json
+central_web_launcher_settings.json
+client_web_launcher_port.txt
+central_web_launcher_port.txt
+receiver_config.sh
