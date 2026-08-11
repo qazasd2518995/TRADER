@@ -19,7 +19,7 @@ LINE Desktop 於 2026-06 前後更新後，開始擋掉「合成的鍵盤/滑鼠
   4. RegexSignalParser.parse_all_latest → 完整訊號
   5. 每個訊號轉成「正規化文字」當去重鍵 (對 OCR 數字雜訊穩定)
   6. 首輪 baseline：目前可見訊號全部視為已讀，不發布
-  7. 之後：訊號需連續出現 N 次 (ocr_confirm_count) 才發布 — 擋單次 OCR 誤讀
+  7. 之後：訊號需在計時窗內出現 N 次 (ocr_confirm_count) 才發布 — 擋單次 OCR 誤讀
   8. 已發布/已 baseline 的訊號整個 session 不再重發 — 徹底防重覆/洪水
 
 介面與 ClipboardReaderService 一致 (capture_all / mark_seen / force_retry)，
@@ -34,7 +34,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Deque, Dict, List, Optional, Set
+from typing import Deque, Dict, List, Optional, Set, Tuple
 
 from copy_trader.platform import ScreenCapture, WindowInfo
 from copy_trader.signal_parser.regex_parser import ParsedSignal, RegexSignalParser
@@ -158,6 +158,25 @@ class WindowOcrReaderService:
     WINDOW_ID_RETRY_INTERVAL = 30.0
     DEFAULT_MIN_INTERVAL = 1.5  # 兩次 OCR 最小間隔 (秒)，避免無謂吃 CPU
 
+    # 「同一個訊號要被讀到 confirm_count 次才發布」的計時窗 (秒)。
+    #
+    # 原本的規則是「連續 N 輪」——只要中間有一輪沒讀到就整個歸零。實測 2026-08-10：
+    # yuyu 的 Buy 4335 在 19:44:16 就被完整且正確地讀出來了，卻拖到 20:17:55 才發布，
+    # 中間卡了 34 分鐘。原因是廣告輪播/畫面重繪讓訊號時有時無，每漏讀一輪就：
+    #   (1) 計數歸零，(2) _confirm 變空 → 影像差異守衛重新生效 → 整輪跳過 OCR，
+    # 於是卡在「跳過→跳過→…」直到畫面變動夠大才脫困。
+    #
+    # 改成計時窗後，漏讀不再清空計數，只有超過這個時間才過期。防瞬間誤讀的效果仍在：
+    # 誤讀的鍵跟正確的鍵是不同字串，各自獨立計數，誤讀仍需在窗內再出現一次才會發布
+    # (實測那次誤讀 4346 與正確的 4345 相隔 71 分鐘，遠超出窗口，不會互相成全)。
+    CONFIRM_WINDOW_SEC = 120.0
+
+    # 讀到「像訊號但不完整」之後，維持高敏感度重讀多久 (秒)。
+    # 訊息通常在幾秒內就會被渲染完整；給 10 分鐘是留給廣告輪播/延遲載入的餘裕，
+    # 同時避免畫面上長期存在一則永遠讀不全的東西 (例如別人貼的 MT5 持倉截圖)
+    # 害這個來源永遠不進入省電的跳過模式。
+    PARTIAL_RETRY_SEC = 600.0
+
     def __init__(
         self,
         windows: List[ClipboardWindow],
@@ -195,8 +214,10 @@ class WindowOcrReaderService:
         self._seen_keys: Dict[str, Deque[str]] = {w.name: deque(maxlen=self.SEEN_MAX) for w in windows}
         self._seen_set: Dict[str, Set[str]] = {w.name: set() for w in windows}
         self._seen_ts: Dict[str, Dict[str, float]] = {w.name: {} for w in windows}
-        # 尚未確認的新訊號 → 連續出現次數
-        self._confirm: Dict[str, Dict[str, int]] = {w.name: {} for w in windows}
+        # 尚未確認的新訊號 → (在計時窗內被讀到幾次, 第一次讀到的時間)
+        self._confirm: Dict[str, Dict[str, Tuple[int, float]]] = {w.name: {} for w in windows}
+        # 最後一次讀到「像訊號但不完整」的時間 → 這段期間提高畫面變動敏感度重讀
+        self._partial_pending: Dict[str, float] = {w.name: 0.0 for w in windows}
         # baseline 狀態
         self._baselined: Set[str] = set()
         # 已警告過「白名單在 OCR 管道無效」的來源 (只吼一次, 不洗版)
@@ -426,6 +447,8 @@ class WindowOcrReaderService:
 
     # 中下聊天區平均像素差 < 此值 → 視為畫面沒變 (容忍微動畫)
     _DIFF_THRESHOLD = 2.5
+    # 有殘缺訊號待補讀時改用這個 — 幾乎任何重繪都會觸發重讀 (見 PARTIAL_RETRY_SEC)
+    _PARTIAL_DIFF_THRESHOLD = 0.3
 
     def _region_thumb(self, img):
         """裁掉上方標題/廣告區, 只取『中下聊天區』縮成小灰階圖做差異比對。"""
@@ -486,11 +509,20 @@ class WindowOcrReaderService:
         # 影像差異比對：中下聊天區幾乎沒變 → 跳過 OCR (baseline 仍需跑一次)
         # 守衛：若有「待確認」訊號 (confirm 計數中) 絕不可跳過，否則新訊號被讀到一次後
         # 畫面靜止→跳過OCR→永遠湊不到 confirm_count 次數。這也是 confirm≥2 能擋掉
-        # 「瞬間誤讀」的關鍵：連續多次 OCR 讀到一致才發，瞬間讀錯的那次會被下一次否決。
+        # 「瞬間誤讀」的關鍵：多次 OCR 讀到一致才發，瞬間讀錯的那次會被下一次否決。
+        #
+        # 另一個門檻：上一輪若讀到「像訊號但不完整」(例如止損沒讀到)，代表畫面上很可能
+        # 就有一則還沒讀全的報單。實測 2026-08-10：14:17:35 讀到 SELL 4350 但 SL 是 None，
+        # 因為不完整所以 _confirm 是空的、畫面又靜止 → 之後每一輪都跳過 OCR，直到 15:32
+        # 有新訊息進來畫面才變 —— 那則訊號整整躺了 75 分鐘沒被重讀。所以這種時候要把
+        # 敏感度拉高，任何細微重繪 (字體重繪/廣告輪播/滾動一兩像素) 都要能觸發重讀。
         thumb = self._region_thumb(img)
+        partial_since = self._partial_pending.get(w.name, 0.0)
+        retrying_partial = (time.time() - partial_since) <= self.PARTIAL_RETRY_SEC
+        threshold = self._PARTIAL_DIFF_THRESHOLD if retrying_partial else self._DIFF_THRESHOLD
         if (w.name in self._baselined
                 and not self._confirm.get(w.name)
-                and self._thumbs_similar(thumb, self._last_thumb.get(w.name), self._DIFF_THRESHOLD)):
+                and self._thumbs_similar(thumb, self._last_thumb.get(w.name), threshold)):
             cap.ok = True
             cap.skipped = True
             cap.skip_reason = "no_visual_change"
@@ -522,8 +554,13 @@ class WindowOcrReaderService:
         current: List[str] = []
         seen_local: Set[str] = set()
         last_complete: Optional[ParsedSignal] = None
+        saw_partial = False
         for s in self._parse_signals(w, text):
             if not _is_complete(s):
+                # 有方向就代表「看起來是報單、只是還沒讀全」——記下來讓下一輪用高敏感度
+                # 重讀 (見 PARTIAL_RETRY_SEC)。沒方向的就只是聊天裡的雜數字，不算。
+                if s.direction:
+                    saw_partial = True
                 continue
             last_complete = s
             key = signal_to_canonical_text(s)
@@ -543,6 +580,17 @@ class WindowOcrReaderService:
                     seen_local.add(cancel_key)
                     current.append(cancel_key)
 
+        # 有殘缺訊號 → 開啟高敏感度重讀；這一輪把它讀全了就關掉，回到省電模式。
+        if saw_partial:
+            if not self._partial_pending.get(w.name):
+                logger.info(
+                    "%s: 讀到不完整的報單 (缺欄位) → 提高畫面變動敏感度重讀, 最多 %.0f 分鐘",
+                    w.label, self.PARTIAL_RETRY_SEC / 60.0,
+                )
+            self._partial_pending[w.name] = time.time()
+        elif self._partial_pending.get(w.name):
+            self._partial_pending[w.name] = 0.0
+
         # 比對之前先淘汰過期的鍵 — 否則長時間不重啟時保留期形同虛設 (見 _expire_seen)
         self._expire_seen(w.name)
         seen_set = self._seen_set[w.name]
@@ -556,9 +604,12 @@ class WindowOcrReaderService:
             logger.info("baseline(OCR) %r: %d 則可見訊號設為已讀", w.label, len(current))
             return cap
 
-        # 非首輪：連續確認後才發布
+        # 非首輪：在計時窗內被讀到 confirm_count 次才發布 (見 CONFIRM_WINDOW_SEC)。
+        # 注意這裡是「就地更新」而不是每輪重建 — 漏讀一輪不可以把計數清掉。
+        now = time.time()
         confirm = self._confirm[w.name]
-        new_confirm: Dict[str, int] = {}
+        for k in [k for k, (_, first) in confirm.items() if now - first > self.CONFIRM_WINDOW_SEC]:
+            confirm.pop(k, None)
         emitted: List[LineMessage] = []
         for key in current:
             if key in seen_set:
@@ -573,11 +624,12 @@ class WindowOcrReaderService:
                         w.label, age / 3600.0, key.replace("\n", " ")[:70],
                     )
                 continue
-            c = confirm.get(key, 0) + 1
-            new_confirm[key] = c
+            c, first = confirm.get(key, (0, now))
+            c += 1
+            confirm[key] = (c, first)
             if c >= self.confirm_count:
                 emitted.append(self._make_msg(w, key))
-        self._confirm[w.name] = new_confirm
+                confirm.pop(key, None)   # 發布後就不必再留著佔住守衛
 
         cap.new_messages = emitted
         cap.ok = True
