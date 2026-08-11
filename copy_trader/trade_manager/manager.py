@@ -1212,8 +1212,17 @@ class TradeManager:
                     logger.info(f"Found closed trade profit by deal ticket: ticket={ticket}, profit={profit}")
                     return profit
 
-        # Could not determine profit - return None so caller can decide
-        logger.warning(f"Could not find profit for ticket {ticket} in closed_trades.json")
+        # 還找不到 → 回 None 讓呼叫端再等一輪。
+        #
+        # 這裡刻意用 debug 而不是 warning：EA 每 10 秒才寫一次 closed_trades.json，
+        # 而這個函式在 CLOSE_CONFIRM_TIMEOUT (25s) 的寬限期內每秒被呼叫一次，
+        # 所以「暫時找不到」是預期中的正常狀態，不是異常。實測 2026-08-11 一筆
+        # 正常平倉就噴了 11 行 WARNING，最後在第 11 秒成功找到損益 —— 結果是對的，
+        # 過程卻在 log 上看起來像出事了，一天幾十單就會把真正的警告淹掉。
+        #
+        # 真正該警告的是「寬限期跑完仍然沒有」，那由呼叫端的 timeout fallback 分支
+        # 印一行 WARNING (見 _check_closed_positions)，該有的告警不會漏。
+        logger.debug("closed_trades.json 尚未出現 ticket %s 的損益，稍後重試", ticket)
         return None
 
     def _check_order_fills(self):
