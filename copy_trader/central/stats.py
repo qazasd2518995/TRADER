@@ -745,7 +745,10 @@ def build_stats(settings: Dict[str, Any], trade_manager: Any = None) -> Dict[str
             "gmt_offset": _int(account_raw.get("gmt_offset"), 0),
         } if account_raw else None,
         "summary": _summarise(trades),
-        "cycles": _cycles(trades),
+        # 「回合」= 連續虧損直到一次獲利，是馬丁格爾的概念。EA 自己下的單
+        # 跟我們的訊號單在時間軸上會交錯，混進來算會讓「已完成回合」對不上——
+        # 例如一筆跟訊號完全無關的 EA 獲利，會被誤判成「幫某個馬丁回合止血」。
+        "cycles": _cycles([t for t in trades if t.get("mode") != "ea_native"]),
         "trades": trades,
         "positions": positions,
         "pending": pending_orders(trade_manager, mt5_dir, ea_magics=set(ea_sources.keys())),
