@@ -142,6 +142,26 @@ class MT5ClientAgent:
         self.config = load_config()
         if mt5_files_dir:
             self.config.mt5_files_dir = mt5_files_dir
+            # 商品代號在 load_config() 的 __post_init__ 就依「當時的」MT5 路徑定案了，
+            # 而那個路徑是自動偵測來的 (通常是機器上第一個 MT5)，跟這裡覆寫進來的
+            # 可能是完全不同的券商。不重算的話，代號會沿用錯的那一家。
+            #
+            # 實測 2026-08-11：用 --instance 接 MetaQuotes-Demo (D:\MT5-2)，卻沿用了
+            # C:\Program Files\MetaTrader 5 那台 AXPM 的 "XAUUSD.s"。EA 收到不存在的
+            # 代號 → SymbolInfoDouble(ASK) 回 0 → 每一筆都被拒 (invalid ask price)，
+            # 而且會員端這邊看起來一切正常，只有 MT5 的 trade_results.txt 才看得到。
+            #
+            # 只有在新路徑「真的有券商檔案」時才重算 —— 否則 EA 還沒啟動的空目錄會讓
+            # detect_mt5_symbol() 回退到預設值，把使用者明確設好的代號蓋掉。
+            _dir = Path(mt5_files_dir)
+            if _dir.is_dir() and (any(_dir.glob("*_price.json")) or (_dir / "symbol_info.json").exists()):
+                _resolved = self.config._resolve_symbol_name(self.config.symbol_name)
+                if _resolved != self.config.symbol_name:
+                    logger.info(
+                        "依 MT5 路徑重新解析商品代號：%s → %s (%s)",
+                        self.config.symbol_name, _resolved, mt5_files_dir,
+                    )
+                self.config.symbol_name = _resolved
         # 訊號時效鎖: hub 訊號擷取時間超過這麼久就不下單 (防會員端恢復後補到舊單)。0=不限。
         self.max_signal_age_sec = max(0, int(getattr(self.config, "signal_max_age_minutes", 10) or 0) * 60)
         # 同方向短時間改單防呆: 下單前撤掉這麼久內同方向的舊掛單。0=關閉 (預設)。
