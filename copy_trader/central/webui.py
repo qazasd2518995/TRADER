@@ -56,6 +56,13 @@ CLIENT_FIELDS = """
         </div>
         <p class="hint">掛單超過設定時間仍未成交，會員端會自動撤掉並通知 MT5 刪除委託。目前只用逾時這一條規則，價格偏離刪單已停用（填 0）。改動只影響之後送出的新單。</p>
       </div>
+      <div class="field-group">
+        <h3>其他策略（EA 自動下單）</h3>
+        <div class="field-grid">
+          <label>魔術編號 → 名稱<input id="ea_sources" placeholder='{"20260503": "趨勢線策略"}' /></label>
+        </div>
+        <p class="hint">同一個 MT5 帳戶裡，另外掛的、不靠訊號、自己判斷進出場的 EA（例如趨勢線策略）——填「魔術編號: 名稱」讓報表認出這是誰下的單，會併入下面的績效卡片與交易紀錄一起看。這裡純粹是標籤，不會控制那顆 EA 的手數或進出場，手數要調就直接改 MT5 裡 EA 的設定。魔術編號在 MT5 的 EA 輸入參數裡找（通常叫「魔術編號」或 Magic Number）。</p>
+      </div>
 """
 
 CENTRAL_FIELDS = """
@@ -684,7 +691,7 @@ function ids() {
     ? ["hub_url", "host", "port", "token", "copy_mode", "interval", "cloudflare_tunnel", "cloudflared_path", "auto_start"]
     : ["hub_url", "token", "mt5_files_dir", "interval", "auto_start", "default_lot_size", "use_martingale",
        "martingale_multiplier", "martingale_max_level", "martingale_lots", "partial_close_ratios",
-       "cancel_pending_after_seconds", "cancel_if_price_beyond_percent", "source_profiles"];
+       "cancel_pending_after_seconds", "cancel_if_price_beyond_percent", "source_profiles", "ea_sources"];
 }
 function collect() {
   const out = {};
@@ -1113,7 +1120,10 @@ function renderSourcePerformance(trades, sourceRows) {
     .map(([name, list]) => {
       const sum = summarise(list);
       const cfg = cfgOf[name] || {};
-      const badge = cfg.mode === "flat" ? "均注" : (cfg.mode ? "馬丁" : "");
+      // EA 自己下的單不在 source_settings 裡（那張表只管我們自己送出的訊號單），
+      // 徽章改看交易本身的 mode——同一個來源的交易 mode 一定一致
+      const isEaNative = !cfg.mode && list[0] && list[0].mode === "ea_native";
+      const badge = cfg.mode === "flat" ? "均注" : cfg.mode === "martingale" ? "馬丁" : (isEaNative ? "EA 自動" : "");
       return '<button type="button" class="source-card' + (S.source === name ? " is-on" : "") +
           '" data-pick-source="' + esc(name) + '">' +
         '<div class="sc-head"><span class="sc-name">' + esc(name) + "</span>" +
@@ -1178,9 +1188,9 @@ function renderRecords(trades) {
       '<td><span class="tag ' + (t.is_win ? "tag-win" : "tag-loss") + '">' + (t.is_win ? "▲ 贏" : "▼ 輸") + "</span></td>" +
       '<td class="' + (t.side === "buy" ? "side-buy" : "side-sell") + '">' + (t.side === "buy" ? "買進" : "賣出") + "</td>" +
       '<td class="num mono">' + lots(t.volume) + "</td>" +
-      // 均注來源沒有關卡，顯示「第 N 關」會誤導
+      // 均注來源沒有關卡；EA 自己下的單也沒有——那不是我們的馬丁層級，顯示「第 N 關」會誤導
       '<td><span class="tag tag-lv">' +
-        (t.mode === "flat" ? "均注" : "第 " + (t.level + 1) + " 關") +
+        (t.mode === "flat" ? "均注" : t.mode === "ea_native" ? "EA 自動" : "第 " + (t.level + 1) + " 關") +
         (t.parts > 1 ? " · 分 " + t.parts + " 段" : "") + "</span></td>" +
       '<td class="num mono">' + n2.format(t.entry_price) + "</td>" +
       '<td class="num mono">' + n2.format(t.exit_price) + "</td>" +
@@ -1681,6 +1691,18 @@ $("ladderTabs").addEventListener("click", (evt) => {
 $("start").onclick = () => post("/api/start", collect()).then(refreshStatus).catch((e) => alert(e.message));
 $("stop").onclick = () => post("/api/stop").then(refreshStatus).catch((e) => alert(e.message));
 $("save").onclick = (evt) => {
+  // 純文字 JSON 欄位打錯字後端會直接當沒設定（回退全域），不是報錯——
+  // 存檔前先擋一次，不然使用者不會發現自己輸入的東西被默默丟掉了。
+  const eaField = $("ea_sources");
+  if (eaField && eaField.value.trim()) {
+    try {
+      const parsed = JSON.parse(eaField.value);
+      if (typeof parsed !== "object" || Array.isArray(parsed) || parsed === null) throw new Error("需要是物件");
+    } catch (e) {
+      alert("「其他策略」欄位不是合法的 JSON，例如 {\"20260503\": \"趨勢線策略\"}\n\n" + e.message);
+      return;
+    }
+  }
   post("/api/settings", collect()).then(() => {
     const btn = evt.target;
     btn.textContent = "已儲存";

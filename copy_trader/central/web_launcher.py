@@ -130,6 +130,10 @@ class LauncherState:
             "cancel_if_price_beyond_percent": "0",
             # 每個訊號來源各自的下單模式，存成 JSON 字串（設定檔全部是字串型別）
             "source_profiles": "{}",
+            # 同一個 MT5 帳戶裡，另外掛的、自己會下單的 EA（例如趨勢線策略）——
+            # magic number -> 顯示名稱，純粹讓報表認出「這是誰下的」，不控制下單。
+            # 20260503 是目前這台機器上「趨勢追蹤_EA_NR」的預設魔術編號。
+            "ea_sources": '{"20260503": "趨勢線策略"}',
         }
 
     def _load_settings(self) -> Dict[str, Any]:

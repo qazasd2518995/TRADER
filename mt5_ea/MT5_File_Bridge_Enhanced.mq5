@@ -382,6 +382,7 @@ void WriteClosedTrades()
       double commission = HistoryDealGetDouble(deal_ticket, DEAL_COMMISSION);
       datetime deal_time = (datetime)HistoryDealGetInteger(deal_ticket, DEAL_TIME);
       long position_id = HistoryDealGetInteger(deal_ticket, DEAL_POSITION_ID);
+      long deal_magic = HistoryDealGetInteger(deal_ticket, DEAL_MAGIC);
       string comment = HistoryDealGetString(deal_ticket, DEAL_COMMENT);
 
       double entry_price = 0;
@@ -446,6 +447,10 @@ void WriteClosedTrades()
       json += "{";
       json += "\"ticket\":" + IntegerToString((long)deal_ticket) + ",";
       json += "\"position_id\":" + IntegerToString((long)position_id) + ",";
+      // magic 讓下游可以分辨這筆是哪個 EA/策略下的單 (跟單系統的 magic 是 999999)，
+      // 不必再靠 comment 格式猜——positions.json/orders.json 本來就有這欄，
+      // 只有 closed_trades.json 漏了。
+      json += "\"magic\":" + IntegerToString((int)deal_magic) + ",";
       json += "\"symbol\":\"" + symbol + "\",";
       json += "\"type\":\"" + (deal_type == DEAL_TYPE_BUY ? "buy" : "sell") + "\",";
       json += "\"volume\":" + DoubleToString(volume, 2) + ",";

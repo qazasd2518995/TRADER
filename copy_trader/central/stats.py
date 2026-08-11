@@ -35,6 +35,11 @@ _JOURNAL_HEAD = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]\s+([A-Z_
 # account_info.json 的 timestamp 超過這個秒數沒更新，就當作 EA 沒在寫檔
 STALE_AFTER_SECONDS = 120
 
+# TradeManager.magic_number（manager.py）——凡是這個 magic 的單都是本系統送出的
+# 訊號跟單，走「訊號來源設定」那條路（手數/馬丁/均注可調）。其餘 magic 一律當成
+# 「同帳戶裡的其他策略」，只做報表標記，不出現在下單控制的表格裡。
+COPY_TRADER_MAGIC = "999999"
+
 # 日誌解析結果快取：路徑 -> (mtime, size, 事件串列)
 _journal_cache: Dict[str, Tuple[float, int, List[Dict[str, Any]]]] = {}
 
@@ -335,7 +340,9 @@ def _by_day(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 # 主入口
 # --------------------------------------------------------------------------
 
-def pending_orders(trade_manager: Any, mt5_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
+def pending_orders(
+    trade_manager: Any, mt5_dir: Optional[Path] = None, ea_magics: Optional[set] = None
+) -> List[Dict[str, Any]]:
     """還沒進場的掛單，附上距離自動刪單還剩幾秒。
 
     以 TradeManager 追蹤中的單為主（只有它知道倒數）。另外把 MT5 上存在、但沒被
@@ -345,13 +352,17 @@ def pending_orders(trade_manager: Any, mt5_dir: Optional[Path] = None) -> List[D
     rows: List[Dict[str, Any]] = []
     tracked_tickets = set()
     rows.extend(_tracked_pending(trade_manager, tracked_tickets))
-    rows.extend(_untracked_pending(mt5_dir, tracked_tickets))
+    rows.extend(_untracked_pending(mt5_dir, tracked_tickets, ea_magics or set()))
     rows.sort(key=lambda r: r["created_at"])
     return rows
 
 
-def _untracked_pending(mt5_dir: Optional[Path], tracked: set) -> List[Dict[str, Any]]:
-    """MT5 上有、但 TradeManager 沒在追的本系統掛單（例如重啟後沒認領成功的）。"""
+def _untracked_pending(mt5_dir: Optional[Path], tracked: set, ea_magics: set) -> List[Dict[str, Any]]:
+    """MT5 上有、但 TradeManager 沒在追的本系統掛單（例如重啟後沒認領成功的）。
+
+    別的 EA（magic 在 ea_magics 裡）掛的單不算「孤兒」——那本來就不歸我們管，
+    不該顯示成「未追蹤，需要重新認領」，直接跳過不列。
+    """
     if mt5_dir is None:
         return []
     data = _read_json(Path(mt5_dir) / "orders.json") or {}
@@ -361,6 +372,8 @@ def _untracked_pending(mt5_dir: Optional[Path], tracked: set) -> List[Dict[str, 
             continue
         ticket = raw.get("ticket")
         if ticket in tracked:
+            continue
+        if str(raw.get("magic") or "").strip() in ea_magics:
             continue
         try:
             side = "sell" if int(raw.get("type") or 0) % 2 else "buy"
@@ -442,12 +455,17 @@ def source_settings(
     trades: List[Dict[str, Any]],
     sources_raw: Dict[str, Any],
     martingale_raw: Dict[str, Any],
+    ea_labels: Optional[set] = None,
 ) -> List[Dict[str, Any]]:
     """每個訊號來源的下單設定 + 目前馬丁層級。
 
     來源清單是「自動發現」的：把設定裡有的、歷史成交出現過的、signal_sources.json
     收過的全部聯集起來。這樣使用者不必手打群組名——打錯字會靜默套用全域設定，
     是這種以字串當 key 的設計最容易踩的坑。
+
+    ea_labels 是「其他 EA 自己下單」的來源名稱（見 _load_ea_sources）——這張表是
+    下單控制表（手數/馬丁/均注），那些單根本不是我們送的，出現在這裡只會讓人
+    誤以為調得動，所以要排除；它們只會出現在「各來源績效」等唯讀報表裡。
     """
     try:
         profiles = json.loads(str(settings.get("source_profiles") or "{}"))
@@ -456,10 +474,11 @@ def source_settings(
     except (TypeError, ValueError):
         profiles = {}
 
+    ea_labels = ea_labels or set()
     known: List[str] = []
     for name in list(profiles.keys()) + [t["source"] for t in trades] + list(sources_raw.values()):
         name = str(name or "").strip()
-        if name and name not in known:
+        if name and name not in known and name not in ea_labels:
             known.append(name)
 
     per_source = martingale_raw.get("per_source") or {}
@@ -492,6 +511,29 @@ def source_settings(
             "trades": sum(1 for t in trades if t["source"] == name),
         })
     return rows
+
+
+def _load_ea_sources(settings: Dict[str, Any]) -> Dict[str, str]:
+    """magic number(字串) -> 顯示名稱。
+
+    給「同一個 MT5 帳戶裡，另一顆自己會下單的 EA（例如自帶的趨勢線策略）」用——
+    這些單不是我們的 TradeManager 送出的（沒有 signal_id、沒有 submit_signal 過），
+    所以完全不能套用馬丁/均注/分批平倉那套控制邏輯，只能用 magic number 認出
+    「這是誰下的」，純粹拿來在報表上分組顯示。壞掉的 JSON 就當沒設定。
+    """
+    try:
+        raw = json.loads(str(settings.get("ea_sources") or "{}"))
+        if not isinstance(raw, dict):
+            return {}
+    except (TypeError, ValueError):
+        return {}
+    out: Dict[str, str] = {}
+    for magic, label in raw.items():
+        magic = str(magic).strip()
+        label = str(label or "").strip()
+        if magic and label and magic != COPY_TRADER_MAGIC:
+            out[magic] = label
+    return out
 
 
 def _position_side(close_deal_type: Any) -> str:
@@ -570,17 +612,35 @@ def build_stats(settings: Dict[str, Any], trade_manager: Any = None) -> Dict[str
     events = read_journal()
     index = _journal_index(events)
     ladder = build_ladder(settings)
+    ea_sources = _load_ea_sources(settings)
 
     trades: List[Dict[str, Any]] = []
     for raw in (closed_raw.get("trades") or []):
         if not isinstance(raw, dict):
             continue
-        # closed_trades 的 comment 是 "copy_" + signal_id
         comment = str(raw.get("comment") or "")
-        signal_id = comment[5:] if comment.startswith("copy_copy_") else comment
-        fields = index.get(signal_id, {})
         volume = _float(raw.get("volume"), 0.0)
         profit = _float(raw.get("profit"), 0.0)
+
+        # magic 為空字串代表舊版 EA 還沒補上這欄（見 mt5_ea 的修改）——這種情況下
+        # 沒辦法可靠分辨是不是別的策略下的單，只能先照舊當成本系統的單處理，
+        # 等 EA 重新編譯載入後，這裡才會準確分組。
+        magic = str(raw.get("magic") or "").strip()
+        ea_label = ea_sources.get(magic) if magic and magic != COPY_TRADER_MAGIC else None
+
+        if ea_label:
+            # 別的 EA 自己下的單：沒有 signal_id、沒有來源設定可套，純粹報表標記
+            signal_id = comment or f"ea_{raw.get('ticket')}"
+            source = ea_label
+            mode = "ea_native"
+            level = None
+        else:
+            # closed_trades 的 comment 是 "copy_" + signal_id
+            signal_id = comment[5:] if comment.startswith("copy_copy_") else comment
+            fields = index.get(signal_id, {})
+            source = sources_raw.get(signal_id) or fields.get("來源") or ""
+            mode = None  # 下面依 source_profiles 決定 flat/martingale
+            level = _level_for_volume(volume, ladder)
 
         trades.append({
             "ticket": raw.get("ticket"),
@@ -603,16 +663,20 @@ def build_stats(settings: Dict[str, Any], trade_manager: Any = None) -> Dict[str
             "open_timestamp": _int(raw.get("open_timestamp"), 0),
             "close_timestamp": _int(raw.get("close_timestamp"), 0),
             "close_time": str(raw.get("close_time") or ""),
-            "source": sources_raw.get(signal_id) or fields.get("來源") or "",
-            "level": _level_for_volume(volume, ladder),
+            "source": source,
+            "level": level,
+            "mode": mode,
         })
 
-    # 均注來源沒有關卡可言，標記模式讓前端別顯示「第 N 關」
+    # 均注來源沒有關卡可言，標記模式讓前端別顯示「第 N 關」。
+    # ea_native 在上面已經定案，這裡跳過，不然會被 source_profiles 覆寫掉。
     try:
         profiles = json.loads(str(settings.get("source_profiles") or "{}"))
     except (TypeError, ValueError):
         profiles = {}
     for trade in trades:
+        if trade["mode"] == "ea_native":
+            continue
         profile = profiles.get(trade["source"]) if isinstance(profiles, dict) else None
         mode = str((profile or {}).get("mode") or "").lower()
         trade["mode"] = mode if mode in ("flat", "martingale") else ""
@@ -629,9 +693,17 @@ def build_stats(settings: Dict[str, Any], trade_manager: Any = None) -> Dict[str
     for raw in (positions_raw.get("positions") or []):
         if not isinstance(raw, dict):
             continue
-        signal_id = str(raw.get("comment") or "")
-        if signal_id.startswith("copy_copy_"):
-            signal_id = signal_id[5:]
+        # positions.json 本來就有 magic（不像 closed_trades.json 要補丁才有），
+        # 所以持倉這裡不用等 EA 重新編譯就能正確分組。
+        magic = str(raw.get("magic") or "").strip()
+        ea_label = ea_sources.get(magic) if magic and magic != COPY_TRADER_MAGIC else None
+        if ea_label:
+            source = ea_label
+        else:
+            signal_id = str(raw.get("comment") or "")
+            if signal_id.startswith("copy_copy_"):
+                signal_id = signal_id[5:]
+            source = sources_raw.get(signal_id) or ""
         positions.append({
             "ticket": raw.get("ticket"),
             "symbol": raw.get("symbol") or "",
@@ -643,7 +715,8 @@ def build_stats(settings: Dict[str, Any], trade_manager: Any = None) -> Dict[str
             "tp": _float(raw.get("tp"), 0.0),
             "profit": _float(raw.get("profit"), 0.0),
             "open_timestamp": _int(raw.get("open_timestamp") or raw.get("time"), 0),
-            "source": sources_raw.get(signal_id) or "",
+            "source": source,
+            "mode": "ea_native" if ea_label else "",
         })
 
     level = _int(martingale_raw.get("level"), 0)
@@ -675,8 +748,13 @@ def build_stats(settings: Dict[str, Any], trade_manager: Any = None) -> Dict[str
         "cycles": _cycles(trades),
         "trades": trades,
         "positions": positions,
-        "pending": pending_orders(trade_manager, mt5_dir),
-        "source_settings": source_settings(settings, trades, sources_raw, martingale_raw),
+        "pending": pending_orders(trade_manager, mt5_dir, ea_magics=set(ea_sources.keys())),
+        "source_settings": source_settings(
+            settings, trades, sources_raw, martingale_raw, ea_labels=set(ea_sources.values())
+        ),
+        # 別的 EA(自己下單、不靠訊號)有哪些，純粹讓前端知道要把哪些來源名稱
+        # 當成「唯讀報表」處理，不要顯示成可調手數/馬丁的來源
+        "ea_sources": list(ea_sources.values()),
         "cancel_rules": {
             "after_seconds": _int(settings.get("cancel_pending_after_seconds"), 10800),
             "price_beyond_percent": _float(settings.get("cancel_if_price_beyond_percent"), 1.0),
