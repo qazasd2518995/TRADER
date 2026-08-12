@@ -373,6 +373,20 @@ main { max-width: 1240px; margin: 0 auto; padding: 22px 24px 72px; }
   padding: 10px 14px; margin-bottom: 14px;
   background: var(--card); border: 1px solid var(--hair); border-radius: 10px;
 }
+/* 分頁列：切換「訊號跟單」/「趨勢線策略」等完全獨立的策略視圖，
+   比 .pillset 大一號、更顯眼——這是切換整個畫面內容的動作，不是篩選 */
+.view-tabs { display: flex; gap: 6px; margin-bottom: 18px; }
+.view-tab {
+  font: inherit; font-size: 13.5px; font-weight: 500; padding: 9px 18px;
+  border-radius: 9px; border: 1px solid var(--hair); background: var(--card);
+  color: var(--ink-2); cursor: pointer; box-shadow: var(--shadow);
+}
+.view-tab:hover { color: var(--ink); border-color: var(--rule); }
+.view-tab.is-on {
+  color: #2a1d05; font-weight: 600; border-color: transparent;
+  background: linear-gradient(158deg, var(--gold-hi), var(--gold-lit) 60%, var(--gold-mark));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.5);
+}
 .filters .label { font-size: 11.5px; color: var(--muted); letter-spacing: .06em; }
 .pillset { display: flex; gap: 4px; background: var(--sunk); padding: 3px; border-radius: 8px; }
 .pill {
@@ -545,6 +559,13 @@ body[data-role="central"] .client-only { display: none; }
 <main>
   <div id="notice"></div>
 
+  <!-- 只有設定過「其他策略(EA)」才出現；沒用這功能的人畫面完全不變 -->
+  <div class="view-tabs client-only" id="viewTabs" hidden>
+    <button type="button" class="view-tab is-on" data-view="signals">訊號跟單</button>
+    <button type="button" class="view-tab" data-view="ea">趨勢線策略</button>
+  </div>
+
+<div id="viewSignals">
   <!-- 現在的狀態：不受下方篩選影響 -->
   <section class="card hero">
     <div class="ladder client-only">
@@ -652,6 +673,74 @@ body[data-role="central"] .client-only { display: none; }
       <div class="table-scroll" id="records"></div>
     </div>
   </div>
+</div><!-- /viewSignals -->
+
+<div id="viewEA" class="client-only" hidden>
+  <section class="card hero">
+    <div class="figure" style="grid-column:1/-1">
+      <p class="eyebrow">累計已實現損益 · 趨勢線策略</p>
+      <p class="figure-value" id="eaHeroNet">—</p>
+      <p class="figure-sub" id="eaHeroSub">等待交易資料</p>
+    </div>
+  </section>
+
+  <div class="section-head">
+    <h2>目前持倉</h2>
+    <p id="eaPosSummary">—</p>
+  </div>
+  <div class="card" style="padding:0"><div id="eaPositions"></div></div>
+
+  <div class="section-head">
+    <h2>績效分析</h2>
+    <p>只計算「其他策略」自己下的單，跟訊號跟單完全分開算</p>
+  </div>
+
+  <div class="filters">
+    <span class="label">期間</span>
+    <div class="pillset" id="eaFilterPeriod">
+      <button class="pill is-on" data-period="today">今日</button>
+      <button class="pill" data-period="week">本週</button>
+      <button class="pill" data-period="lastweek">上週</button>
+      <button class="pill" data-period="month">本月</button>
+      <button class="pill" data-period="lastmonth">上月</button>
+      <button class="pill" data-period="all">全部</button>
+      <button class="pill" data-period="custom">自訂</button>
+    </div>
+    <div class="daterange" id="eaDateRange" hidden>
+      <input type="date" id="eaDateFrom" aria-label="起始日期" />
+      <span class="label">至</span>
+      <input type="date" id="eaDateTo" aria-label="結束日期" />
+    </div>
+    <span class="count" id="eaFilterCount"></span>
+  </div>
+
+  <dl class="tiles" id="eaTiles"></dl>
+
+  <div class="section-head">
+    <h2>累計損益曲線</h2>
+    <p>每一筆平倉後的累積結果，單位 <span id="eaCurCode">USD</span></p>
+  </div>
+  <div class="card">
+    <div class="chart-wrap" id="eaEquityWrap">
+      <svg id="eaEquityChart" role="img" aria-label="趨勢線策略累計損益曲線"></svg>
+      <div class="tip" id="eaEquityTip"></div>
+    </div>
+  </div>
+
+  <div class="section-head">
+    <h2>訊號類型績效</h2>
+    <p>這顆 EA 有好幾種進場邏輯，分開看才知道哪種訊號在賺、哪種在虧</p>
+  </div>
+  <div class="source-grid" id="eaBreakdown"></div>
+
+  <div class="section-head">
+    <h2>交易紀錄</h2>
+    <p>每一筆的完整數字，也是上方圖表的表格版</p>
+  </div>
+  <div class="card" style="padding:0">
+    <div class="table-scroll" id="eaRecords"></div>
+  </div>
+</div><!-- /viewEA -->
 
   <div class="section-head">
     <h2>狀態紀錄</h2>
@@ -679,6 +768,8 @@ const ROLE = __ROLE_JSON__;
 const IS_CLIENT = ROLE !== "central";
 const S = { status: null, stats: null, period: "today", source: "all", from: "", to: "", ladderSource: "",
             filled: false, heroShown: null };
+// 趨勢線策略分頁的獨立篩選狀態——跟 S 分開，兩個分頁想看不同期間互不影響
+const SE = { period: "today", source: "all", from: "", to: "", heroShown: null };
 const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 const $ = (id) => document.getElementById(id);
@@ -738,11 +829,12 @@ function shortTime(s) { return String(s || "").replace(/^\d{4}[.\-]/, "").replac
 function dayLabel(s) { return shortTime(s).split(" ")[0]; }   // 2026.07.16 15:41 -> 07/16
 
 /* ------------------------------------------------------------ hero number */
-function setHero(value) {
-  const el = $("heroNet");
+function setHero(value, elId, state) {
+  state = state || S;
+  const el = $(elId || "heroNet");
   el.className = "figure-value " + toneClass(value);
-  const from = S.heroShown;
-  S.heroShown = value;
+  const from = state.heroShown;
+  state.heroShown = value;
   if (REDUCED || from == null || from === value) { el.textContent = money(value, { signed: true }); return; }
   const t0 = performance.now(), span = 520;
   const step = (now) => {
@@ -781,18 +873,21 @@ function parseDateInput(value) {
   const [y, m, d] = value.split("-").map(Number);
   return Date.UTC(y, m - 1, d) / 1000;
 }
-/* 回傳 [from, to)，null 代表該端無限制 */
-function activeRange() {
+/* 回傳 [from, to)，null 代表該端無限制。
+   state 預設 S（訊號跟單分頁）；趨勢線策略分頁有自己獨立的期間篩選狀態 SE，
+   兩個分頁想看不同期間互不影響（例如訊號看今日、EA 策略看全部）。 */
+function activeRange(state) {
+  state = state || S;
   const now = brokerNow();
-  switch (S.period) {
+  switch (state.period) {
     case "today":     return [dayStart(now), null];
     case "week":      return [weekStart(now), null];
     case "lastweek":  return [addDays(weekStart(now), -7), weekStart(now)];
     case "month":     return [monthStart(now, 0), null];
     case "lastmonth": return [monthStart(now, -1), monthStart(now, 0)];
     case "custom": {
-      const from = parseDateInput(S.from);
-      const to = parseDateInput(S.to);
+      const from = parseDateInput(state.from);
+      const to = parseDateInput(state.to);
       return [from, to == null ? null : addDays(to, 1)];   // 結束日含當天
     }
     default:          return [null, null];
@@ -804,21 +899,26 @@ function stampLabel(seconds) {
   return d.getUTCFullYear() + "/" + pad(d.getUTCMonth() + 1) + "/" + pad(d.getUTCDate());
 }
 function isoDate(seconds) { return new Date(seconds * 1000).toISOString().slice(0, 10); }
-function rangeLabel() {
-  const [from, to] = activeRange();
+function rangeLabel(state) {
+  const [from, to] = activeRange(state);
   if (from == null && to == null) return "全部期間";
   if (from != null && to == null) return stampLabel(from) + " 起";
   if (from == null) return stampLabel(to - 1) + " 以前";
   return stampLabel(from) + " – " + stampLabel(to - 1);
 }
-function filtered() {
+/* wantEaNative=false（訊號跟單分頁）只看我們自己送出的訊號單；
+   wantEaNative=true（趨勢線策略分頁）只看別的 EA 自己下的單。
+   兩個分頁務必互斥，不然同一筆交易會被兩邊重複算進累計損益。 */
+function filtered(state, wantEaNative) {
+  state = state || S;
   const all = (S.stats && S.stats.trades) || [];
-  const [from, to] = activeRange();
+  const [from, to] = activeRange(state);
   return all.filter((t) => {
+    if (!!wantEaNative !== (t.mode === "ea_native")) return false;
     const stamp = t.close_timestamp || 0;
     if (from != null && stamp < from) return false;
     if (to != null && stamp >= to) return false;
-    if (S.source !== "all" && (t.source || "未標記來源") !== S.source) return false;
+    if (state.source !== "all" && (t.source || "未標記來源") !== state.source) return false;
     return true;
   });
 }
@@ -868,9 +968,11 @@ function axisLabel(v) {
   return n0.format(v);
 }
 
-function renderEquity(trades) {
-  const svg = $("equityChart");
-  const wrap = $("equityWrap");
+function renderEquity(trades, ids, state) {
+  ids = ids || { svg: "equityChart", wrap: "equityWrap", tip: "equityTip" };
+  state = state || S;
+  const svg = $(ids.svg);
+  const wrap = $(ids.wrap);
   svg.textContent = "";
   const W = Math.max(320, wrap.clientWidth), H = 268;
   const pad = { t: 18, r: 74, b: 30, l: 58 };
@@ -880,7 +982,7 @@ function renderEquity(trades) {
   if (!trades.length) {
     wrap.querySelector(".tip").classList.remove("is-on");
     svg.appendChild(Object.assign(svgEl("text", { x: W / 2, y: H / 2, "text-anchor": "middle", class: "tick" }),
-      { textContent: rangeLabel() + " 沒有已平倉交易" }));
+      { textContent: rangeLabel(state) + " 沒有已平倉交易" }));
     return;
   }
 
@@ -976,7 +1078,7 @@ function renderEquity(trades) {
   const marker = svgEl("circle", { r: 5, fill: stroke, stroke: "var(--card)", "stroke-width": 2, opacity: 0 });
   svg.appendChild(cursor); svg.appendChild(marker);
 
-  const tip = $("equityTip");
+  const tip = $(ids.tip);
   const hit = svgEl("rect", { x: pad.l, y: pad.t, width: plotW, height: plotH, fill: "transparent", style: "cursor:crosshair" });
   svg.appendChild(hit);
   const show = (evt) => {
@@ -986,12 +1088,16 @@ function renderEquity(trades) {
     for (const p of pts) { const gap = Math.abs(X(p.i) - px); if (gap < bestGap) { best = p; bestGap = gap; } }
     cursor.setAttribute("x1", X(best.i)); cursor.setAttribute("x2", X(best.i)); cursor.setAttribute("opacity", 1);
     marker.setAttribute("cx", X(best.i)); marker.setAttribute("cy", Y(best.cum)); marker.setAttribute("opacity", 1);
+    // 均注/EA自動的單沒有馬丁關卡（level 是 null），null+1 在 JS 會變成 1，
+    // 會誤顯示「第 1 關」，所以要明確判斷
+    const lvText = best.t.mode === "flat" ? "均注" : best.t.mode === "ea_native" ? "EA 自動"
+      : "第 " + (best.t.level + 1) + " 關";
     tip.innerHTML =
       '<div class="tip-h">' + esc(best.t.close_time) + "</div>" +
       '<div class="tip-row"><span>本筆</span><b class="' + toneClass(best.t.profit) + '">' +
         arrow(best.t.profit) + " " + money(best.t.profit, { signed: true }) + "</b></div>" +
       '<div class="tip-row"><span>累計</span><b class="' + toneClass(best.cum) + '">' + money(best.cum, { signed: true }) + "</b></div>" +
-      '<div class="tip-row"><span>手數</span><b>' + lots(best.t.volume) + " · 第 " + (best.t.level + 1) + " 關</b></div>";
+      '<div class="tip-row"><span>手數</span><b>' + lots(best.t.volume) + " · " + lvText + "</b></div>";
     tip.classList.add("is-on");
     const left = Math.min(Math.max(0, (X(best.i) / W) * box.width - 70), box.width - 155);
     tip.style.left = left + "px";
@@ -1058,7 +1164,9 @@ function renderBars(trades) {
         '<div class="tip-row"><span>' + (t.is_win ? "贏" : "輸") + "</span><b class=\"" + toneClass(t.profit) + '">' +
           arrow(t.profit) + " " + money(t.profit, { signed: true }) + "</b></div>" +
         '<div class="tip-row"><span>手數</span><b>' + lots(t.volume) + "</b></div>" +
-        '<div class="tip-row"><span>關卡</span><b>第 ' + (t.level + 1) + " 關</b></div>";
+        '<div class="tip-row"><span>關卡</span><b>' +
+          (t.mode === "flat" ? "均注" : t.mode === "ea_native" ? "EA 自動" : "第 " + (t.level + 1) + " 關") +
+        "</b></div>";
       tip.classList.add("is-on");
       const box = svg.getBoundingClientRect();
       tip.style.left = Math.min(Math.max(0, ((pad.l + i * band) / W) * box.width - 66), box.width - 150) + "px";
@@ -1143,14 +1251,59 @@ function renderSourcePerformance(trades, sourceRows) {
     }).join("");
 }
 
+/* 趨勢線策略分頁的「訊號類型績效」：EA 一顆策略裡有好幾種進場邏輯
+   （強多頭多單1／多單回踩／多單重入…各自獨立算勝率），跟「各來源績效」外觀一致，
+   但分組依據是 comment 去掉結尾的 K 棒序號（"強多頭多單1_1234" -> "強多頭多單1"），
+   不是訊號來源——這裡本來就只有一個來源，再用來源分組沒有意義。
+   純唯讀卡片，不能點來篩選：這些名稱不是 SE.source 的合法值（SE.source 篩的是
+   「哪個 EA」，不是「哪種訊號」），點了也篩不出東西，所以故意用 <div> 不用 <button>。 */
+function eaSignalType(signalId) {
+  return String(signalId || "").replace(/_\d+$/, "") || "未分類";
+}
+function renderEaBreakdown(trades, elId) {
+  const box = $(elId || "eaBreakdown");
+  const groups = new Map();
+  for (const t of trades) {
+    const name = eaSignalType(t.signal_id);
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(t);
+  }
+  if (!groups.size) {
+    box.innerHTML = '<div class="card"><div class="empty">' + esc(rangeLabel(SE)) + " 沒有任何訊號類型的交易</div></div>";
+    return;
+  }
+  box.innerHTML = [...groups.entries()]
+    .sort((a, b) => b[1].reduce((s, t) => s + t.profit, 0) - a[1].reduce((s, t) => s + t.profit, 0))
+    .map(([name, list]) => {
+      const sum = summarise(list);
+      return '<div class="source-card">' +
+        '<div class="sc-head"><span class="sc-name">' + esc(name) + "</span></div>" +
+        '<div class="sc-net ' + toneClass(sum.net) + '">' + money(sum.net, { signed: true, compact: true }) + "</div>" +
+        '<div class="sc-chart">' + miniCurve(list, 260, 54) + "</div>" +
+        '<dl class="sc-stats">' +
+          "<div><dt>筆數</dt><dd>" + sum.total + "</dd></div>" +
+          "<div><dt>勝率</dt><dd>" + pct(sum.win_rate) + "</dd></div>" +
+          '<div><dt>贏 / 輸</dt><dd><span class="up">' + sum.wins + '</span> / <span class="down">' + sum.losses + "</span></dd></div>" +
+          "<div><dt>最大連敗</dt><dd>" + sum.max_loss_streak + "</dd></div>" +
+        "</dl>" +
+      "</div>";
+    }).join("");
+}
+
 /* ----------------------------------------------------------- table & co. */
-function renderTiles(sum, cycles) {
+function renderTiles(sum, cycles, elId) {
   const pf = sum.profit_factor;
   const tiles = [
     { dt: "單筆勝率", dd: pct(sum.win_rate), meter: sum.win_rate,
       small: "贏 " + sum.wins + " · 輸 " + sum.losses },
-    { dt: "已完成回合", dd: cycles ? cycles.completed : "—",
-      small: cycles ? ("獲利回合 " + cycles.profitable + " · 回合勝率 " + pct(cycles.rate)) : "" },
+  ];
+  // 「回合」是馬丁格爾的概念（連續虧損直到一次獲利），EA 自己算風險倉位、
+  // 沒有這個概念，cycles 傳 null 時整格跳過，不要放一個「—」在那裡佔位。
+  if (cycles !== undefined) {
+    tiles.push({ dt: "已完成回合", dd: cycles ? cycles.completed : "—",
+      small: cycles ? ("獲利回合 " + cycles.profitable + " · 回合勝率 " + pct(cycles.rate)) : "" });
+  }
+  tiles.push(
     { dt: "獲利因子", dd: pf == null ? "—" : n2.format(pf),
       small: pf == null ? "尚無虧損單" : (pf >= 1 ? "每虧 $1 賺 $" + n2.format(pf) : "低於 1 代表淨虧損"), tone: pf == null ? "" : (pf >= 1 ? "up" : "down") },
     { dt: "最大回撤", dd: money(-sum.max_dd, { compact: true }), tone: sum.max_dd ? "down" : "",
@@ -1159,8 +1312,8 @@ function renderTiles(sum, cycles) {
     { dt: "平均獲利", dd: money(sum.avg_win, { compact: true }), tone: "up", small: "每筆贏單平均" },
     { dt: "平均虧損", dd: money(sum.avg_loss, { compact: true }), tone: "down", small: "每筆輸單平均" },
     { dt: "累計手數", dd: lots(sum.volume) + " 手", small: sum.total + " 筆已平倉" },
-  ];
-  $("tiles").innerHTML = tiles.map((t) => '' +
+  );
+  $(elId || "tiles").innerHTML = tiles.map((t) => '' +
     '<div class="tile">' +
       "<dt>" + t.dt + "</dt>" +
       '<dd class="' + (t.tone || "") + '">' + t.dd + "</dd>" +
@@ -1169,20 +1322,28 @@ function renderTiles(sum, cycles) {
     "</div>").join("");
 }
 
-function renderRecords(trades) {
-  const box = $("records");
+function renderRecords(trades, ids, state, repaint) {
+  ids = ids || { box: "records" };
+  state = state || S;
+  repaint = repaint || paintStats;
+  const box = $(ids.box);
   if (!trades.length) {
-    const hasAny = ((S.stats && S.stats.trades) || []).length > 0;
-    box.innerHTML = '<div class="empty"><b>' + esc(rangeLabel()) + ' 沒有已平倉交易</b>' +
+    const wantEa = ids.box === "eaRecords";
+    const hasAny = ((S.stats && S.stats.trades) || []).some((t) => (t.mode === "ea_native") === wantEa);
+    box.innerHTML = '<div class="empty"><b>' + esc(rangeLabel(state)) + ' 沒有已平倉交易</b>' +
       (hasAny
-        ? '這個期間還沒有成交<br><button class="btn" id="jumpAll" style="margin-top:12px">看全部歷史戰績</button>'
+        ? '這個期間還沒有成交<br><button class="btn" id="' + ids.box + 'JumpAll" style="margin-top:12px">看全部歷史戰績</button>'
         : "收到訊號並平倉後，紀錄會出現在這裡") +
       "</div>";
-    const jump = $("jumpAll");
-    if (jump) jump.onclick = () => selectPeriod("all");
+    const jump = $(ids.box + "JumpAll");
+    if (jump) jump.onclick = () => selectPeriod(state, ids.periodIds, "all", repaint);
     return;
   }
-  const rows = trades.slice().reverse().map((t) => '' +
+  // 累計欄要在「目前這個分頁看得到的清單」裡重算，不能直接用後端的 t.cumulative——
+  // 那是訊號單跟 EA 單混在一起、依時間排序的全域累計，拆成兩個分頁各自看會對不起來。
+  let cum = 0;
+  const withCum = trades.map((t) => { cum += t.profit; return { t, cum }; });
+  const rows = withCum.slice().reverse().map(({ t, cum }) => '' +
     "<tr>" +
       '<td class="mono">' + esc(t.close_time) + "</td>" +
       '<td><span class="tag ' + (t.is_win ? "tag-win" : "tag-loss") + '">' + (t.is_win ? "▲ 贏" : "▼ 輸") + "</span></td>" +
@@ -1195,7 +1356,7 @@ function renderRecords(trades) {
       '<td class="num mono">' + n2.format(t.entry_price) + "</td>" +
       '<td class="num mono">' + n2.format(t.exit_price) + "</td>" +
       '<td class="num ' + toneClass(t.profit) + '" style="font-weight:600">' + money(t.profit, { signed: true }) + "</td>" +
-      '<td class="num ' + toneClass(t.cumulative) + ' mono">' + money(t.cumulative, { signed: true, compact: true }) + "</td>" +
+      '<td class="num ' + toneClass(cum) + ' mono">' + money(cum, { signed: true, compact: true }) + "</td>" +
       "<td>" + esc(t.source || "—") + "</td>" +
       // 分批平倉時每段各有成交編號，用 position_id 才是穩定的那一張單
       '<td class="mono">' + esc(t.position_id || t.ticket) + "</td>" +
@@ -1278,10 +1439,11 @@ function renderPending(pending, running) {
   tickCountdowns();
 }
 
-function renderPositions(positions, currency) {
-  const box = $("positions");
+function renderPositions(positions, currency, ids) {
+  ids = ids || { box: "positions", summary: "posSummary" };
+  const box = $(ids.box);
   const floating = positions.reduce((a, p) => a + p.profit, 0);
-  $("posSummary").innerHTML = positions.length
+  $(ids.summary).innerHTML = positions.length
     ? positions.length + " 筆持倉中 · 浮動 <b class=\"" + toneClass(floating) + "\">" + money(floating, { signed: true }) + "</b>"
     : "目前沒有持倉";
   if (!positions.length) {
@@ -1521,11 +1683,12 @@ function paintStats() {
 
   // 來源下拉：保留使用者選擇，來源清單變動時才重建。
   // 清單要跟「各來源績效」一致 —— 用自動發現的完整來源，不能只列有成交紀錄的，
-  // 否則剛設定好、還沒平倉的群組會整個不見。
+  // 否則剛設定好、還沒平倉的群組會整個不見。EA 自己下的單有自己的分頁，
+  // 這裡（訊號跟單分頁）不列。
   const select = $("filterSource");
   const names = [...new Set(
     (stats.source_settings || []).map((r) => r.source)
-      .concat((stats.trades || []).map((t) => t.source || "未標記來源"))
+      .concat((stats.trades || []).filter((t) => t.mode !== "ea_native").map((t) => t.source || "未標記來源"))
   )];
   const signature = names.join("|");
   if (select.dataset.signature !== signature) {
@@ -1536,11 +1699,16 @@ function paintStats() {
     S.source = select.value;
   }
 
-  const trades = filtered();
+  const allSignalTrades = (stats.trades || []).filter((t) => t.mode !== "ea_native");
+  const allEaTrades = (stats.trades || []).filter((t) => t.mode === "ea_native");
+  const signalPositions = (stats.positions || []).filter((p) => p.mode !== "ea_native");
+  const eaPositions = (stats.positions || []).filter((p) => p.mode === "ea_native");
+
+  const trades = filtered(S, false);
   const sum = summarise(trades);
   const isAll = S.period === "all" && S.source === "all";
 
-  $("filterCount").textContent = rangeLabel() + " · " + trades.length + " / " + (stats.trades || []).length + " 筆";
+  $("filterCount").textContent = rangeLabel() + " · " + trades.length + " / " + allSignalTrades.length + " 筆";
   setHero(sum.net);
   $("heroSub").innerHTML = trades.length
     ? sum.total + " 筆已平倉 · 勝率 " + pct(sum.win_rate) + (isAll ? "" : " · " + esc(rangeLabel()))
@@ -1556,12 +1724,40 @@ function paintStats() {
 
   renderLadder(stats.martingale || {}, isAll ? stats.cycles : null, srcRows);
   renderPending(stats.pending || [], !!(S.status && S.status.running));
-  renderPositions(stats.positions || [], CURRENCY);
+  renderPositions(signalPositions, CURRENCY);
   renderTiles(sum, isAll ? stats.cycles : null);
   renderEquity(trades);
   renderBars(trades);
   renderSourcePerformance(trades, srcRows);
   renderRecords(trades);
+
+  // 分頁列：完全沒設定過其他 EA 就不出現，訊號跟單畫面跟以前一模一樣
+  const hasEa = (stats.ea_sources || []).length > 0;
+  $("viewTabs").hidden = !hasEa;
+  if (hasEa) paintEA(allEaTrades, eaPositions);
+}
+
+/* 趨勢線策略分頁：跟訊號跟單分頁共用同一份 /api/stats 輪詢結果，只是把
+   trades/positions 換成 mode==="ea_native" 的子集，用自己的一組期間篩選狀態 SE。
+   沒有馬丁階梯（EA 自己算風險倉位）、沒有待成交掛單（這顆 EA 只下市價單）、
+   沒有下單控制表（手數不是我們調的）。 */
+function paintEA(allEaTrades, eaPositions) {
+  $("eaCurCode").textContent = CURRENCY;
+  const trades = filtered(SE, true);
+  const sum = summarise(trades);
+  const isAll = SE.period === "all";
+
+  $("eaFilterCount").textContent = rangeLabel(SE) + " · " + trades.length + " / " + allEaTrades.length + " 筆";
+  setHero(sum.net, "eaHeroNet", SE);
+  $("eaHeroSub").textContent = trades.length
+    ? sum.total + " 筆已平倉 · 勝率 " + pct(sum.win_rate) + (isAll ? "" : " · " + rangeLabel(SE))
+    : (S.stats && S.stats.connected ? rangeLabel(SE) + " 尚無平倉紀錄" : "等待 MT5 回報交易資料");
+
+  renderPositions(eaPositions, CURRENCY, { box: "eaPositions", summary: "eaPosSummary" });
+  renderTiles(sum, undefined, "eaTiles");
+  renderEquity(trades, { svg: "eaEquityChart", wrap: "eaEquityWrap", tip: "eaEquityTip" }, SE);
+  renderEaBreakdown(trades, "eaBreakdown");
+  renderRecords(trades, { box: "eaRecords", periodIds: EA_PERIOD_IDS }, SE, () => paintEA(allEaTrades, eaPositions));
 }
 
 function paintStatus() {
@@ -1646,28 +1842,44 @@ $("themeToggle").onclick = () =>
   applyTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark");
 
 /* --------------------------------------------------------------- events */
-function selectPeriod(key) {
-  S.period = key;
-  [...$("filterPeriod").children].forEach((c) => c.classList.toggle("is-on", c.dataset.period === key));
+/* 通用期間篩選：state 是要寫入的篩選狀態（S 或 SE），ids 是這個分頁對應的
+   DOM id 組，repaint 是選完之後要重畫哪個分頁。兩個分頁的期間選單長得一樣，
+   邏輯共用，只有「要動誰的狀態、畫誰的畫面」不同。 */
+function selectPeriod(state, ids, key, repaint) {
+  state.period = key;
+  [...$(ids.pillset).children].forEach((c) => c.classList.toggle("is-on", c.dataset.period === key));
   const custom = key === "custom";
-  $("dateRange").hidden = !custom;
-  if (custom && !S.from && !S.to) {
+  $(ids.range).hidden = !custom;
+  if (custom && !state.from && !state.to) {
     // 自訂預設帶出本月，使用者不用從空白開始填
     const now = brokerNow();
-    $("dateFrom").value = S.from = isoDate(monthStart(now, 0));
-    $("dateTo").value = S.to = isoDate(now);
+    $(ids.from).value = state.from = isoDate(monthStart(now, 0));
+    $(ids.to).value = state.to = isoDate(now);
   }
-  paintStats();
+  repaint();
 }
+const SIGNAL_PERIOD_IDS = { pillset: "filterPeriod", range: "dateRange", from: "dateFrom", to: "dateTo" };
+const EA_PERIOD_IDS = { pillset: "eaFilterPeriod", range: "eaDateRange", from: "eaDateFrom", to: "eaDateTo" };
 $("filterPeriod").addEventListener("click", (evt) => {
   const btn = evt.target.closest("[data-period]");
-  if (btn) selectPeriod(btn.dataset.period);
+  if (btn) selectPeriod(S, SIGNAL_PERIOD_IDS, btn.dataset.period, paintStats);
+});
+$("eaFilterPeriod").addEventListener("click", (evt) => {
+  const btn = evt.target.closest("[data-period]");
+  if (btn) selectPeriod(SE, EA_PERIOD_IDS, btn.dataset.period, paintEA);
 });
 for (const id of ["dateFrom", "dateTo"]) {
   $(id).addEventListener("change", () => {
     S.from = $("dateFrom").value;
     S.to = $("dateTo").value;
     paintStats();
+  });
+}
+for (const id of ["eaDateFrom", "eaDateTo"]) {
+  $(id).addEventListener("change", () => {
+    SE.from = $("eaDateFrom").value;
+    SE.to = $("eaDateTo").value;
+    paintEA();
   });
 }
 $("filterSource").addEventListener("change", (evt) => { S.source = evt.target.value; paintStats(); });
@@ -1686,6 +1898,14 @@ $("ladderTabs").addEventListener("click", (evt) => {
   if (!btn) return;
   S.ladderSource = btn.dataset.src;
   paintStats();
+});
+$("viewTabs").addEventListener("click", (evt) => {
+  const btn = evt.target.closest("[data-view]");
+  if (!btn) return;
+  const view = btn.dataset.view;
+  [...$("viewTabs").children].forEach((c) => c.classList.toggle("is-on", c === btn));
+  $("viewSignals").hidden = view !== "signals";
+  $("viewEA").hidden = view !== "ea";
 });
 
 $("start").onclick = () => post("/api/start", collect()).then(refreshStatus).catch((e) => alert(e.message));
