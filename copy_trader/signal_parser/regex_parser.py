@@ -666,8 +666,22 @@ class RegexSignalParser:
                     except:
                         pass
 
-        # No explicit entry = market order
-        return None, True
+        # 讀不到進場價 → 回 (None, False)，也就是「這則還沒讀完整」，而不是市價單。
+        #
+        # 這裡原本是 `return None, True`（沒有進場價就當市價單），把「OCR 辨識失敗
+        # （未知）」跟「提供者說要市價進場（已知）」混為一談。追蹤的提供者實際上
+        # 每一筆都會給進場點、全部是限價單，所以 entry=None 永遠只代表沒讀到。
+        #
+        # 實測 2026-08-12 的後果：同一則訊號被重讀時進場價沒讀出來，就變成第二筆
+        # 「市價單」發布出去 —— SL/TP 與原訊號完全相同，去重卻因為正規化文字不同
+        # （"Buy 市價" vs "Buy ：4415"）擋不住。會員端於是對同一個訊號開了兩張 1 手
+        # 的單，而且第二張用當下市價成交（4405.92 / 4410.81 / 4427.82 這種零碎價，
+        # 對照正常單的 4399 / 4415 / 4419）。seq=200 那筆進場時已經衝過目標 8.8 點。
+        #
+        # 寧可漏一筆也不要用錯的價格下單：回 False 之後 _is_complete() 會判定不完整、
+        # 不發布，等下一輪把畫面讀清楚。真正的市價單仍然認得 —— 文字裡出現
+        # 「市價/市价/現價/现价/market」時，函式開頭的 _market_re 就會先回 (None, True)。
+        return None, False
 
     def _expand_truncated_price(self, partial: str, ref_prices: list) -> Optional[float]:
         """

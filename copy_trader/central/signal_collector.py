@@ -98,8 +98,21 @@ def _merge_signal(base: ParsedSignal, new: ParsedSignal) -> ParsedSignal:
 
 
 def _is_complete(signal: ParsedSignal) -> bool:
-    has_entry = signal.entry_price is not None or bool(signal.is_market_order)
-    return bool(signal.is_valid and signal.direction and has_entry and signal.stop_loss and signal.take_profit)
+    """完整 = 方向 + 進場價 + 止損 + 止盈 全都有。
+
+    刻意要求「真的有進場價」，不接受 is_market_order 當替代品：追蹤的提供者每一筆
+    都會給進場點、全部是限價單，所以 entry=None 只可能是 OCR 沒讀到。2026-08-12
+    因為舊的判定放行了三筆「市價單」，讓同一則訊號被重複下單、還用當下市價成交
+    （見 regex_parser._extract_entry 的說明）。這是第二道閘門 —— 即使解析層哪天又
+    把什麼誤判成市價，中央也不會把它發出去。
+    """
+    return bool(
+        signal.is_valid
+        and signal.direction
+        and signal.entry_price is not None
+        and signal.stop_loss
+        and signal.take_profit
+    )
 
 
 def _sl_tp_consistent(signal: ParsedSignal) -> bool:
