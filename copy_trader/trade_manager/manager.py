@@ -332,6 +332,9 @@ class TradeManager:
 
         「同方向短時間改單防呆」：新訊號下單前呼叫，撤掉剛剛同方向的舊掛單，
         避免乘改單/OCR怪異造成同方向多下一張。回傳撤掉的張數。
+
+        注意：不分來源。開著會讓 B 群的新單撤掉 A 群同方向的舊掛單，跟多群時
+        務必留 0，改用 supersede_same_source() 那條。
         """
         if not direction or within_seconds <= 0:
             return 0
@@ -350,6 +353,51 @@ class TradeManager:
                 n += 1
         if n:
             logger.info("同方向改單防呆：撤掉 %d 張 %s 舊掛單 (被新訊號取代)", n, direction)
+        return n
+
+    def supersede_same_source(self, source_window: str, within_seconds: float,
+                              exclude_signal_id: str = "") -> int:
+        """同一來源在 within_seconds 內又發新單 → 撤掉該來源之前那些還沒成交的掛單。
+
+        為什麼需要：提供者會「收回訊息再重發」來修正報單。實測 2026-08-14，yuyu 在
+        23 秒內發了三次 —— 前兩次都被自己收回 (畫面上留下兩行「已收回訊息」)，止損
+        分別是 4359 / 4369，最後定案 4364。我們的擷取延遲只有 3 秒，等於每個中途版本
+        都在被收回前就發布出去了，會員端於是對同一則報單掛了三張單、曝險變三倍，
+        而且三張的止損各不相同。
+
+        （順帶一提：那三筆 OCR 全部讀對了。同一張圖重複辨識 5 次結果一致、連續截圖
+        6 次也一致 —— 是提供者真的改了三次，不是辨識問題。）
+
+        設計上的兩個決定：
+
+        * 不分方向。收回重發時提供者可能連方向都改掉；既然舊的那則已經被收回，
+          留著它就是錯的。同一個提供者在 3 分鐘內發出兩筆「互相獨立」的真訊號並不
+          實際 —— 真要那樣，兩張反向單本身也會互相衝突。
+        * 只動 PENDING/SENT，**絕不碰已成交的部位**。已經進場的單屬於既成事實，
+          要平倉該走停損/止盈或人工決定，不能被一個新訊號默默平掉。
+        """
+        if not source_window or within_seconds <= 0:
+            return 0
+        now = time.time()
+        with self._lock:
+            victims = [
+                (sid, o) for sid, o in self.orders.items()
+                if sid != exclude_signal_id
+                and o.status in (OrderStatus.PENDING, OrderStatus.SENT)
+                and (o.source_window or "") == source_window
+                and (now - o.created_at) <= within_seconds
+            ]
+        n = 0
+        for sid, o in victims:
+            sig = o.signal
+            if self.cancel_order(sid, reason="superseded_same_source"):
+                n += 1
+                logger.info(
+                    "同來源改單：撤掉 %s 的舊掛單 %s（%s @%s SL %s，%.0f 秒前送出）— 已被新訊號取代",
+                    source_window, sid, getattr(sig, "direction", "?"),
+                    getattr(sig, "entry_price", "?"), getattr(sig, "stop_loss", "?"),
+                    now - o.created_at,
+                )
         return n
 
     # MT5 order type: 偶數=buy 系列(0 BUY / 2 BUY_LIMIT / 4 BUY_STOP), 奇數=sell 系列

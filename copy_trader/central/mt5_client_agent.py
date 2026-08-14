@@ -167,12 +167,16 @@ class MT5ClientAgent:
         # 同方向短時間改單防呆: 下單前撤掉這麼久內同方向的舊掛單。0=關閉 (預設)。
         # 不分來源, 開著會讓 B 群的新單撤掉 A 群同方向的舊掛單 — 跟多群時務必留 0。
         self.supersede_window_sec = max(0, int(getattr(self.config, "supersede_same_direction_minutes", 0) or 0) * 60)
+        # 同來源改單: 同一提供者這麼久內又發新單 → 撤掉他之前未成交的掛單, 只跟最新那筆。
+        # 分來源, 跟多群也安全, 預設 3 分鐘 (見 TradeManager.supersede_same_source)。
+        self.supersede_source_sec = max(0, int(getattr(self.config, "supersede_same_source_minutes", 3) or 0) * 60)
         # 是否理會群組撤單訊息。預設關 — 只靠掛單逾時未成交自動刪單。
         self.follow_group_cancel = bool(getattr(self.config, "follow_group_cancel", False))
         logger.info(
-            "撤單策略: 逾時刪單 %.1f 小時 / 訊息撤單=%s / 同方向改單防呆=%s",
+            "撤單策略: 逾時刪單 %.1f 小時 / 訊息撤單=%s / 同來源改單=%s / 同方向改單防呆=%s",
             (self.config.cancel_pending_after_seconds or 0) / 3600.0,
             "開" if self.follow_group_cancel else "關",
+            f"{self.supersede_source_sec // 60}分" if self.supersede_source_sec else "關",
             f"{self.supersede_window_sec // 60}分" if self.supersede_window_sec else "關",
         )
 
@@ -275,7 +279,12 @@ class MT5ClientAgent:
                 logger.info("來源「%s」已停用，略過 seq=%s", source, seq)
                 self._mark_seq(seq)
                 continue
-            # 同方向短時間改單防呆: 下這筆前, 撤掉同方向的近期未成交舊掛單, 只留最新
+            # 同來源改單: 同一個提供者在 supersede_same_source_minutes 內又發新單,
+            # 代表他在修正報單 (常見手法是「收回訊息再重發」) → 撤掉他之前還沒成交的
+            # 掛單, 只跟最新那筆。分來源, 不會動到別群。已成交的部位不碰。
+            if self.supersede_source_sec > 0:
+                self.trade_manager.supersede_same_source(source, self.supersede_source_sec)
+            # 同方向短時間改單防呆 (不分來源, 預設關): 跟多群時開這個會互相誤撤
             if self.supersede_window_sec > 0 and signal.direction in ("buy", "sell"):
                 self.trade_manager.cancel_pending_same_direction(signal.direction, self.supersede_window_sec)
             signal_id = self.trade_manager.submit_signal(

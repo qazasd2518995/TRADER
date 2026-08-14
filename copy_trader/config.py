@@ -206,7 +206,15 @@ class Config:
     # cancel_pending_same_direction），所以兩個都關掉。
     cancel_pending_after_seconds: int = 10800    # 3 小時未成交 → 自動刪單；0=不因逾時刪
     cancel_if_price_beyond_percent: float = 0.0  # 0=關閉價格偏離自動撤單
-    supersede_same_direction_minutes: int = 0    # 0=關閉同方向改單防呆
+    supersede_same_direction_minutes: int = 0    # 0=關閉同方向改單防呆 (不分來源)
+    # 同一來源在這幾分鐘內又發新單 → 撤掉該來源之前還沒成交的掛單，只跟最新那筆。
+    # 這條「分來源」，所以跟多群也安全，預設開著。
+    #
+    # 提供者會用「收回訊息再重發」修正報單：2026-08-14 yuyu 在 23 秒內發三次、
+    # 收回前兩次 (止損 4359 → 4369 → 4364)，我們 3 秒的擷取延遲讓每個中途版本都
+    # 在被收回前就發布了，會員端因此對同一則報單掛了三張、曝險三倍且止損各不相同。
+    # 只撤未成交的掛單，已進場的部位不動。
+    supersede_same_source_minutes: int = 3
     follow_group_cancel: bool = False            # False=不跟群組的「取消/撤」訊息
 
     # Multiple TP Settings
@@ -349,6 +357,7 @@ def save_config(config: Config, path: Path = CONFIG_FILE):
         "cancel_pending_after_seconds": config.cancel_pending_after_seconds,
         "cancel_if_price_beyond_percent": config.cancel_if_price_beyond_percent,
         "supersede_same_direction_minutes": config.supersede_same_direction_minutes,
+        "supersede_same_source_minutes": config.supersede_same_source_minutes,
         "follow_group_cancel": config.follow_group_cancel,
         "signal_max_age_minutes": config.signal_max_age_minutes,
         "partial_close_ratios": config.partial_close_ratios,
