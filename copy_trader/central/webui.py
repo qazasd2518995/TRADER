@@ -1115,9 +1115,11 @@ function renderSourcePerformance(trades, sourceRows) {
     if (!groups.has(name)) groups.set(name, []);
     groups.get(name).push(t);
   }
-  // 已設定但這區間還沒成交的來源也要列出來，否則會以為它不存在
+  // 已設定但這區間還沒成交的來源也要列出來，否則會以為它不存在。
+  // 但只算「有在跟單」的 —— 停用的來源(含歷史遺留的測試來源)不該佔版面，
+  // 也不該讓下面的「單一來源」判斷失效。
   for (const row of sourceRows || []) {
-    if (!groups.has(row.source)) groups.set(row.source, []);
+    if (row.enabled && !groups.has(row.source)) groups.set(row.source, []);
   }
   // 一個實例只跟一個來源時，「各來源績效」跟整頁統計是同一份資料，擺著只是重複。
   // 連同上方的區塊標題與來源篩選一起收起來，版面才乾淨。多來源時自動恢復。
@@ -1338,7 +1340,9 @@ function ladderForSource(row) {
 function round2(v) { return Math.round(v * 100) / 100; }
 
 function renderLadder(mg, cycles, sources) {
-  const configured = (sources || []).filter((s) => s.configured);
+  // 只列「有在跟單」的來源。停用的(含歷史遺留的 test / TEST-* / 鄭…)列出來只是
+  // 一長串「此來源已停用，不跟單」的雜訊，對操作沒有任何幫助。
+  const configured = (sources || []).filter((s) => s.configured && s.enabled);
   const tabs = $("ladderTabs");
 
   if (!configured.length) {                       // 沒設定每群模式 → 維持單一全域階梯
@@ -1356,6 +1360,10 @@ function renderLadder(mg, cycles, sources) {
   }
   const row = configured.find((s) => s.source === S.ladderSource);
 
+  // 只有一個來源就不必畫分頁 —— 沒有東西可切換
+  if (configured.length <= 1) {
+    tabs.innerHTML = "";
+  } else {
   tabs.innerHTML = configured.map((s) => {
     const on = s.source === S.ladderSource ? "is-on" : "";
     const off = s.enabled ? "" : "is-off";
@@ -1363,6 +1371,7 @@ function renderLadder(mg, cycles, sources) {
     return '<button type="button" class="src-tab ' + on + " " + off + '" data-src="' + esc(s.source) + '">' +
       esc(srcName(s.source)) + '<span class="badge">' + badge + "</span></button>";
   }).join("");
+  }
 
   $("ladderTitle").textContent = row.mode === "flat" ? "均注模式" : "馬丁階梯";
   if (row.mode === "flat") {
