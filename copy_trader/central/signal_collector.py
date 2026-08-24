@@ -299,9 +299,13 @@ class CentralSignalCollector:
             for msg in cap.new_messages:
                 should_mark_seen = False
                 abort_source = False
+                did_publish = False
                 try:
                     count = self._process_message(msg, cap.source_name, cap.display_name)
                     published += count
+                    # count > 0 = 這則真的被發布到 Hub 了。採集層要記下這個
+                    # 時刻，之後去重擋掉重複訊號時才講得出「我們何時發過」。
+                    did_publish = count > 0
                     should_mark_seen = True
                 except (urllib.error.URLError, TimeoutError, RuntimeError) as e:
                     logger.warning("message publish failed, will retry source=%s: %s", cap.display_name, e)
@@ -315,7 +319,8 @@ class CentralSignalCollector:
                     should_mark_seen = True
                 finally:
                     if should_mark_seen:
-                        self.clipboard.mark_seen(cap.source_name, [msg])
+                        self.clipboard.mark_seen(cap.source_name, [msg],
+                                                 published=did_publish)
                 if abort_source:
                     break
         return published

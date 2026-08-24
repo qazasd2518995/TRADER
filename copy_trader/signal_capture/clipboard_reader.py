@@ -264,8 +264,14 @@ class ClipboardReaderService:
                 ))
         return out
 
-    def mark_seen(self, source_name: str, messages: List[LineMessage]) -> None:
-        """把訊息加入 seen 集合（下游處理完畢後呼叫，避免重覆下單）。"""
+    def mark_seen(self, source_name: str, messages: List[LineMessage],
+                  published: bool = False) -> None:
+        """把訊息加入 seen 集合（下游處理完畢後呼叫，避免重覆下單）。
+
+        published 只是為了跟 WindowOcrReaderService 的介面一致（見該檔的
+        _published_ts）—— 這條剪貼簿管線已停用，不另外記錄發布時間。
+        """
+        del published
         seen_set = self._seen_set.get(source_name)
         seen_deque = self._seen_keys.get(source_name)
         if seen_set is None or seen_deque is None:

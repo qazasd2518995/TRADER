@@ -44,6 +44,27 @@ from .line_text_parser import LineMessage
 
 logger = logging.getLogger(__name__)
 
+# 去重存檔裡放「發布時間」的頂層鍵。刻意不放進各來源的字典裡 —— 舊版的
+# _load_seen 是 `for name in self._seen_set` 逐來源取值，多一個它不認識的
+# 頂層鍵會被直接略過，回退到舊執行檔時存檔仍然完全可讀。
+_PUBLISHED_KEY = "_published_at"
+
+
+def _ago_text(seconds: float) -> str:
+    """把「幾秒前」講成人看得懂的話。
+
+    原本一律印小數點一位的小時數，10 分鐘會變成「0.2 小時」——
+    看的人得自己換算，而且小到一定程度就全是 0.0。
+    """
+    seconds = max(0.0, float(seconds))
+    if seconds < 90:
+        return f"{seconds:.0f} 秒前"
+    if seconds < 5400:                      # 90 分鐘以內講分鐘
+        return f"{seconds / 60:.0f} 分鐘前"
+    if seconds < 172800:                    # 兩天以內講小時
+        return f"{seconds / 3600:.1f} 小時前"
+    return f"{seconds / 86400:.1f} 天前"
+
 # 視窗尺寸控制用 (SetWindowPos)；非 Windows 直接 None，_ensure_tall 會略過。
 try:
     import win32con as _win32con  # type: ignore[import-not-found]
@@ -213,7 +234,19 @@ class WindowOcrReaderService:
         # 每個來源：已看過(baseline+已發布)的正規化訊號文字
         self._seen_keys: Dict[str, Deque[str]] = {w.name: deque(maxlen=self.SEEN_MAX) for w in windows}
         self._seen_set: Dict[str, Set[str]] = {w.name: set() for w in windows}
+        # 最後一次在畫面上看到的時間 —— 保留期用它，會被 mark_seen 反覆刷新。
         self._seen_ts: Dict[str, Dict[str, float]] = {w.name: {} for w in windows}
+        # **我們把這則訊號發布到 Hub 的時間**，只在真的發布成功時寫一次。
+        #
+        # 去重的 log 要講「這則多久以前發過」就得用這個，不能用畫面掃描時間：
+        # _seen_ts 每輪都被刷新以延長保留，而重啟時 baseline 會把畫面上所有
+        # 訊息重新 mark_seen 一次，時間戳整批重置成重啟當下。2026-08-24 就
+        # 因此印出「訊號與 0.2 小時前已發布的完全相同」，實際上那筆是 12:55
+        # 發的、差了 4.6 小時 —— 使用者看了合理地懷疑系統在重複發單。
+        #
+        # 沒有這個時間戳的鍵，代表它是被 baseline 標記的（開機前就在畫面上），
+        # 我們從來沒發布過它。那是完全不同的狀況，log 要分開講。
+        self._published_ts: Dict[str, Dict[str, float]] = {w.name: {} for w in windows}
         # 尚未確認的新訊號 → (在計時窗內被讀到幾次, 第一次讀到的時間)
         self._confirm: Dict[str, Dict[str, Tuple[int, float]]] = {w.name: {} for w in windows}
         # 最後一次讀到「像訊號但不完整」的時間 → 這段期間提高畫面變動敏感度重讀
@@ -271,11 +304,19 @@ class WindowOcrReaderService:
                 out.append(OcrCapture(source_name=w.name, display_name=w.label, ok=False, error=str(e)))
         return out
 
-    def mark_seen(self, source_name: str, messages: List[LineMessage]) -> None:
+    def mark_seen(self, source_name: str, messages: List[LineMessage],
+                  published: bool = False) -> None:
+        """把訊息標記為已處理。
+
+        published=True 代表「這批真的發布到 Hub 了」，會額外記下發布時間。
+        False 用在兩種情況：baseline（服務啟動前就在畫面上的舊訊息）、以及
+        「判定不是訊號」—— 那些我們並沒有發布過，時間不該混為一談。
+        """
         seen_set = self._seen_set.get(source_name)
         seen_deque = self._seen_keys.get(source_name)
         confirm = self._confirm.get(source_name)
         ts_map = self._seen_ts.setdefault(source_name, {})
+        pub_map = self._published_ts.setdefault(source_name, {})
         if seen_set is None or seen_deque is None:
             return
         now = time.time()
@@ -285,6 +326,8 @@ class WindowOcrReaderService:
             if confirm is not None:
                 confirm.pop(k, None)
             ts_map[k] = now  # 更新時間戳(即使已 seen) 以延長保留
+            if published:
+                pub_map.setdefault(k, now)  # 發布時間只寫一次，之後永不改動
             if k in seen_set:
                 continue
             if len(seen_deque) == seen_deque.maxlen:
@@ -323,6 +366,7 @@ class WindowOcrReaderService:
             return 0
         for k in stale:
             ts_map.pop(k, None)
+            self._published_ts.get(source_name, {}).pop(k, None)
             seen_set.discard(k)
             self._suppress_logged.get(source_name, set()).discard(k)
         # deque 也要清，否則過期的鍵會一直佔著 SEEN_MAX 的名額
@@ -354,6 +398,15 @@ class WindowOcrReaderService:
                 if now - ts > self._seen_retention_sec:
                     continue
                 self._seen_ts[name][key] = ts
+                # 發布時間放在另一個頂層鍵裡（舊版程式會直接忽略它）。
+                # 舊存檔沒有這段就不設 —— log 會退回講「先前已處理過」，
+                # 而不是拿掃描時間硬湊一個看起來精確、其實是錯的數字。
+                pub = (data.get(_PUBLISHED_KEY) or {}).get(name, {}).get(key)
+                if pub is not None:
+                    try:
+                        self._published_ts[name][key] = float(pub)
+                    except (TypeError, ValueError):
+                        pass
                 if key not in self._seen_set[name]:
                     self._seen_keys[name].append(key)
                     self._seen_set[name].add(key)
@@ -369,6 +422,13 @@ class WindowOcrReaderService:
             data = {
                 name: {k: ts for k, ts in d.items() if now - ts <= self._seen_retention_sec}
                 for name, d in self._seen_ts.items()
+            }
+            # 發布時間放在一個獨立的頂層鍵。舊版的 _load_seen 只走
+            # `for name in self._seen_set`，看不到這個鍵也就不受影響 ——
+            # 萬一需要回退到舊執行檔，存檔仍然完全可讀。
+            data[_PUBLISHED_KEY] = {
+                name: {k: t for k, t in d.items() if k in data.get(name, {})}
+                for name, d in self._published_ts.items()
             }
             self._seen_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._seen_path.with_suffix(".json.tmp")
@@ -618,11 +678,19 @@ class WindowOcrReaderService:
                 logged = self._suppress_logged.setdefault(w.name, set())
                 if key not in logged:
                     logged.add(key)
-                    age = time.time() - self._seen_ts.get(w.name, {}).get(key, time.time())
-                    logger.info(
-                        "%s: 訊號與 %.1f 小時前已發布的完全相同 → 去重跳過: %s",
-                        w.label, age / 3600.0, key.replace("\n", " ")[:70],
-                    )
+                    # 講「我們何時把它發出去」，不是「何時又掃到它」——
+                    # 後者每輪刷新、重啟還會整批重置，算出來的其實是
+                    # 「距上次重啟多久」，會讓人誤以為系統在重複發單。
+                    pub_ts = self._published_ts.get(w.name, {}).get(key)
+                    body = key.replace("\n", " ")[:70]
+                    if pub_ts:
+                        logger.info("%s: 這則訊號我們在 %s已發布過 → 去重跳過: %s",
+                                    w.label, _ago_text(time.time() - pub_ts), body)
+                    else:
+                        # 沒有發布時間 = baseline 標記的（服務啟動前就在畫面上）。
+                        # 我們從來沒發過它，這跟「重複發布」是兩回事。
+                        logger.info("%s: 這則訊號在服務啟動前就已存在（未曾發布）"
+                                    " → 去重跳過: %s", w.label, body)
                 continue
             c, first = confirm.get(key, (0, now))
             c += 1
