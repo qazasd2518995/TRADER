@@ -536,6 +536,16 @@ tbody tr:hover { background: var(--sunk); }
 body[data-role="central"] .client-only { display: none; }
 body[data-role="client"]  .central-only { display: none; }
 
+/* 時區註記：表格裡的時間是「券商牆上時間」，不是使用者電腦的時間。
+   兩者可能差好幾個小時（本機是 GMT+8、券商 GMT+3，差 5 小時），
+   不標出來的話「我記得是下午一點成交的，怎麼寫八點」會一直被問。 */
+.tz-note {
+  display: inline-block; margin-left: 8px; padding: 1px 7px;
+  border-radius: 999px; background: var(--sunk); border: 1px solid var(--hair);
+  font-size: 11px; color: var(--muted); white-space: nowrap;
+}
+.tz-note:empty { display: none; }
+
 /* ── 會員管理 (只有訊號中心看得到) ───────────────────────────────────── */
 .mbr-toolbar {
   display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px;
@@ -866,6 +876,7 @@ body.auth-locked > *:not(#authGate) { display: none; }
     <div class="section-head">
       <h2>待成交掛單</h2>
       <p id="pendingSummary">—</p>
+      <span class="tz-note" id="tzNotePending"></span>
     </div>
     <div class="card" style="padding:0"><div id="pending"></div></div>
 
@@ -935,7 +946,7 @@ body.auth-locked > *:not(#authGate) { display: none; }
 
     <div class="section-head">
       <h2>交易紀錄</h2>
-      <p>每一筆的完整數字，也是上方圖表的表格版</p>
+      <p>每一筆的完整數字，也是上方圖表的表格版<span class="tz-note" id="tzNoteRecords"></span></p>
     </div>
     <div class="card" style="padding:0">
       <div class="table-scroll" id="records"></div>
@@ -1196,6 +1207,30 @@ function setHero(value, elId, state) {
 function brokerNow() {
   const offset = (S.stats && S.stats.account && S.stats.account.gmt_offset) || 0;
   return Math.floor(Date.now() / 1000) + offset;
+}
+
+/* 時區註記。表格顯示的是券商牆上時間，跟使用者電腦的時間差可能好幾小時
+   （這台是 GMT+8、券商 GMT+3，差 5 小時）。偏移一律由 account_info 的
+   gmt_offset 動態算，不寫死 —— 不同券商不一樣，同一個券商還會有夏令時間。 */
+function brokerTzNote() {
+  const acc = (S.stats && S.stats.account) || null;
+  if (!acc || acc.gmt_offset == null) return "";
+  const off = Number(acc.gmt_offset) || 0;
+  // gmt_offset 是 EA 用秒回報的，實測會有 10799 這種差一秒的值，四捨五入到整點
+  const hrs = Math.round(off / 3600);
+  const tz = "GMT" + (hrs < 0 ? "-" : "+") + Math.abs(hrs);
+  const localHrs = Math.round(-new Date().getTimezoneOffset() / 60);
+  const diff = localHrs - hrs;
+  if (!diff) return "時間為券商時間 " + tz;
+  return "時間為券商時間 " + tz + "，比你的電腦"
+       + (diff > 0 ? "慢 " : "快 ") + Math.abs(diff) + " 小時";
+}
+function paintTzNotes() {
+  const text = brokerTzNote();
+  ["tzNoteRecords", "tzNotePending"].forEach((id) => {
+    const el = $(id);
+    if (el) el.textContent = text;
+  });
 }
 function dayStart(seconds) {
   const d = new Date(seconds * 1000);
@@ -2086,6 +2121,7 @@ function paintStats() {
   }
 
   renderLadder(stats.martingale || {}, isAll ? stats.cycles : null, srcRows);
+  paintTzNotes();
   renderPending(stats.pending || [], !!(S.status && S.status.running));
   renderPositions(signalPositions, CURRENCY);
   renderTiles(sum, isAll ? stats.cycles : null);
