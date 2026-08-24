@@ -81,6 +81,10 @@ TIER_ORDER = ["trial", "basic", "advanced", "flagship"]
 # 這是為了讓「電腦直接關機、沒有登出」的 session 不要卡住帳號一輩子。
 SESSION_IDLE_TIMEOUT = 24 * 3600
 
+# last_seen_at 最短寫入間隔 (秒)。見 resolve_session 裡的說明 —— 這是把
+# 「每次輪詢都寫磁碟」降成「每 30 秒才寫一次」的節流閥。
+LAST_SEEN_WRITE_INTERVAL = 30.0
+
 # 密碼雜湊參數。PBKDF2-HMAC-SHA256, 迭代次數取 OWASP 2023 對此演算法的建議值。
 _PBKDF2_ITERATIONS = 600_000
 _SALT_BYTES = 16
@@ -447,9 +451,16 @@ class MemberStore:
                     "UPDATE members SET session_token = NULL WHERE id = ?", (row["id"],))
                 self._conn.commit()
                 return None, "session_expired"
-            self._conn.execute(
-                "UPDATE members SET last_seen_at = ? WHERE id = ?", (now, row["id"]))
-            self._conn.commit()
+            # last_seen_at 節流。會員端每秒輪詢一次, 每次都寫就是每秒一次
+            # fsync —— 實測單次 resolve 要 4ms, 百人上線就會把 Hub 那台
+            # shared-cpu/網路磁碟的機器吃滿。節流之後 99% 的輪詢是純讀。
+            #
+            # 精度夠用: 這個欄位只服務兩件事 —— 閒置 24 小時斷線判定, 以及
+            # 後台「最後上線」顯示。兩者都不在乎 30 秒的誤差。
+            if now - last >= LAST_SEEN_WRITE_INTERVAL:
+                self._conn.execute(
+                    "UPDATE members SET last_seen_at = ? WHERE id = ?", (now, row["id"]))
+                self._conn.commit()
 
         member = self._row_to_public(row)
         member["entitlements"] = tier_entitlements(row["tier"])
