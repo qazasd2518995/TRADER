@@ -3,26 +3,72 @@ Copy Trader Configuration (Windows Version)
 Supports JSON persistence for GUI settings.
 """
 import os
+import re
 import sys
 import json
 import glob
+import hashlib
 import logging
 from dataclasses import dataclass, field
 from typing import List, Optional
 from pathlib import Path
 
 
+def _instance_name() -> str:
+    """多開用的實例名稱，取自環境變數 COPY_TRADER_INSTANCE。留空 = 不分流。
+
+    同一台電腦要跑兩個會員跟單帳號時，兩份程式若共用資料目錄，會共用
+    central_client_state.json 裡的 last_seq 游標 —— 那是「已處理到第幾號訊號」，
+    共用的結果不是「兩個帳號都跟單」，而是每個訊號只被先輪詢到的那一份吃掉、
+    另一份直接跳過，訊號被拆成兩半，而且完全無聲。settings / port 檔同樣會互相
+    覆蓋。設了實例名稱就把整個資料目錄分流，上述檔案連同 config.json、log 全部
+    自動獨立。
+
+    留空時回傳 ""，路徑與加這個功能之前完全相同 —— 既有安裝不受影響。
+    """
+    raw = (os.environ.get("COPY_TRADER_INSTANCE") or "").strip()
+    if not raw:
+        # 環境變數沒設就直接看命令列。這裡刻意不靠進入點先把 argv 轉成環境變數 ——
+        # copy_trader/__init__.py 本身就 `from .config import ...`，只要有人先 import
+        # 了 copy_trader 底下任何東西，DATA_DIR 就已經算完，之後再設環境變數已經
+        # 來不及。sys.argv 在任何 import 之前就存在，讀它才不受載入順序影響。
+        argv = sys.argv[1:]
+        for i, arg in enumerate(argv):
+            if arg == "--instance" and i + 1 < len(argv):
+                raw = argv[i + 1].strip()
+                break
+            if arg.startswith("--instance="):
+                raw = arg.split("=", 1)[1].strip()
+                break
+    if not raw:
+        return ""
+    # 只留檔名安全的字元，擋掉 ".." 或路徑分隔字元跳出資料目錄
+    safe = re.sub(r"[^0-9A-Za-z_-]", "_", raw)[:32].strip("_")
+    if not safe:
+        # 純中文/符號的名稱 (例如「帳號B」) 會被清成空字串。若就這樣回 ""，分流會
+        # 靜靜失效、兩個實例共用同一份 state — 正是這個功能要防的事。改用雜湊，
+        # 寧可名字醜也不要無聲失效。
+        safe = "h" + hashlib.md5(raw.encode("utf-8")).hexdigest()[:8]
+    return safe
+
+
 def _get_data_dir() -> Path:
     """資料目錄：config.json、signals、logs 都存這裡。"""
+    base = None
     try:
         from copy_trader.platform import PlatformConfig
-        return PlatformConfig().get_app_data_path()
+        base = PlatformConfig().get_app_data_path()
     except ImportError:
         if getattr(sys, 'frozen', False):
             if sys.platform == "darwin":
-                return Path.home() / "Library" / "Application Support" / "黃金跟單系統"
-            return Path(os.environ.get('APPDATA', '~')) / '黃金跟單系統'
-        return Path(__file__).parent.parent
+                base = Path.home() / "Library" / "Application Support" / "黃金跟單系統"
+            else:
+                base = Path(os.environ.get('APPDATA', '~')) / '黃金跟單系統'
+        else:
+            base = Path(__file__).parent.parent
+
+    name = _instance_name()
+    return base / f"instance_{name}" if name else base
 
 
 DATA_DIR = _get_data_dir()
@@ -160,7 +206,15 @@ class Config:
     # cancel_pending_same_direction），所以兩個都關掉。
     cancel_pending_after_seconds: int = 10800    # 3 小時未成交 → 自動刪單；0=不因逾時刪
     cancel_if_price_beyond_percent: float = 0.0  # 0=關閉價格偏離自動撤單
-    supersede_same_direction_minutes: int = 0    # 0=關閉同方向改單防呆
+    supersede_same_direction_minutes: int = 0    # 0=關閉同方向改單防呆 (不分來源)
+    # 同一來源在這幾分鐘內又發新單 → 撤掉該來源之前還沒成交的掛單，只跟最新那筆。
+    # 這條「分來源」，所以跟多群也安全，預設開著。
+    #
+    # 提供者會用「收回訊息再重發」修正報單：2026-08-14 yuyu 在 23 秒內發三次、
+    # 收回前兩次 (止損 4359 → 4369 → 4364)，我們 3 秒的擷取延遲讓每個中途版本都
+    # 在被收回前就發布了，會員端因此對同一則報單掛了三張、曝險三倍且止損各不相同。
+    # 只撤未成交的掛單，已進場的部位不動。
+    supersede_same_source_minutes: int = 3
     follow_group_cancel: bool = False            # False=不跟群組的「取消/撤」訊息
 
     # Multiple TP Settings
@@ -303,6 +357,7 @@ def save_config(config: Config, path: Path = CONFIG_FILE):
         "cancel_pending_after_seconds": config.cancel_pending_after_seconds,
         "cancel_if_price_beyond_percent": config.cancel_if_price_beyond_percent,
         "supersede_same_direction_minutes": config.supersede_same_direction_minutes,
+        "supersede_same_source_minutes": config.supersede_same_source_minutes,
         "follow_group_cancel": config.follow_group_cancel,
         "signal_max_age_minutes": config.signal_max_age_minutes,
         "partial_close_ratios": config.partial_close_ratios,

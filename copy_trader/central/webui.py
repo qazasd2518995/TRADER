@@ -109,10 +109,16 @@ PAGE = r"""<!doctype html>
   --gold-mark:#a8781a;
   --gold-lit: #d4a017;
   --gold-hi:  #ffd86b;
-  --win:      #d42a3f;
-  --loss:     #0e7c5a;
-  --win-wash: rgba(212, 42, 63, 0.10);
-  --loss-wash:rgba(14, 124, 90, 0.10);
+  /* 獲利=藍、虧損=紅。刻意不用台股的紅漲綠跌 —— 做黃金整天看下來滿屏紅字，
+     即使是賺的也會有壓迫感。藍色在亮底與暗底都夠清楚，跟紅的色相距離也遠，
+     不會像橘/綠那樣在小圖例裡被誤讀。 */
+  --win:      #1668dc;
+  --loss:     #d42a3f;
+  --win-wash: rgba(22, 104, 220, 0.10);
+  --loss-wash:rgba(212, 42, 63, 0.10);
+  /* 連線/存活指示燈用的綠 —— 以前借用 --loss，翻轉配色後會變成紅燈，語意相反。 */
+  --ok:       #0e7c5a;
+  --ok-wash:  rgba(14, 124, 90, 0.10);
   --shadow:   0 1px 2px rgba(26,20,16,.05), 0 8px 24px -16px rgba(26,20,16,.30);
 
   --sans: system-ui, -apple-system, "Segoe UI", "PingFang TC", "Noto Sans TC",
@@ -127,8 +133,9 @@ PAGE = r"""<!doctype html>
   --ink:#f4efe4; --ink-2:#a89c8a; --muted:#8f8474;
   --hair:#2a231c; --rule:#3a3128;
   --gold:#f0c65c; --gold-mark:#e0b23f; --gold-lit:#e8b93f; --gold-hi:#ffe08a;
-  --win:#fa3a46; --loss:#1e9c80;
-  --win-wash:rgba(250,58,70,.14); --loss-wash:rgba(30,156,128,.14);
+  --win:#4d9bff; --loss:#fa3a46;
+  --win-wash:rgba(77,155,255,.16); --loss-wash:rgba(250,58,70,.14);
+  --ok:#1e9c80; --ok-wash:rgba(30,156,128,.14);
   --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
 }
 
@@ -175,11 +182,11 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
 }
 .chip b { font-weight: 600; color: var(--ink); }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
-.chip.is-live .dot { background: var(--loss); animation: pulse 2s ease-out infinite; }
+.chip.is-live .dot { background: var(--ok); animation: pulse 2s ease-out infinite; }
 .chip.is-warn .dot { background: var(--gold-mark); }
 .chip.is-off  .dot { background: var(--muted); }
 @keyframes pulse {
-  0%   { box-shadow: 0 0 0 0 var(--loss-wash); }
+  0%   { box-shadow: 0 0 0 0 var(--ok-wash); }
   70%  { box-shadow: 0 0 0 7px transparent; }
   100% { box-shadow: 0 0 0 0 transparent; }
 }
@@ -363,7 +370,9 @@ main { max-width: 1240px; margin: 0 auto; padding: 22px 24px 72px; }
 .tile small { display: block; margin-top: 5px; font-size: 11.5px; color: var(--muted); }
 
 /* 勝率量表：填色是勝、軌道是敗，兩段都有文字標籤 */
-.meter { height: 7px; border-radius: 999px; background: var(--loss-wash); margin-top: 9px; overflow: hidden; }
+/* 勝率條：底色用中性的 --sunk。以前借 --loss-wash，翻轉配色後會變成「紅底藍條」，
+   看起來像在強調虧損。底色本來就只是軌道，不該帶語意。 */
+.meter { height: 7px; border-radius: 999px; background: var(--sunk); margin-top: 9px; overflow: hidden; }
 .meter span { display: block; height: 100%; border-radius: 999px; background: var(--win); transition: width .6s cubic-bezier(.2,.7,.3,1); }
 
 /* --------------------------------------------------------------- filters */
@@ -776,6 +785,15 @@ const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) => (
   { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
 ));
 
+/* 來源顯示名稱：面板上一律用交易頻率描述，不出現提供者的群組名或暱稱。
+   對應表只影響「顯示」——篩選、設定、統計仍然用原始 source 字串當 key，
+   所以改這裡不會動到任何資料或比對邏輯。找不到對應就原樣顯示。 */
+const SOURCE_ALIAS = {
+  "焦點利潤(yuyu)": "高頻交易",
+  "黃金報單🈲言群": "中頻交易",
+};
+const srcName = (s) => SOURCE_ALIAS[s] || (s || "未標記來源");
+
 function ids() {
   return ROLE === "central"
     ? ["hub_url", "host", "port", "token", "interval", "cloudflare_tunnel", "cloudflared_path", "auto_start"]
@@ -1177,7 +1195,7 @@ function renderBars(trades) {
 }
 
 /* 各來源績效：小倍數。每個來源一張卡，各自獨立算損益曲線與統計。
-   刻意不做成「一張圖多條彩色線」——來源識別色會跟紅贏綠輸的語意打架
+   刻意不做成「一張圖多條彩色線」——來源識別色會跟藍賺紅賠的語意打架
    （驗證器實測橘色距離贏紅只有 ΔE 12，會被讀成獲利色）。分開畫就沒這問題。 */
 function miniCurve(trades, width, height) {
   if (!trades.length) return "";
@@ -1211,10 +1229,23 @@ function renderSourcePerformance(trades, sourceRows) {
     if (!groups.has(name)) groups.set(name, []);
     groups.get(name).push(t);
   }
-  // 已設定但這區間還沒成交的來源也要列出來，否則會以為它不存在
+  // 已設定但這區間還沒成交的來源也要列出來，否則會以為它不存在。
+  // 但只算「有在跟單」的 —— 停用的來源(含歷史遺留的測試來源)不該佔版面，
+  // 也不該讓下面的「單一來源」判斷失效。
   for (const row of sourceRows || []) {
-    if (!groups.has(row.source)) groups.set(row.source, []);
+    if (row.enabled && !groups.has(row.source)) groups.set(row.source, []);
   }
+  // 一個實例只跟一個來源時，「各來源績效」跟整頁統計是同一份資料，擺著只是重複。
+  // 連同上方的區塊標題與來源篩選一起收起來，版面才乾淨。多來源時自動恢復。
+  const single = groups.size <= 1;
+  const perfHead = box.previousElementSibling;
+  if (perfHead && perfHead.classList.contains("section-head")) {
+    perfHead.style.display = single ? "none" : "";
+  }
+  const srcFilter = $("filterSource");
+  if (srcFilter) srcFilter.style.display = single ? "none" : "";
+  if (single) { box.innerHTML = ""; return; }
+
   if (!groups.size) {
     box.innerHTML = '<div class="card"><div class="empty">' + esc(rangeLabel()) + " 沒有任何來源的交易</div></div>";
     return;
@@ -1233,7 +1264,7 @@ function renderSourcePerformance(trades, sourceRows) {
       const badge = cfg.mode === "flat" ? "均注" : cfg.mode === "martingale" ? "馬丁" : (isEaNative ? "EA 自動" : "");
       return '<button type="button" class="source-card' + (S.source === name ? " is-on" : "") +
           '" data-pick-source="' + esc(name) + '">' +
-        '<div class="sc-head"><span class="sc-name">' + esc(name) + "</span>" +
+        '<div class="sc-head"><span class="sc-name">' + esc(srcName(name)) + "</span>" +
           (badge ? '<span class="tag tag-lv">' + badge + (cfg.enabled === false ? " · 停用" : "") + "</span>" : "") +
         "</div>" +
         '<div class="sc-net ' + toneClass(sum.net) + '">' +
@@ -1356,7 +1387,7 @@ function renderRecords(trades, ids, state, repaint) {
       '<td class="num mono">' + n2.format(t.exit_price) + "</td>" +
       '<td class="num ' + toneClass(t.profit) + '" style="font-weight:600">' + money(t.profit, { signed: true }) + "</td>" +
       '<td class="num ' + toneClass(cum) + ' mono">' + money(cum, { signed: true, compact: true }) + "</td>" +
-      "<td>" + esc(t.source || "—") + "</td>" +
+      "<td>" + esc(t.source ? srcName(t.source) : "—") + "</td>" +
       // 分批平倉時每段各有成交編號，用 position_id 才是穩定的那一張單
       '<td class="mono">' + esc(t.position_id || t.ticket) + "</td>" +
     "</tr>").join("");
@@ -1418,7 +1449,7 @@ function renderPending(pending, running) {
           ? '<span class="near"> ↓' + n2.format(p.closest_gap) + "</span>" : "")) + "</td>" +
       '<td class="mono">' + (p.elapsed_seconds == null ? esc(p.setup_time || "—") : durationText(p.elapsed_seconds)) + "</td>" +
       '<td class="num countdown"' + (deadline ? ' data-deadline="' + deadline + '"' : "") + ">" + countdown + "</td>" +
-      "<td>" + esc(p.source || "—") + "</td>" +
+      "<td>" + esc(p.source ? srcName(p.source) : "—") + "</td>" +
       '<td class="mono">' + esc(p.ticket == null ? "尚未取得" : p.ticket) + "</td>" +
     "</tr>";
   }).join("");
@@ -1459,7 +1490,7 @@ function renderPositions(positions, currency, ids) {
       '<td class="num mono">' + (p.sl ? n2.format(p.sl) : "—") + "</td>" +
       '<td class="num mono">' + (p.tp ? n2.format(p.tp) : "—") + "</td>" +
       '<td class="num ' + toneClass(p.profit) + '" style="font-weight:600">' + arrow(p.profit) + " " + money(p.profit, { signed: true }) + "</td>" +
-      "<td>" + esc(p.source || "—") + "</td>" +
+      "<td>" + esc(p.source ? srcName(p.source) : "—") + "</td>" +
     "</tr>").join("");
   box.innerHTML =
     '<div class="table-scroll"><table><thead><tr>' +
@@ -1480,7 +1511,9 @@ function ladderForSource(row) {
 function round2(v) { return Math.round(v * 100) / 100; }
 
 function renderLadder(mg, cycles, sources) {
-  const configured = (sources || []).filter((s) => s.configured);
+  // 只列「有在跟單」的來源。停用的(含歷史遺留的 test / TEST-* / 鄭…)列出來只是
+  // 一長串「此來源已停用，不跟單」的雜訊，對操作沒有任何幫助。
+  const configured = (sources || []).filter((s) => s.configured && s.enabled);
   const tabs = $("ladderTabs");
 
   if (!configured.length) {                       // 沒設定每群模式 → 維持單一全域階梯
@@ -1498,13 +1531,18 @@ function renderLadder(mg, cycles, sources) {
   }
   const row = configured.find((s) => s.source === S.ladderSource);
 
+  // 只有一個來源就不必畫分頁 —— 沒有東西可切換
+  if (configured.length <= 1) {
+    tabs.innerHTML = "";
+  } else {
   tabs.innerHTML = configured.map((s) => {
     const on = s.source === S.ladderSource ? "is-on" : "";
     const off = s.enabled ? "" : "is-off";
     const badge = s.mode === "flat" ? "均注" : "第 " + (s.level + 1) + " 關";
     return '<button type="button" class="src-tab ' + on + " " + off + '" data-src="' + esc(s.source) + '">' +
-      esc(s.source) + '<span class="badge">' + badge + "</span></button>";
+      esc(srcName(s.source)) + '<span class="badge">' + badge + "</span></button>";
   }).join("");
+  }
 
   $("ladderTitle").textContent = row.mode === "flat" ? "均注模式" : "馬丁階梯";
   if (row.mode === "flat") {
@@ -1578,7 +1616,7 @@ function renderSourceSettings(rows) {
     "</tr></thead><tbody>" +
     rows.map((r) => '' +
       '<tr data-source-row="' + esc(r.source) + '">' +
-        '<td><div class="src-name">' + esc(r.source) + "</div>" +
+        '<td><div class="src-name">' + esc(srcName(r.source)) + "</div>" +
           '<div class="src-meta">已成交 ' + r.trades + " 筆" +
           (r.configured ? "" : " · 目前套用全域設定") + "</div></td>" +
         '<td><input type="checkbox" class="sp-enabled"' + (r.enabled ? " checked" : "") + " /></td>" +
@@ -1620,7 +1658,7 @@ function addSourceRow() {
   const tr = document.createElement("tr");
   tr.dataset.sourceRow = name;
   tr.innerHTML =
-    '<td><div class="src-name">' + esc(name) + "</div>" +
+    '<td><div class="src-name">' + esc(srcName(name)) + "</div>" +
       '<div class="src-meta">手動新增 · 尚未收過訊號</div></td>' +
     '<td><input type="checkbox" class="sp-enabled" checked /></td>' +
     '<td><select class="sp-mode"><option value="martingale">馬丁</option>' +
@@ -1693,7 +1731,7 @@ function paintStats() {
   if (select.dataset.signature !== signature) {
     select.dataset.signature = signature;
     select.innerHTML = '<option value="all">全部來源</option>' +
-      names.map((n) => '<option value="' + esc(n) + '">' + esc(n) + "</option>").join("");
+      names.map((n) => '<option value="' + esc(n) + '">' + esc(srcName(n)) + "</option>").join("");
     select.value = names.includes(S.source) ? S.source : "all";
     S.source = select.value;
   }

@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from copy_trader.config import DATA_DIR, load_config
+from copy_trader.config import DATA_DIR, _instance_name, load_config
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,11 @@ class LauncherState:
     def __init__(self, role: str):
         self.role = role
         self.title = "黃金訊號中心" if role == "central" else "黃金跟單會員端"
+        # 多開時把實例名稱掛進標題 — 兩個控制台長得一模一樣, 分頁上分不出來
+        # 就很容易對著錯的那個改設定 (見 config._instance_name)。
+        _inst = _instance_name()
+        if _inst:
+            self.title = f"{self.title}（{_inst}）"
         self.settings_path = DATA_DIR / f"{role}_web_launcher_settings.json"
         self.settings = self._load_settings()
         self.log_queue: "queue.Queue[str]" = queue.Queue()
@@ -159,6 +164,23 @@ class LauncherState:
             json.dump(merged, f, ensure_ascii=False, indent=2)
         self.settings = merged
         logger.info("設定已儲存：%s", self.settings_path)
+
+        # 服務正在跑就立刻套用到交易引擎，不要等下次重啟。
+        #
+        # 原本 _apply_client_trade_settings() 只在 start_service() 裡呼叫一次，
+        # 所以按「儲存」只會寫檔、更新 self.settings —— 執行中的 TradeManager 仍在用
+        # 啟動當下載入的那份。而 self.settings 又確實被更新了，於是面板和 /api/status
+        # 都顯示新值、實際下單卻是舊行為，「看起來改好了但沒生效」。
+        #
+        # 實測 2026-08-17：instance_3 在 8/14 20:55 啟動、20:57 把 tp_mode 從
+        # breakeven 改成 partial。三天後面板顯示 partial，但當天兩筆 yuyu 的單
+        # log 都還是「保本移損模式」—— 連我自己都先看檔案而誤判了一次。
+        if self.is_running() and self.client_agent is not None:
+            try:
+                self._apply_client_trade_settings()
+                logger.info("設定已即時套用到交易引擎（不需重啟）")
+            except Exception as exc:
+                logger.warning("設定已存檔，但即時套用失敗，需重啟才生效：%s", exc)
         return merged
 
     def is_running(self) -> bool:
