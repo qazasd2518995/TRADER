@@ -71,7 +71,6 @@ CENTRAL_FIELDS = """
         <div class="field-grid">
           <label>雲端 Hub URL<input id="hub_url" placeholder="留空 = 本機自架 Hub；雲端填 https://...fly.dev" /></label>
           <label>Hub 密碼<input id="token" type="password" /></label>
-          <label>複製模式<select id="copy_mode"><option value="all">全選複製</option><option value="tail">底部幾屏</option></select></label>
           <label>輪詢秒數<input id="interval" placeholder="1.0" /></label>
           <label class="switch">開啟程式後自動開始<input id="auto_start" type="checkbox" /></label>
         </div>
@@ -779,7 +778,7 @@ const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) => (
 
 function ids() {
   return ROLE === "central"
-    ? ["hub_url", "host", "port", "token", "copy_mode", "interval", "cloudflare_tunnel", "cloudflared_path", "auto_start"]
+    ? ["hub_url", "host", "port", "token", "interval", "cloudflare_tunnel", "cloudflared_path", "auto_start"]
     : ["hub_url", "token", "mt5_files_dir", "interval", "auto_start", "default_lot_size", "use_martingale",
        "martingale_multiplier", "martingale_max_level", "martingale_lots", "partial_close_ratios",
        "cancel_pending_after_seconds", "cancel_if_price_beyond_percent", "source_profiles", "ea_sources"];

@@ -98,8 +98,21 @@ def _merge_signal(base: ParsedSignal, new: ParsedSignal) -> ParsedSignal:
 
 
 def _is_complete(signal: ParsedSignal) -> bool:
-    has_entry = signal.entry_price is not None or bool(signal.is_market_order)
-    return bool(signal.is_valid and signal.direction and has_entry and signal.stop_loss and signal.take_profit)
+    """完整 = 方向 + 進場價 + 止損 + 止盈 全都有。
+
+    刻意要求「真的有進場價」，不接受 is_market_order 當替代品：追蹤的提供者每一筆
+    都會給進場點、全部是限價單，所以 entry=None 只可能是 OCR 沒讀到。2026-08-12
+    因為舊的判定放行了三筆「市價單」，讓同一則訊號被重複下單、還用當下市價成交
+    （見 regex_parser._extract_entry 的說明）。這是第二道閘門 —— 即使解析層哪天又
+    把什麼誤判成市價，中央也不會把它發出去。
+    """
+    return bool(
+        signal.is_valid
+        and signal.direction
+        and signal.entry_price is not None
+        and signal.stop_loss
+        and signal.take_profit
+    )
 
 
 def _sl_tp_consistent(signal: ParsedSignal) -> bool:
@@ -168,6 +181,8 @@ class CentralSignalCollector:
         self.publisher = publisher
         self.parser = RegexSignalParser()
         self._pending: Dict[str, Dict] = {}
+        # 擷取失敗的節流狀態: source → {error, since, last_log, count} (見 _log_capture_failure)
+        self._capture_fail: Dict[str, Dict] = {}
         self._processed: Dict[Tuple, float] = {}
         self._processed_ttl = max(60, int(config.signal_dedup_minutes or 10) * 60)
         # 訊號時效鎖: 訊息時間超過這麼久就不發布 (擋歷史洪水/延遲/過期)。0=不限。
@@ -237,14 +252,50 @@ class CentralSignalCollector:
                 logger.warning("pending signal expired for %s", source)
                 self._pending.pop(source, None)
 
+    # 同一個來源的同一種擷取失敗，最多每這麼久印一次 (秒)。
+    #
+    # 為什麼需要節流：視窗被關掉時 capture_all() 每一輪都會失敗，而輪詢是每秒一次。
+    # 實測 2026-08-11 —— 「鄭」的 LINE 視窗被關掉後，200 行的 log 緩衝區在 3.5 分鐘內
+    # 就被同一句 window_not_found 灌滿，把當天所有訊號紀錄整個沖掉，連要查前一小時
+    # 那筆真實訊號的發布延遲都做不到。偏偏「視窗掉了 = 訊號漏抓」正是最需要看 log
+    # 的時候，結果 log 反而只剩這一句重複幾千次。
+    _CAPTURE_WARN_INTERVAL = 300.0
+
+    def _log_capture_failure(self, source: str, error: str) -> None:
+        """擷取失敗的節流警告：首次立刻印，之後每 _CAPTURE_WARN_INTERVAL 才印一次。"""
+        now = time.time()
+        state = self._capture_fail.get(source)
+        if state is None or state["error"] != error:
+            # 第一次失敗、或錯誤內容變了 → 立刻印
+            logger.warning("capture failed for %s: %s", source, error)
+            self._capture_fail[source] = {"error": error, "since": now, "last_log": now, "count": 1}
+            return
+        state["count"] += 1
+        if now - state["last_log"] >= self._CAPTURE_WARN_INTERVAL:
+            logger.warning(
+                "capture failed for %s: %s (已持續 %.0f 分鐘, 累計 %d 次)",
+                source, error, (now - state["since"]) / 60.0, state["count"],
+            )
+            state["last_log"] = now
+
+    def _clear_capture_failure(self, source: str) -> None:
+        """這個來源恢復了 → 印一行恢復訊息並清掉狀態 (沒失敗過就什麼都不做)。"""
+        state = self._capture_fail.pop(source, None)
+        if state:
+            logger.info(
+                "capture 已恢復: %s (先前失敗 %.0f 分鐘, 累計 %d 次: %s)",
+                source, (time.time() - state["since"]) / 60.0, state["count"], state["error"],
+            )
+
     def run_cycle(self) -> int:
         self._cleanup()
         published = 0
         for cap in self.clipboard.capture_all():
             if not cap.ok:
                 if cap.error:
-                    logger.warning("capture failed for %s: %s", cap.display_name, cap.error)
+                    self._log_capture_failure(cap.display_name, cap.error)
                 continue
+            self._clear_capture_failure(cap.display_name)
             for msg in cap.new_messages:
                 should_mark_seen = False
                 abort_source = False
