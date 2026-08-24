@@ -536,84 +536,146 @@ tbody tr:hover { background: var(--sunk); }
 body[data-role="central"] .client-only { display: none; }
 
 /* ── 會員登入 ─────────────────────────────────────────────────────────
-   蓋在整個面板之上。沒登入前不讓人看到任何交易畫面, 也就不會有「以為在
-   跟單、其實沒登入」的誤會。 */
+   整頁的門。沒登入時面板是 display:none 而不是模糊 —— 模糊擋不住截圖，
+   而且「看得到卻不能動」會讓人以為程式當掉。這裡要像一道乾淨的前門。 */
 #authGate {
   position: fixed; inset: 0; z-index: 900;
   display: none; align-items: center; justify-content: center;
-  background: var(--bg); padding: 24px;
+  padding: 24px; background: var(--paper);
+  /* 頂部一抹金 —— 跟金條標記同一組色，讓這頁一眼就是同一套產品 */
+  background-image: radial-gradient(120% 62% at 50% -18%,
+                    color-mix(in srgb, var(--gold-lit) 16%, transparent) 0%, transparent 68%);
 }
 #authGate.is-on { display: flex; }
-body.auth-locked > *:not(#authGate) { filter: blur(3px); pointer-events: none; user-select: none; }
+body.auth-locked > *:not(#authGate) { display: none; }
+
 .auth-card {
-  width: 100%; max-width: 380px;
-  background: var(--card); border: 1px solid var(--hair); border-radius: 16px;
-  padding: 30px 28px 26px; box-shadow: 0 18px 50px rgba(0,0,0,.16);
+  width: 100%; max-width: 372px;
+  background: var(--card); border: 1px solid var(--hair);
+  border-radius: 14px; padding: 32px 30px 24px; box-shadow: var(--shadow);
 }
-.auth-brand { display: flex; align-items: center; gap: 11px; margin-bottom: 6px; }
-.auth-brand h2 { font-size: 18px; margin: 0; letter-spacing: .3px; }
-.auth-sub { color: var(--ink-2); font-size: 12.5px; margin: 0 0 22px; }
-.auth-field { display: block; margin-bottom: 14px; }
-.auth-field span { display: block; font-size: 12px; color: var(--ink-2); margin-bottom: 5px; }
-.auth-field input {
-  width: 100%; box-sizing: border-box; padding: 10px 12px; font-size: 14px;
-  border: 1px solid var(--hair); border-radius: 9px;
-  background: var(--sunk); color: var(--ink); font-family: inherit;
+.auth-brand { display: flex; align-items: center; gap: 12px; }
+.auth-brand h2 { font-size: 17px; }
+.auth-brand .eyebrow { margin: 2px 0 0; }
+.auth-lede {
+  margin: 18px 0 22px; padding-top: 16px; border-top: 1px solid var(--hair);
+  font-size: 12.5px; color: var(--ink-2);
 }
-.auth-field input:focus { outline: 2px solid var(--win); outline-offset: 1px; border-color: transparent; }
-#authSubmit { width: 100%; margin-top: 8px; padding: 11px; font-size: 14.5px; font-weight: 600; }
-#authSubmit[disabled] { opacity: .55; cursor: progress; }
+
+.auth-field { display: block; margin-bottom: 13px; }
+/* 用明確 class 而不是 `.auth-field > span` —— 後者權重比 .auth-hint 高，
+   會把本該隱藏的 Caps Lock 提示強制顯示出來，也會把輸入框的包裝層
+   一起套上標籤字體。 */
+.auth-label {
+  display: block; margin-bottom: 5px;
+  font-size: 11px; font-weight: 600; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--muted);
+}
+.auth-input { display: block; position: relative; }
+.auth-input input {
+  width: 100%; padding: 10px 12px; font: inherit; font-size: 14px;
+  border: 1px solid var(--rule); border-radius: 7px;
+  background: var(--paper); color: var(--ink);
+  transition: border-color .15s, background .15s;
+}
+.auth-input input:hover { border-color: var(--gold-mark); }
+.auth-input input:focus {
+  outline: 2px solid var(--gold-mark); outline-offset: 1px;
+  border-color: transparent; background: var(--card);
+}
+#authPass { padding-right: 46px; }         /* 讓出「顯示」按鈕的位置 */
+.auth-peek {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  padding: 4px 8px; font-size: 11px;
+}
+.auth-hint { margin-top: 5px; font-size: 11px; color: var(--gold); display: none; }
+.auth-hint.is-on { display: block; }
+
+#authSubmit { width: 100%; margin-top: 6px; padding: 11px; font-size: 14px; }
+#authSubmit[disabled] { opacity: .6; cursor: progress; }
+
 .auth-msg {
-  margin-top: 14px; padding: 10px 12px; border-radius: 9px; font-size: 12.5px;
-  background: var(--loss-wash); color: var(--loss); border: 1px solid transparent;
-  display: none;
+  display: none; gap: 8px; align-items: flex-start;
+  margin-top: 14px; padding: 10px 12px; border-radius: 8px;
+  font-size: 12.5px; line-height: 1.55;
+  background: var(--loss-wash); color: var(--loss);
 }
-.auth-msg.is-on { display: block; }
-.auth-foot { margin-top: 18px; font-size: 11.5px; color: var(--ink-3, var(--ink-2)); line-height: 1.7; }
-/* 已登入時顯示在頂列的身分徽章 */
+.auth-msg.is-on { display: flex; }
+.auth-msg::before { content: "!"; font-weight: 700; flex: none; }
+
+.auth-foot {
+  margin: 20px 0 0; padding-top: 14px; border-top: 1px solid var(--hair);
+  font-size: 11.5px; color: var(--muted); line-height: 1.75;
+}
+.auth-foot code { font-family: var(--mono); font-size: 11px; color: var(--ink-2); }
+/* 登入頁沒有頂列，主題切換另外擺一顆，否則夜間使用者被鎖在亮底 */
+#authTheme { position: fixed; top: 16px; right: 18px; z-index: 901; }
+
+/* 已登入後顯示在頂列的身分徽章 */
 .auth-badge {
-  display: inline-flex; align-items: center; gap: 7px; padding: 3px 10px;
-  border-radius: 999px; background: var(--sunk); border: 1px solid var(--hair);
-  font-size: 12px; color: var(--ink-2);
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 3px 5px 3px 11px; border-radius: 999px;
+  background: var(--sunk); border: 1px solid var(--hair);
+  font-size: 12px; color: var(--ink-2); white-space: nowrap;
 }
-.auth-badge b { color: var(--ink); font-weight: 600; }
-.auth-badge .tier { color: var(--win); font-weight: 600; }
-.auth-badge.is-soon { border-color: var(--loss); }
+.auth-badge b { font-weight: 600; color: var(--ink); }
+.auth-badge .tier { font-weight: 600; color: var(--gold); }
+.auth-badge .exp { color: var(--muted); }
+/* 剩不到一週就轉紅，會員自己看得到該續期了 */
+.auth-badge.is-soon { border-color: var(--loss); background: var(--loss-wash); }
 .auth-badge.is-soon .exp { color: var(--loss); font-weight: 600; }
-#authLogout { margin-left: 2px; padding: 1px 7px; font-size: 11px; }
+#authLogout { padding: 2px 9px; font-size: 11px; }
+
+@media (max-width: 420px) {
+  .auth-card { padding: 26px 20px 20px; border-radius: 12px; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
 }
 </style>
 </head>
-<body data-role="__ROLE__">
+<body data-role="__ROLE__" class="__BODY_CLASS__">
 
-<div id="authGate" class="client-only">
+<div id="authGate" class="client-only __GATE_CLASS__">
+  <button class="btn btn-quiet" id="authTheme" type="button" title="日夜切換">☾</button>
   <form class="auth-card" id="authForm" autocomplete="on">
     <div class="auth-brand">
       <span class="bullion" aria-hidden="true"></span>
-      <h2>黃金跟單會員端</h2>
+      <div>
+        <h2>__TITLE__</h2>
+        <p class="eyebrow">MEMBER ACCESS</p>
+      </div>
     </div>
-    <p class="auth-sub">請以會員帳號登入後開始跟單</p>
+
+    <p class="auth-lede">請以會員帳號登入，登入後才會開始接收訊號。</p>
 
     <label class="auth-field">
-      <span>帳號</span>
-      <input id="authUser" name="username" autocomplete="username"
-             autocapitalize="off" spellcheck="false" required />
+      <span class="auth-label">帳號</span>
+      <span class="auth-input">
+        <input id="authUser" name="username" autocomplete="username"
+               autocapitalize="off" autocorrect="off" spellcheck="false" required />
+      </span>
     </label>
+
     <label class="auth-field">
-      <span>密碼</span>
-      <input id="authPass" name="password" type="password"
-             autocomplete="current-password" required />
+      <span class="auth-label">密碼</span>
+      <span class="auth-input">
+        <input id="authPass" name="password" type="password"
+               autocomplete="current-password" required />
+        <button class="btn btn-quiet auth-peek" id="authPeek" type="button"
+                tabindex="-1" aria-label="顯示密碼">顯示</button>
+      </span>
+      <span class="auth-hint" id="authCaps">Caps Lock 已開啟</span>
     </label>
 
     <button class="btn btn-go" id="authSubmit" type="submit">登 入</button>
-    <div class="auth-msg" id="authMsg"></div>
+    <div class="auth-msg" id="authMsg" role="alert"></div>
 
     <p class="auth-foot">
       一組帳號同時只能在一台電腦使用；在別台登入會把這台登出。<br />
-      忘記密碼或需要續期，請聯繫管理員。
+      忘記密碼或需要續期，請聯繫管理員。<br />
+      伺服器 <code id="authHub">—</code>
     </p>
   </form>
 </div>
@@ -1940,8 +2002,13 @@ function paintAuth(snap) {
   if (locked) {
     // 被踢下線 / 到期 / 停權時，後端會把原因放在 auth.error
     if (a.error) showAuthMsg(a.error);
-    const badge = $("authBadge");
-    if (badge) badge.hidden = true;
+    $("authBadge").hidden = true;
+    // 讓會員自己確認連的是哪台伺服器 —— 設定打錯時最常見的症狀就是
+    // 「密碼明明對的卻登不進去」，把主機名擺出來一眼就看得出來
+    try {
+      const raw = String((snap.settings || {}).hub_url || "");
+      $("authHub").textContent = raw ? new URL(raw).host : "（尚未設定）";
+    } catch (e) { $("authHub").textContent = "（網址格式有誤）"; }
     const u = $("authUser");
     if (u && document.activeElement !== u && !$("authPass").value) u.focus();
     return;
@@ -1968,6 +2035,28 @@ function showAuthMsg(text) {
   el.classList.toggle("is-on", Boolean(text));
 }
 if (IS_CLIENT) {
+  $("authTheme").onclick = () =>
+    applyTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark");
+
+  // 顯示/隱藏密碼。自動產生的密碼夾雜大小寫，看不到字很容易打錯。
+  $("authPeek").onclick = () => {
+    const el = $("authPass");
+    const shown = el.type === "text";
+    el.type = shown ? "password" : "text";
+    $("authPeek").textContent = shown ? "顯示" : "隱藏";
+    el.focus();
+  };
+
+  // Caps Lock 提示 —— 密碼是自動產生的大小寫混合字串，開著大寫鎖必錯，
+  // 而且錯了只會看到「帳號或密碼錯誤」，根本猜不到原因。
+  const capsWatch = (evt) => {
+    if (typeof evt.getModifierState !== "function") return;
+    $("authCaps").classList.toggle("is-on", evt.getModifierState("CapsLock"));
+  };
+  $("authPass").addEventListener("keydown", capsWatch);
+  $("authPass").addEventListener("keyup", capsWatch);
+  $("authPass").addEventListener("blur", () => $("authCaps").classList.remove("is-on"));
+
   $("authForm").addEventListener("submit", async (evt) => {
     evt.preventDefault();
     const btn = $("authSubmit");
@@ -1982,7 +2071,11 @@ if (IS_CLIENT) {
       });
       const data = await res.json();
       if (data.ok) {
+        // 清掉密碼並把「顯示」狀態收回去，否則下次登出再進來密碼是明文欄位
         $("authPass").value = "";
+        $("authPass").type = "password";
+        $("authPeek").textContent = "顯示";
+        $("authCaps").classList.remove("is-on");
         await refreshStatus();
       } else {
         showAuthMsg(data.error || "登入失敗");
@@ -2027,7 +2120,11 @@ async function refreshStats() {
 const THEME_KEY = "gold-copy-theme";
 function applyTheme(mode) {
   document.documentElement.setAttribute("data-theme", mode);
-  $("themeToggle").textContent = mode === "dark" ? "☀" : "☾";
+  const glyph = mode === "dark" ? "☀" : "☾";
+  $("themeToggle").textContent = glyph;
+  // 登入頁沒有頂列，那顆切換鈕要一起同步，否則圖示會跟實際主題相反
+  const at = $("authTheme");
+  if (at) at.textContent = glyph;
   try { localStorage.setItem(THEME_KEY, mode); } catch (e) { /* 無痕模式 */ }
 }
 let savedTheme = "light";
@@ -2168,8 +2265,14 @@ def render(state: Any) -> str:
     extra_button = '<button class="btn" id="openHub">開啟 Hub 頁面</button>' if is_central else ""
     subtitle = "訊號發布中心" if is_central else "XAUUSD · 訊號自動跟單"
 
+    # 初始鎖定狀態由伺服器決定，不要等前端第一次 /api/status 回來才蓋上去 ——
+    # 那之間會閃過一眼交易面板，未登入的人會以為程式壞了。
+    locked = (not is_central) and not getattr(state, "auth", None)
+
     return (
         PAGE.replace("__TITLE__", str(getattr(state, "title", "黃金跟單")))
+        .replace("__BODY_CLASS__", "auth-locked" if locked else "")
+        .replace("__GATE_CLASS__", "is-on" if locked else "")
         .replace("__SUBTITLE__", subtitle)
         .replace("__ROLE_JSON__", json.dumps(getattr(state, "role", "client")))
         .replace("__ROLE__", str(getattr(state, "role", "client")))
