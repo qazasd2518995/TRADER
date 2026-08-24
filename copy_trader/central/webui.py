@@ -534,6 +534,65 @@ tbody tr:hover { background: var(--sunk); }
 .notice b { color: var(--ink); }
 
 body[data-role="central"] .client-only { display: none; }
+body[data-role="client"]  .central-only { display: none; }
+
+/* ── 會員管理 (只有訊號中心看得到) ───────────────────────────────────── */
+.mbr-toolbar {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px;
+}
+.mbr-toolbar input[type="search"] {
+  flex: 1 1 200px; min-width: 160px; padding: 7px 11px; font: inherit; font-size: 13px;
+  border: 1px solid var(--rule); border-radius: 7px;
+  background: var(--paper); color: var(--ink);
+}
+.mbr-count { font-size: 12px; color: var(--muted); margin-left: auto; }
+
+/* 新增會員的表單，預設收起 —— 平常在看的是名單，不是一直在開帳號 */
+#mbrNewForm { margin-bottom: 16px; }
+#mbrNewForm[hidden] { display: none; }
+.mbr-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px; margin-bottom: 12px;
+}
+.mbr-grid label { display: block; font-size: 12px; color: var(--ink-2); }
+.mbr-grid input, .mbr-grid select {
+  width: 100%; margin-top: 4px; padding: 7px 9px; font: inherit; font-size: 13px;
+  border: 1px solid var(--rule); border-radius: 6px;
+  background: var(--paper); color: var(--ink);
+}
+
+/* 開通成功後把帳密攤出來 —— 密碼只有這一次拿得到，不能只用 alert 閃過去 */
+.mbr-issued {
+  margin-bottom: 16px; padding: 14px 16px; border-radius: 10px;
+  background: var(--ok-wash); border: 1px solid var(--ok);
+}
+.mbr-issued h4 { margin: 0 0 8px; font-size: 13px; color: var(--ok); }
+.mbr-cred {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  font-family: var(--mono); font-size: 14px; margin-bottom: 8px;
+}
+.mbr-cred b { font-size: 15px; }
+.mbr-issued p { margin: 0; font-size: 11.5px; color: var(--ink-2); }
+
+.mbr-tag {
+  display: inline-block; padding: 1px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; white-space: nowrap;
+}
+.mbr-tag.t-trial    { background: var(--sunk);      color: var(--ink-2); }
+.mbr-tag.t-basic    { background: var(--sunk);      color: var(--ink); }
+.mbr-tag.t-advanced { background: var(--win-wash);  color: var(--win); }
+.mbr-tag.t-flagship { background: var(--gold-hi);   color: #2a1d05; }
+.mbr-state.ok   { color: var(--ok); }
+/* 快到期的要跳出來 —— 這正是該主動聯繫續費的名單。只換色不夠：--gold 在
+   奶油底上偏棕，跟 --ok 的墨綠遠看分不出來，所以再加粗。 */
+.mbr-state.warn { color: var(--gold); font-weight: 600; }
+.mbr-state.bad  { color: var(--loss); font-weight: 600; }
+.mbr-acts { display: flex; gap: 5px; flex-wrap: wrap; }
+.mbr-acts .btn { padding: 3px 8px; font-size: 11px; }
+.mbr-online { color: var(--ok); }
+.mbr-offline { color: var(--muted); }
+/* 表格在窄視窗要能自己捲，不要把整頁撐橫 */
+.mbr-scroll { overflow-x: auto; }
 
 /* ── 會員登入 ─────────────────────────────────────────────────────────
    整頁的門。沒登入時面板是 display:none 而不是模糊 —— 模糊擋不住截圖，
@@ -712,9 +771,10 @@ body.auth-locked > *:not(#authGate) { display: none; }
   <div id="notice"></div>
 
   <!-- 只有設定過「其他策略(EA)」才出現；沒用這功能的人畫面完全不變 -->
-  <div class="view-tabs client-only" id="viewTabs" hidden>
-    <button type="button" class="view-tab is-on" data-view="signals">訊號跟單</button>
-    <button type="button" class="view-tab" data-view="ea">趨勢線策略</button>
+  <div class="view-tabs" id="viewTabs" hidden>
+    <button type="button" class="view-tab is-on" data-view="signals">__TAB1__</button>
+    <button type="button" class="view-tab client-only" data-view="ea">趨勢線策略</button>
+    <button type="button" class="view-tab central-only" data-view="members">會員管理</button>
   </div>
 
 <div id="viewSignals">
@@ -893,6 +953,67 @@ body.auth-locked > *:not(#authGate) { display: none; }
     <div class="table-scroll" id="eaRecords"></div>
   </div>
 </div><!-- /viewEA -->
+
+<div id="viewMembers" class="central-only" hidden>
+  <div class="section-head">
+    <h2>會員管理</h2>
+    <p id="mbrSubtitle">從雲端 Hub 讀取</p>
+    <span class="spacer"></span>
+    <button class="btn" id="mbrRefresh" type="button">重新整理</button>
+    <button class="btn btn-go" id="mbrNewToggle" type="button">＋ 開通會員</button>
+  </div>
+
+  <div class="card" id="mbrNewForm" hidden>
+    <p class="eyebrow">開通新會員</p>
+    <div class="mbr-grid">
+      <label>帳號<input id="mbrUser" autocapitalize="off" spellcheck="false"
+                       placeholder="例 wang001" /></label>
+      <label>等級<select id="mbrTier"></select></label>
+      <label>天數<input id="mbrDays" type="number" min="1" placeholder="留空 = 該等級預設" /></label>
+      <label>備註<input id="mbrNote" placeholder="LINE / 收款方式" /></label>
+    </div>
+    <button class="btn btn-go" id="mbrCreate" type="button">建立</button>
+    <button class="btn btn-quiet" id="mbrCancel" type="button">取消</button>
+  </div>
+
+  <div class="mbr-issued" id="mbrIssued" hidden>
+    <h4>已開通 — 密碼只顯示這一次</h4>
+    <div class="mbr-cred">
+      <span>帳號 <b id="mbrIssuedUser"></b></span>
+      <span>密碼 <b id="mbrIssuedPass"></b></span>
+      <button class="btn" id="mbrCopy" type="button">複製帳密</button>
+      <button class="btn btn-quiet" id="mbrIssuedClose" type="button">知道了</button>
+    </div>
+    <p>伺服器只存雜湊，關掉之後就撈不回來了；忘記只能重設密碼。</p>
+  </div>
+
+  <div class="card">
+    <div class="mbr-toolbar">
+      <input type="search" id="mbrSearch" placeholder="搜尋帳號或備註…" />
+      <span class="mbr-count" id="mbrCount"></span>
+    </div>
+    <div class="mbr-scroll">
+      <table>
+        <thead><tr>
+          <th>帳號</th><th>等級</th><th>狀態</th><th>到期</th>
+          <th>線上</th><th>最後上線</th><th>備註</th><th>操作</th>
+        </tr></thead>
+        <tbody id="mbrRows"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section-head">
+    <h2>登入紀錄</h2>
+    <p>最近 60 筆，含失敗嘗試</p>
+  </div>
+  <div class="card mbr-scroll">
+    <table>
+      <thead><tr><th>時間</th><th>帳號</th><th>結果</th><th>裝置</th><th>IP</th></tr></thead>
+      <tbody id="mbrLoginRows"></tbody>
+    </table>
+  </div>
+</div><!-- /viewMembers -->
 
   <div class="section-head">
     <h2>狀態紀錄</h2>
@@ -2198,7 +2319,210 @@ $("viewTabs").addEventListener("click", (evt) => {
   [...$("viewTabs").children].forEach((c) => c.classList.toggle("is-on", c === btn));
   $("viewSignals").hidden = view !== "signals";
   $("viewEA").hidden = view !== "ea";
+  $("viewMembers").hidden = view !== "members";
+  if (view === "members") loadMembers();
 });
+
+/* ------------------------------------------------------------- 會員管理 */
+/* 只有訊號中心有這一區。瀏覽器不直接打 Hub —— 一律經過本機控制台的
+   /api/admin/* 代理，管理 token 才不會落到前端 JS 裡。 */
+const MBR = { list: [], tiers: [], filter: "" };
+
+async function adminGet(path) {
+  const res = await fetch("/api/admin" + path);
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "讀取失敗");
+  return data;
+}
+async function adminPost(path, body) {
+  const res = await fetch("/api/admin" + path, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "操作失敗");
+  return data;
+}
+
+function expiryText(ts) {
+  if (!ts) return { text: "無期限", cls: "ok" };
+  const days = Math.floor((ts * 1000 - Date.now()) / 86400000);
+  const stamp = new Date(ts * 1000).toLocaleDateString("zh-TW");
+  if (days < 0) return { text: `${stamp}（已過期）`, cls: "bad" };
+  // 剩不到一週標黃：這是該主動聯繫續費的名單
+  return { text: `${stamp}（剩 ${days} 天）`, cls: days <= 7 ? "warn" : "ok" };
+}
+function seenText(ts) {
+  if (!ts) return "—";
+  const mins = Math.floor((Date.now() - ts * 1000) / 60000);
+  if (mins < 2) return "剛剛";
+  if (mins < 60) return `${mins} 分鐘前`;
+  if (mins < 1440) return `${Math.floor(mins / 60)} 小時前`;
+  return `${Math.floor(mins / 1440)} 天前`;
+}
+
+function renderMembers() {
+  const q = MBR.filter.trim().toLowerCase();
+  const rows = MBR.list.filter((m) =>
+    !q || m.username.toLowerCase().includes(q) || (m.note || "").toLowerCase().includes(q));
+  $("mbrCount").textContent =
+    `共 ${MBR.list.length} 位` + (q ? `，符合 ${rows.length} 位` : "") +
+    `　線上 ${MBR.list.filter((m) => m.online).length}`;
+
+  if (!rows.length) {
+    $("mbrRows").innerHTML =
+      '<tr><td colspan="8" class="muted" style="padding:22px;text-align:center">' +
+      (MBR.list.length ? "沒有符合的會員" : "還沒有任何會員，按右上角「開通會員」新增") +
+      "</td></tr>";
+    return;
+  }
+  $("mbrRows").innerHTML = rows.map((m) => {
+    const exp = expiryText(m.expires_at);
+    const suspended = m.status !== "active";
+    const state = suspended
+      ? '<span class="mbr-state bad">停權</span>'
+      : (m.expired ? '<span class="mbr-state bad">過期</span>'
+                   : '<span class="mbr-state ok">正常</span>');
+    const u = esc(m.username);
+    return "<tr>" +
+      `<td class="mono"><b>${u}</b></td>` +
+      `<td><span class="mbr-tag t-${esc(m.tier)}">${esc(m.tier_label)}</span></td>` +
+      `<td>${state}</td>` +
+      `<td class="mbr-state ${exp.cls}">${esc(exp.text)}</td>` +
+      `<td class="${m.online ? "mbr-online" : "mbr-offline"}">${m.online ? "● 在線" : "○"}</td>` +
+      `<td class="muted">${esc(seenText(m.last_seen_at))}</td>` +
+      `<td class="muted">${esc(m.note || "—")}</td>` +
+      '<td><div class="mbr-acts">' +
+        `<button class="btn" data-act="extend" data-u="${u}">續期</button>` +
+        `<button class="btn" data-act="tier" data-u="${u}">改等級</button>` +
+        `<button class="btn" data-act="${suspended ? "resume" : "suspend"}" data-u="${u}">` +
+          (suspended ? "解除停權" : "停權") + "</button>" +
+        `<button class="btn" data-act="passwd" data-u="${u}">重設密碼</button>` +
+        (m.online ? `<button class="btn" data-act="kick" data-u="${u}">踢下線</button>` : "") +
+        `<button class="btn" data-act="delete" data-u="${u}">刪除</button>` +
+      "</div></td></tr>";
+  }).join("");
+}
+
+function renderLogins(rows) {
+  if (!rows.length) {
+    $("mbrLoginRows").innerHTML =
+      '<tr><td colspan="5" class="muted" style="padding:18px;text-align:center">尚無紀錄</td></tr>';
+    return;
+  }
+  $("mbrLoginRows").innerHTML = rows.map((r) =>
+    "<tr>" +
+      `<td class="mono muted">${esc(new Date(r.at * 1000).toLocaleString("zh-TW"))}</td>` +
+      `<td class="mono">${esc(r.username)}</td>` +
+      `<td class="${r.ok ? "mbr-state ok" : "mbr-state bad"}">` +
+        (r.ok ? (r.detail === "kicked_previous" ? "成功（踢掉前一台）" : "成功")
+              : `失敗 · ${esc(r.detail)}`) + "</td>" +
+      `<td class="muted">${esc(r.device || "—")}</td>` +
+      `<td class="mono muted">${esc(r.ip || "—")}</td>` +
+    "</tr>").join("");
+}
+
+async function loadMembers() {
+  try {
+    if (!MBR.tiers.length) {
+      MBR.tiers = (await adminGet("/tiers")).tiers;
+      $("mbrTier").innerHTML = MBR.tiers.map((t) =>
+        `<option value="${esc(t.key)}">${esc(t.label)}（${t.default_days} 天）</option>`).join("");
+      const adv = MBR.tiers.findIndex((t) => t.key === "basic");
+      if (adv >= 0) $("mbrTier").selectedIndex = adv;
+    }
+    MBR.list = (await adminGet("/members")).members;
+    renderMembers();
+    renderLogins((await adminGet("/logins?limit=60")).logins);
+    $("mbrSubtitle").textContent = "已連上 Hub";
+  } catch (e) {
+    $("mbrSubtitle").textContent = "讀取失敗：" + e.message;
+    $("mbrRows").innerHTML =
+      '<tr><td colspan="8" class="mbr-state bad" style="padding:22px;text-align:center">' +
+      esc(e.message) + "</td></tr>";
+  }
+}
+
+async function memberAction(act, user) {
+  const m = MBR.list.find((x) => x.username === user);
+  try {
+    if (act === "extend") {
+      const d = prompt(`「${user}」要續期幾天？`, "30");
+      if (!d) return;
+      await adminPost("/members/extend", { username: user, days: Number(d) });
+    } else if (act === "tier") {
+      const opts = MBR.tiers.map((t, i) => `${i + 1}. ${t.label}`).join("\n");
+      const pick = prompt(`「${user}」改成哪個等級？\n${opts}`, "");
+      const idx = Number(pick) - 1;
+      if (!MBR.tiers[idx]) return;
+      await adminPost("/members/update", { username: user, tier: MBR.tiers[idx].key });
+    } else if (act === "suspend" || act === "resume") {
+      const on = act === "suspend";
+      if (on && !confirm(`停權「${user}」？他會立刻斷線且無法登入。`)) return;
+      await adminPost("/members/update",
+                      { username: user, status: on ? "suspended" : "active" });
+    } else if (act === "passwd") {
+      if (!confirm(`重設「${user}」的密碼？舊密碼與已登入的裝置會立刻失效。`)) return;
+      const r = await adminPost("/members/reset-password", { username: user });
+      showIssued(user, r.result.password);
+    } else if (act === "kick") {
+      await adminPost("/members/kick", { username: user });
+    } else if (act === "delete") {
+      if (prompt(`刪除「${user}」無法復原。請輸入帳號再確認一次：`) !== user) return;
+      await adminPost("/members/delete", { username: user });
+    }
+    await loadMembers();
+  } catch (e) { alert("操作失敗：" + e.message); }
+}
+
+function showIssued(user, pass) {
+  $("mbrIssuedUser").textContent = user;
+  $("mbrIssuedPass").textContent = pass;
+  $("mbrIssued").hidden = false;
+  $("mbrIssued").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+if (!IS_CLIENT) {
+  // 訊號中心固定就是「訊號發布 / 會員管理」兩個分頁。會員端那邊是看有沒有
+  // 設定第二顆 EA 才決定要不要出現分頁列，中央機沒有那個條件。
+  $("viewTabs").hidden = false;
+  $("mbrRefresh").onclick = loadMembers;
+  $("mbrSearch").oninput = (e) => { MBR.filter = e.target.value; renderMembers(); };
+  $("mbrNewToggle").onclick = () => {
+    const f = $("mbrNewForm");
+    f.hidden = !f.hidden;
+    if (!f.hidden) $("mbrUser").focus();
+  };
+  $("mbrCancel").onclick = () => { $("mbrNewForm").hidden = true; };
+  $("mbrIssuedClose").onclick = () => { $("mbrIssued").hidden = true; };
+  $("mbrCopy").onclick = () => {
+    const txt = `帳號 ${$("mbrIssuedUser").textContent}\n密碼 ${$("mbrIssuedPass").textContent}`;
+    navigator.clipboard.writeText(txt)
+      .then(() => { $("mbrCopy").textContent = "已複製";
+                    setTimeout(() => ($("mbrCopy").textContent = "複製帳密"), 1500); })
+      .catch(() => alert(txt));
+  };
+  $("mbrCreate").onclick = async () => {
+    const user = $("mbrUser").value.trim();
+    if (!user) { alert("請輸入帳號"); $("mbrUser").focus(); return; }
+    const body = { username: user, tier: $("mbrTier").value, note: $("mbrNote").value.trim() };
+    const days = $("mbrDays").value.trim();
+    if (days) body.days = Number(days);
+    $("mbrCreate").disabled = true;
+    try {
+      const r = await adminPost("/members", body);
+      $("mbrUser").value = ""; $("mbrNote").value = ""; $("mbrDays").value = "";
+      $("mbrNewForm").hidden = true;
+      showIssued(r.result.username, r.result.password);
+      await loadMembers();
+    } catch (e) { alert("開通失敗：" + e.message); }
+    finally { $("mbrCreate").disabled = false; }
+  };
+  $("mbrRows").addEventListener("click", (evt) => {
+    const b = evt.target.closest("[data-act]");
+    if (b) memberAction(b.dataset.act, b.dataset.u);
+  });
+}
 
 $("start").onclick = () => post("/api/start", collect()).then(refreshStatus).catch((e) => alert(e.message));
 $("stop").onclick = () => post("/api/stop").then(refreshStatus).catch((e) => alert(e.message));
@@ -2278,4 +2602,5 @@ def render(state: Any) -> str:
         .replace("__ROLE__", str(getattr(state, "role", "client")))
         .replace("__FIELDS__", CENTRAL_FIELDS if is_central else CLIENT_FIELDS)
         .replace("__EXTRA_BUTTON__", extra_button)
+        .replace("__TAB1__", "訊號發布" if is_central else "訊號跟單")
     )

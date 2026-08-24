@@ -213,10 +213,31 @@ class LauncherState:
     def _hub_base(self) -> str:
         return str(self.settings.get("hub_url") or "").rstrip("/")
 
+    def _admin_base(self) -> str:
+        """後台要打的 Hub 位址。
+
+        中央機有兩種模式：填了 hub_url 就是用雲端 Hub，留空則是本機自架
+        （_run_central 會在 settings["port"] 上開一個）。兩種都要能管會員。
+        """
+        remote = str(self.settings.get("hub_url") or "").strip().rstrip("/")
+        if remote:
+            return remote
+        return f"http://127.0.0.1:{int(self.settings.get('port') or 8765)}"
+
+    def admin_proxy(self, path: str, payload: Optional[Dict[str, Any]] = None):
+        """代理一個 /admin/* 請求到 Hub，帶上管理 token。
+
+        瀏覽器不直接打 Hub 的原因：管理 token 就不必送進前端 JS。面板只跟
+        本機的控制台講話，token 全程留在這支程式裡。
+        """
+        return self._hub_call(path, payload,
+                              token=str(self.settings.get("token") or ""),
+                              base=self._admin_base(), timeout=20.0)
+
     def _hub_call(self, path: str, payload: Optional[Dict[str, Any]] = None,
-                  token: str = "", timeout: float = 12.0):
+                  token: str = "", timeout: float = 12.0, base: str = ""):
         """打 Hub。回傳 (狀態碼, 解析後的 JSON)。連不上回 (0, {...})。"""
-        url = f"{self._hub_base()}{path}"
+        url = f"{base or self._hub_base()}{path}"
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
         req = urllib.request.Request(
             url, data=data, method="POST" if data is not None else "GET",
@@ -851,6 +872,17 @@ def make_handler(state: LauncherState):
             if parsed.path == "/api/status":
                 _json_response(self, 200, {"ok": True, **state.snapshot()})
                 return
+            # 會員後台：/api/admin/* 原樣轉給 Hub 的 /admin/*。
+            # 只有訊號中心能用，而且控制台只綁本機（對外的 Cloudflare
+            # Tunnel 開的是 Hub 那個 port，不是這個控制台）。
+            if parsed.path.startswith("/api/admin/"):
+                if state.role != "central":
+                    _json_response(self, 403, {"ok": False, "error": "central_only"})
+                    return
+                q = f"?{parsed.query}" if parsed.query else ""
+                status, body = state.admin_proxy(parsed.path[len("/api"):] + q)
+                _json_response(self, status or 502, body)
+                return
             if parsed.path == "/api/stats":
                 # 績效統計純粹是讀檔彙整，MT5 沒開就回空資料，不該讓控制台整頁掛掉
                 try:
@@ -871,6 +903,14 @@ def make_handler(state: LauncherState):
         def do_POST(self) -> None:
             parsed = urllib.parse.urlparse(self.path)
             try:
+                if parsed.path.startswith("/api/admin/"):
+                    if state.role != "central":
+                        _json_response(self, 403, {"ok": False, "error": "central_only"})
+                        return
+                    status, body = state.admin_proxy(parsed.path[len("/api"):],
+                                                     _read_json(self))
+                    _json_response(self, status or 502, body)
+                    return
                 if parsed.path == "/api/login":
                     data = _read_json(self)
                     result = state.login(str(data.get("username") or ""),
