@@ -60,3 +60,7 @@ central_web_launcher_settings.json
 client_web_launcher_port.txt
 central_web_launcher_port.txt
 receiver_config.sh
+
+# 本機備份與執行期 log (可能含 Hub token / 個人擷取視窗名稱)
+config.json.bak*
+copy_trader_log.txt
