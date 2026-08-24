@@ -535,12 +535,88 @@ tbody tr:hover { background: var(--sunk); }
 
 body[data-role="central"] .client-only { display: none; }
 
+/* ── 會員登入 ─────────────────────────────────────────────────────────
+   蓋在整個面板之上。沒登入前不讓人看到任何交易畫面, 也就不會有「以為在
+   跟單、其實沒登入」的誤會。 */
+#authGate {
+  position: fixed; inset: 0; z-index: 900;
+  display: none; align-items: center; justify-content: center;
+  background: var(--bg); padding: 24px;
+}
+#authGate.is-on { display: flex; }
+body.auth-locked > *:not(#authGate) { filter: blur(3px); pointer-events: none; user-select: none; }
+.auth-card {
+  width: 100%; max-width: 380px;
+  background: var(--card); border: 1px solid var(--hair); border-radius: 16px;
+  padding: 30px 28px 26px; box-shadow: 0 18px 50px rgba(0,0,0,.16);
+}
+.auth-brand { display: flex; align-items: center; gap: 11px; margin-bottom: 6px; }
+.auth-brand h2 { font-size: 18px; margin: 0; letter-spacing: .3px; }
+.auth-sub { color: var(--ink-2); font-size: 12.5px; margin: 0 0 22px; }
+.auth-field { display: block; margin-bottom: 14px; }
+.auth-field span { display: block; font-size: 12px; color: var(--ink-2); margin-bottom: 5px; }
+.auth-field input {
+  width: 100%; box-sizing: border-box; padding: 10px 12px; font-size: 14px;
+  border: 1px solid var(--hair); border-radius: 9px;
+  background: var(--sunk); color: var(--ink); font-family: inherit;
+}
+.auth-field input:focus { outline: 2px solid var(--win); outline-offset: 1px; border-color: transparent; }
+#authSubmit { width: 100%; margin-top: 8px; padding: 11px; font-size: 14.5px; font-weight: 600; }
+#authSubmit[disabled] { opacity: .55; cursor: progress; }
+.auth-msg {
+  margin-top: 14px; padding: 10px 12px; border-radius: 9px; font-size: 12.5px;
+  background: var(--loss-wash); color: var(--loss); border: 1px solid transparent;
+  display: none;
+}
+.auth-msg.is-on { display: block; }
+.auth-foot { margin-top: 18px; font-size: 11.5px; color: var(--ink-3, var(--ink-2)); line-height: 1.7; }
+/* 已登入時顯示在頂列的身分徽章 */
+.auth-badge {
+  display: inline-flex; align-items: center; gap: 7px; padding: 3px 10px;
+  border-radius: 999px; background: var(--sunk); border: 1px solid var(--hair);
+  font-size: 12px; color: var(--ink-2);
+}
+.auth-badge b { color: var(--ink); font-weight: 600; }
+.auth-badge .tier { color: var(--win); font-weight: 600; }
+.auth-badge.is-soon { border-color: var(--loss); }
+.auth-badge.is-soon .exp { color: var(--loss); font-weight: 600; }
+#authLogout { margin-left: 2px; padding: 1px 7px; font-size: 11px; }
+
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
 }
 </style>
 </head>
 <body data-role="__ROLE__">
+
+<div id="authGate" class="client-only">
+  <form class="auth-card" id="authForm" autocomplete="on">
+    <div class="auth-brand">
+      <span class="bullion" aria-hidden="true"></span>
+      <h2>黃金跟單會員端</h2>
+    </div>
+    <p class="auth-sub">請以會員帳號登入後開始跟單</p>
+
+    <label class="auth-field">
+      <span>帳號</span>
+      <input id="authUser" name="username" autocomplete="username"
+             autocapitalize="off" spellcheck="false" required />
+    </label>
+    <label class="auth-field">
+      <span>密碼</span>
+      <input id="authPass" name="password" type="password"
+             autocomplete="current-password" required />
+    </label>
+
+    <button class="btn btn-go" id="authSubmit" type="submit">登 入</button>
+    <div class="auth-msg" id="authMsg"></div>
+
+    <p class="auth-foot">
+      一組帳號同時只能在一台電腦使用；在別台登入會把這台登出。<br />
+      忘記密碼或需要續期，請聯繫管理員。
+    </p>
+  </form>
+</div>
 
 <header class="rail">
   <div class="rail-id">
@@ -551,6 +627,12 @@ body[data-role="central"] .client-only { display: none; }
     </div>
   </div>
   <div class="rail-state">
+    <span class="auth-badge client-only" id="authBadge" hidden>
+      <b id="authBadgeUser"></b>
+      <span class="tier" id="authBadgeTier"></span>
+      <span class="exp" id="authBadgeExp"></span>
+      <button class="btn" id="authLogout" type="button">登出</button>
+    </span>
     <span class="chip is-off" id="chipService"><span class="dot"></span><span>載入中</span></span>
     <span class="chip is-off client-only" id="chipMt5"><span class="dot"></span><span>MT5</span></span>
     <span class="chip is-off" id="chipHub"><span class="dot"></span><span>Hub</span></span>
@@ -1844,6 +1926,81 @@ function paintCentralHint(snap) {
 }
 
 /* ------------------------------------------------------------- polling */
+/* ----------------------------------------------------------------- auth */
+/* 登入閘門。後端每次 /api/status 都會回目前的登入狀態，前端只是照著畫；
+   session token 一律留在後端，不會出現在瀏覽器裡。 */
+function paintAuth(snap) {
+  if (!IS_CLIENT) return;
+  const a = snap.auth || { logged_in: false };
+  const gate = $("authGate");
+  const locked = !a.logged_in;
+  gate.classList.toggle("is-on", locked);
+  document.body.classList.toggle("auth-locked", locked);
+
+  if (locked) {
+    // 被踢下線 / 到期 / 停權時，後端會把原因放在 auth.error
+    if (a.error) showAuthMsg(a.error);
+    const badge = $("authBadge");
+    if (badge) badge.hidden = true;
+    const u = $("authUser");
+    if (u && document.activeElement !== u && !$("authPass").value) u.focus();
+    return;
+  }
+
+  const badge = $("authBadge");
+  badge.hidden = false;
+  $("authBadgeUser").textContent = a.username || "";
+  $("authBadgeTier").textContent = a.tier_label || "";
+  const exp = Number(a.expires_at || 0);
+  if (exp) {
+    const days = Math.floor((exp * 1000 - Date.now()) / 86400000);
+    $("authBadgeExp").textContent = days >= 0 ? `剩 ${days} 天` : "已到期";
+    // 剩不到一週就標紅，讓會員自己看得到該續費了
+    badge.classList.toggle("is-soon", days <= 7);
+  } else {
+    $("authBadgeExp").textContent = "無期限";
+    badge.classList.remove("is-soon");
+  }
+}
+function showAuthMsg(text) {
+  const el = $("authMsg");
+  el.textContent = text || "";
+  el.classList.toggle("is-on", Boolean(text));
+}
+if (IS_CLIENT) {
+  $("authForm").addEventListener("submit", async (evt) => {
+    evt.preventDefault();
+    const btn = $("authSubmit");
+    const user = $("authUser").value.trim();
+    const pass = $("authPass").value;
+    if (!user || !pass) { showAuthMsg("請輸入帳號與密碼"); return; }
+    btn.disabled = true; btn.textContent = "登入中…"; showAuthMsg("");
+    try {
+      const res = await fetch("/api/login", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: user, password: pass }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        $("authPass").value = "";
+        await refreshStatus();
+      } else {
+        showAuthMsg(data.error || "登入失敗");
+        $("authPass").select();
+      }
+    } catch (e) {
+      showAuthMsg("連不上本機服務，請確認程式仍在執行");
+    } finally {
+      btn.disabled = false; btn.textContent = "登 入";
+    }
+  });
+  $("authLogout").onclick = async () => {
+    if (!confirm("登出後會停止跟單，確定嗎？")) return;
+    await fetch("/api/logout", { method: "POST" });
+    await refreshStatus();
+  };
+}
+
 async function refreshStatus() {
   try {
     const res = await fetch("/api/status");
@@ -1851,6 +2008,7 @@ async function refreshStatus() {
     if (!snap.ok) return;
     S.status = snap;
     if (!S.filled) { fill(snap.settings); S.filled = true; }
+    paintAuth(snap);
     paintStatus();
   } catch (e) { /* 網頁還開著、服務暫時沒回應時不要洗版 */ }
 }

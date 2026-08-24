@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import platform
 import queue
 import re
 import secrets
@@ -107,6 +108,17 @@ class LauncherState:
         self.should_exit = False
         self.control_server: Optional[ThreadingHTTPServer] = None
 
+        # ── 會員登入 ────────────────────────────────────────────────────
+        # session 另外存一個檔, 不跟 settings 混在一起: settings 是使用者會
+        # 匯出/分享的東西 (問「我的設定長怎樣」時常常整個貼出來), session
+        # token 等同於密碼, 不能跟著一起外流。
+        self.auth_path = DATA_DIR / "member_session.json"
+        self.auth: Optional[Dict[str, Any]] = None      # 已登入的會員資料
+        self.auth_error = ""                            # 給前端顯示的最後一次失敗原因
+        self.auth_checked_at = 0.0
+        if self.role == "client":
+            self._load_session()
+
     def defaults(self) -> Dict[str, Any]:
         if self.role == "central":
             return {
@@ -183,12 +195,164 @@ class LauncherState:
                 logger.warning("設定已存檔，但即時套用失敗，需重啟才生效：%s", exc)
         return merged
 
+    def _log(self, message: str) -> None:
+        """把一行訊息推進面板日誌（跟 QueueLogHandler 走同一條隊列）。"""
+        self.log_queue.put(f"{time.strftime('%H:%M:%S')} {message}")
+
+    # ── 會員登入 ────────────────────────────────────────────────────────
+    AUTH_ERROR_TEXT = {
+        "bad_credentials": "帳號或密碼錯誤",
+        "expired": "會員已到期，請聯繫管理員續期",
+        "suspended": "帳號已停權，請聯繫管理員",
+        "session_invalid": "此帳號已在其他裝置登入，你已被登出",
+        "session_expired": "登入逾時，請重新登入",
+        "membership_unavailable": "伺服器的會員系統暫時無法使用",
+        "no_token": "尚未登入",
+    }
+
+    def _hub_base(self) -> str:
+        return str(self.settings.get("hub_url") or "").rstrip("/")
+
+    def _hub_call(self, path: str, payload: Optional[Dict[str, Any]] = None,
+                  token: str = "", timeout: float = 12.0):
+        """打 Hub。回傳 (狀態碼, 解析後的 JSON)。連不上回 (0, {...})。"""
+        url = f"{self._hub_base()}{path}"
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
+        req = urllib.request.Request(
+            url, data=data, method="POST" if data is not None else "GET",
+            headers={"Content-Type": "application/json; charset=utf-8"})
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            try:
+                return e.code, json.loads(e.read().decode("utf-8"))
+            except Exception:                        # noqa: BLE001
+                return e.code, {"ok": False, "error": f"http_{e.code}"}
+        except Exception as e:                       # noqa: BLE001
+            return 0, {"ok": False, "error": "network", "detail": str(e)}
+
+    def _load_session(self) -> None:
+        try:
+            if self.auth_path.exists():
+                self.auth = json.loads(self.auth_path.read_text(encoding="utf-8"))
+        except Exception as e:                       # noqa: BLE001
+            logger.debug("讀取已存 session 失敗: %s", e)
+            self.auth = None
+
+    def _save_session(self) -> None:
+        try:
+            if self.auth:
+                self.auth_path.write_text(
+                    json.dumps(self.auth, ensure_ascii=False), encoding="utf-8")
+            elif self.auth_path.exists():
+                self.auth_path.unlink()
+        except Exception as e:                       # noqa: BLE001
+            logger.warning("寫入 session 失敗: %s", e)
+
+    def _device_label(self) -> str:
+        """給後台看的裝置名稱，方便判斷是誰在哪台登入。"""
+        inst = _instance_name()
+        return f"{platform.node()}{f'#{inst}' if inst else ''}"
+
+    def login(self, username: str, password: str) -> Dict[str, Any]:
+        if not self._hub_base():
+            self.auth_error = "尚未設定 Hub 網址"
+            return {"ok": False, "error": self.auth_error}
+
+        status, body = self._hub_call("/auth/login", {
+            "username": username, "password": password, "device": self._device_label()})
+
+        if status == 0:
+            self.auth_error = "連不上伺服器，請檢查網路"
+            return {"ok": False, "error": self.auth_error}
+        if not body.get("ok"):
+            code = str(body.get("error") or "unknown")
+            self.auth_error = self.AUTH_ERROR_TEXT.get(code, f"登入失敗（{code}）")
+            return {"ok": False, "error": self.auth_error, "code": code}
+
+        self.auth = body["member"]
+        self.auth_error = ""
+        self.auth_checked_at = time.time()
+        self._save_session()
+        ent = self.auth.get("entitlements") or {}
+        self._log(f"登入成功：{self.auth.get('username')}（{self.auth.get('tier_label')}）"
+                  f" 可跟來源 {', '.join(ent.get('sources') or []) or '無'}")
+        if self.auth.get("kicked_previous"):
+            self._log("注意：此帳號原本在其他裝置登入，那一台已被登出")
+        # 登入後把等級額度套進交易設定 — 不能等下次存檔。
+        # 服務還沒啟動時 client_agent 是 None，那時不用套：start_service()
+        # 會在建好 agent 之後自己呼叫一次。
+        if self.is_running() and self.client_agent is not None:
+            try:
+                self._apply_client_trade_settings()
+            except Exception as exc:                 # noqa: BLE001
+                logger.warning("登入後套用等級額度失敗：%s", exc)
+        return {"ok": True, "member": self.auth}
+
+    def logout(self, *, notify_hub: bool = True) -> None:
+        token = (self.auth or {}).get("session_token") or ""
+        if notify_hub and token:
+            self._hub_call("/auth/logout", {}, token=token)
+        if self.is_running():
+            self.stop_service()
+        self.auth = None
+        self._save_session()
+        self._log("已登出")
+
+    def refresh_auth(self) -> bool:
+        """跟 Hub 對一次帳號狀態。回傳是否仍然有效。
+
+        會員端每秒輪詢訊號，但那條路徑只會拿到 401；這裡是為了把 401 的
+        「原因」問清楚（被踢 / 到期 / 停權），好在面板上顯示正確訊息。
+        """
+        token = (self.auth or {}).get("session_token") or ""
+        if not token:
+            return False
+        status, body = self._hub_call(f"/auth/me", token=token)
+        self.auth_checked_at = time.time()
+        if status == 0:
+            return True          # 網路問題不當成登出，避免斷網就被踢回登入頁
+        if body.get("ok"):
+            member = body.get("member") or {}
+            member["session_token"] = token          # /auth/me 不回 token
+            self.auth = member
+            self._save_session()
+            return True
+        code = str(body.get("error") or "session_invalid")
+        self.auth_error = self.AUTH_ERROR_TEXT.get(code, f"登入失效（{code}）")
+        self._log(f"帳號狀態異常：{self.auth_error} — 已停止跟單")
+        self.auth = None
+        self._save_session()
+        if self.is_running():
+            self.stop_service()
+        return False
+
+    def entitlements(self) -> Dict[str, Any]:
+        """目前登入者的額度。沒登入就是全部不給。"""
+        if not self.auth:
+            return {"sources": [], "max_lot": 0.0, "martingale": False,
+                    "partial_close": False, "label": ""}
+        ent = dict(self.auth.get("entitlements") or {})
+        ent.setdefault("sources", [])
+        ent.setdefault("max_lot", None)
+        ent.setdefault("martingale", False)
+        ent.setdefault("partial_close", False)
+        return ent
+
     def is_running(self) -> bool:
         return bool(self.worker and self.worker.is_alive())
 
     def start_service(self) -> None:
         if self.is_running():
             return
+        # 會員端沒登入不准跑。否則會拿舊的共用 token 去輪詢, 繞過整個會員制。
+        if self.role == "client" and not self.auth:
+            self.status = "請先登入"
+            self._log("尚未登入，無法啟動跟單")
+            raise PermissionError("not_logged_in")
         self.stop_event.clear()
         target = self._run_central if self.role == "central" else self._run_client
         self.worker = threading.Thread(target=target, daemon=True)
@@ -373,6 +537,40 @@ class LauncherState:
             self.status = "已停止"
             self.service_started_at = None
 
+    def _clamp_to_entitlements(self, profiles: Dict[str, Any]) -> Dict[str, Any]:
+        """把來源設定壓到會員等級允許的範圍內。
+
+        沒登入（例如訊號中心自己，或還沒接上會員制的舊部署）就原封不動放行。
+        """
+        if not self.auth:
+            return profiles
+        ent = self.entitlements()
+        allowed = set(ent.get("sources") or [])
+        max_lot = ent.get("max_lot")
+        out: Dict[str, Any] = {}
+        for name, p in profiles.items():
+            p = dict(p)
+            if p.get("enabled") and name not in allowed:
+                p["enabled"] = False
+                logger.info("來源「%s」不在等級「%s」的授權範圍，已停用", name, ent.get("label"))
+            if max_lot:
+                try:
+                    if float(p.get("base_lot") or 0) > max_lot:
+                        logger.info("來源「%s」基礎手數 %s 超過等級上限，改為 %s",
+                                    name, p.get("base_lot"), max_lot)
+                        p["base_lot"] = max_lot
+                except (TypeError, ValueError):
+                    pass
+            if not ent.get("martingale") and str(p.get("mode", "")).lower() == "martingale":
+                logger.info("來源「%s」的馬丁不在等級授權內，改為均注", name)
+                p["mode"] = "flat"
+            if not ent.get("partial_close") and str(p.get("tp_mode", "")).lower() == "partial":
+                # 降級成保本移損: 一樣吃得到多 TP, 但不分批出場
+                logger.info("來源「%s」的分批平倉不在等級授權內，改為保本移損", name)
+                p["tp_mode"] = "breakeven"
+            out[name] = p
+        return out
+
     def _apply_client_trade_settings(self) -> None:
         """把會員面板的手數 / 馬丁 / 分批設定套到 agent 的 TradeManager。"""
         tm = self.client_agent.trade_manager
@@ -425,6 +623,20 @@ class LauncherState:
                     logger.warning("source_profiles 不是物件，已忽略")
             except json.JSONDecodeError as exc:
                 logger.warning("source_profiles JSON 解析失敗，已忽略：%s", exc)
+        # 依會員等級箝制。這是用戶端自律的那一層 —— 真正擋住未授權來源的是
+        # Hub（它根本不會把那些訊號送下來），這裡處理的是手數上限、馬丁、
+        # 分批平倉這些「只影響會員自己帳戶」的額度。
+        profiles = self._clamp_to_entitlements(profiles)
+        ent = self.entitlements()
+        max_lot = ent.get("max_lot")
+        if max_lot and tm.default_lot_size > max_lot:
+            logger.info("等級手數上限 %s：全域基礎手數 %s → %s",
+                        max_lot, tm.default_lot_size, max_lot)
+            tm.default_lot_size = max_lot
+        if self.auth and not ent.get("martingale") and tm.use_martingale:
+            logger.info("等級「%s」不含馬丁，全域馬丁已關閉", ent.get("label"))
+            tm.use_martingale = False
+
         tm.source_profiles = profiles
         if profiles:
             # 混用均注/馬丁時，層級一定要各群分開算，否則會互相污染
@@ -462,7 +674,11 @@ class LauncherState:
             from copy_trader.central.mt5_client_agent import HubClient, MT5ClientAgent
 
             hub_url = str(self.settings.get("hub_url") or "").rstrip("/")
-            token = str(self.settings.get("token") or "")
+            # 登入後一律用會員自己的 session token —— Hub 會依他的等級過濾
+            # 來源。settings 裡那把共用 token 只留給還沒轉成帳號的舊部署,
+            # 帶著它等於拿到全部來源, 不可以在有 session 的時候還用它。
+            token = ((self.auth or {}).get("session_token")
+                     or str(self.settings.get("token") or ""))
             mt5_dir = str(self.settings.get("mt5_files_dir") or "")
             interval = max(0.5, float(self.settings.get("interval") or 1.0))
 
@@ -506,7 +722,14 @@ class LauncherState:
                     if count:
                         logger.info("本輪送出 %s 筆 MT5 指令", count)
                 except urllib.error.HTTPError as exc:
-                    if exc.code == 401:
+                    if exc.code in (401, 403):
+                        # 已登入的會員收到 401/403，代表 session 出事了 —— 被別台
+                        # 踢掉、到期、或被停權。問清楚原因並停止跟單，不要繼續
+                        # 每秒重試洗版（而且再怎麼重試也拿不到訊號）。
+                        if self.auth:
+                            logger.error("Hub 拒絕此連線（%s），確認帳號狀態中…", exc.code)
+                            self.refresh_auth()      # 失效時會自己 stop_service()
+                            break
                         logger.error("Hub 密碼錯誤（401），請檢查「Hub 密碼」設定")
                     else:
                         logger.warning("Hub 連線失敗：%s", exc)
@@ -541,8 +764,22 @@ class LauncherState:
             if len(self.logs) > 500:
                 self.logs = self.logs[-500:]
 
+    # 多久跟 Hub 對一次帳號狀態。面板每 2 秒輪詢一次 /api/status，不能每次都
+    # 打網路；60 秒足夠讓「被別台踢掉 / 到期 / 停權」在畫面上反應出來。
+    AUTH_RECHECK_SEC = 60.0
+
+    def _maybe_recheck_auth(self) -> None:
+        if not self.auth or self.role != "client":
+            return
+        if time.time() - self.auth_checked_at < self.AUTH_RECHECK_SEC:
+            return
+        self.auth_checked_at = time.time()      # 先記時間，避免併發重複發請求
+        # 丟到背景做：這是在 HTTP handler 執行緒裡被呼叫的，不能卡住面板
+        threading.Thread(target=self.refresh_auth, daemon=True).start()
+
     def snapshot(self) -> Dict[str, Any]:
         self.drain_logs()
+        self._maybe_recheck_auth()
         return {
             "role": self.role,
             "title": self.title,
@@ -553,6 +790,24 @@ class LauncherState:
             "lan_ip": _lan_ip(),
             "cloudflare_url": self.cloudflare_url,
             "uptime_seconds": int(time.time() - self.service_started_at) if self.service_started_at else 0,
+            "auth": self._auth_snapshot(),
+        }
+
+    def _auth_snapshot(self) -> Optional[Dict[str, Any]]:
+        """給前端的登入狀態。session_token 絕不外送到瀏覽器。"""
+        if self.role != "client":
+            return None
+        if not self.auth:
+            return {"logged_in": False, "error": self.auth_error}
+        a = self.auth
+        return {
+            "logged_in": True,
+            "username": a.get("username"),
+            "tier": a.get("tier"),
+            "tier_label": a.get("tier_label"),
+            "expires_at": a.get("expires_at"),
+            "entitlements": self.entitlements(),
+            "error": "",
         }
 
 
@@ -616,6 +871,16 @@ def make_handler(state: LauncherState):
         def do_POST(self) -> None:
             parsed = urllib.parse.urlparse(self.path)
             try:
+                if parsed.path == "/api/login":
+                    data = _read_json(self)
+                    result = state.login(str(data.get("username") or ""),
+                                         str(data.get("password") or ""))
+                    _json_response(self, 200 if result.get("ok") else 401, result)
+                    return
+                if parsed.path == "/api/logout":
+                    state.logout()
+                    _json_response(self, 200, {"ok": True})
+                    return
                 if parsed.path == "/api/settings":
                     settings = state.save_settings(_read_json(self))
                     _json_response(self, 200, {"ok": True, "settings": settings})
@@ -624,7 +889,12 @@ def make_handler(state: LauncherState):
                     data = _read_json(self)
                     if data:
                         state.save_settings(data)
-                    state.start_service()
+                    try:
+                        state.start_service()
+                    except PermissionError:
+                        _json_response(self, 403, {"ok": False, "error": "not_logged_in",
+                                                   "message": "請先登入會員帳號"})
+                        return
                     _json_response(self, 200, {"ok": True})
                     return
                 if parsed.path == "/api/stop":
