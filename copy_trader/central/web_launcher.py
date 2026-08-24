@@ -317,6 +317,15 @@ class LauncherState:
         # 服務還沒啟動時 client_agent 是 None，那時不用套：start_service()
         # 會在建好 agent 之後自己呼叫一次。
         if self.is_running() and self.client_agent is not None:
+            # 正在輪詢的 HubClient 是在啟動當下就把 token 存進去的，不換掉的話
+            # 它會繼續用舊的那把。而「單一裝置」的規則是新登入會踢掉舊 session
+            # ——包含同一台自己重新登入——所以舊 token 立刻失效，下一輪就 401、
+            # 服務自己停掉。2026-08-24 實測踩到：程式讀回存檔的 session 自動
+            # 開始跟單，我再登入一次，三台全部在一分鐘內停止。
+            hub = getattr(self.client_agent, "hub", None)
+            if hub is not None:
+                hub.token = self.auth.get("session_token") or ""
+                logger.info("已把新的登入憑證交給執行中的跟單服務")
             try:
                 self._apply_client_trade_settings()
             except Exception as exc:                 # noqa: BLE001
