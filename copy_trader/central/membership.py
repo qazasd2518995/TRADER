@@ -89,6 +89,10 @@ LAST_SEEN_WRITE_INTERVAL = 30.0
 _PBKDF2_ITERATIONS = 600_000
 _SALT_BYTES = 16
 
+# 會員自己改密碼時的最低長度。系統發的初始密碼是 10 碼隨機, 這裡只擋
+# 「改成更弱」—— 8 碼是 NIST SP 800-63B 對使用者自選密碼的下限。
+MIN_PASSWORD_LENGTH = 8
+
 
 # ── 密碼 ────────────────────────────────────────────────────────────────────
 def hash_password(password: str, *, iterations: int = _PBKDF2_ITERATIONS) -> str:
@@ -465,6 +469,49 @@ class MemberStore:
         member = self._row_to_public(row)
         member["entitlements"] = tier_entitlements(row["tier"])
         return member, ""
+
+    def change_password(self, token: str, old_password: str,
+                        new_password: str) -> Tuple[bool, str]:
+        """會員自己改密碼。回傳 (是否成功, 錯誤碼)。
+
+        跟管理員的 reset_password 有兩個關鍵差異：
+
+        1. 要驗舊密碼。否則有人趁會員電腦沒鎖就能把帳號整個接管過去
+           —— session 已經在那台機器上了，不驗舊密碼等於零門檻。
+        2. **保留呼叫者當下的 session**。單一裝置模式下就只有這一個
+           session，改完密碼還把自己踢掉會很莫名其妙。其他裝置本來就
+           不可能有 session（新登入會覆蓋），所以不必額外清。
+        """
+        if not token:
+            return False, "no_token"
+        new_password = new_password or ""
+        if len(new_password) < MIN_PASSWORD_LENGTH:
+            return False, "too_short"
+
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM members WHERE session_token = ?", (token,)).fetchone()
+            if row is None:
+                return False, "session_invalid"
+            if row["status"] != "active":
+                return False, "suspended"
+            if _is_expired(row["expires_at"]):
+                return False, "expired"
+            if not verify_password(old_password, row["password_hash"]):
+                self._log_event(row["username"], False, row["session_device"], "",
+                                "change_pw_bad_old")
+                self._conn.commit()
+                return False, "bad_old_password"
+            if verify_password(new_password, row["password_hash"]):
+                return False, "same_as_old"
+
+            self._conn.execute(
+                "UPDATE members SET password_hash = ? WHERE id = ?",
+                (hash_password(new_password), row["id"]))
+            self._log_event(row["username"], True, row["session_device"], "",
+                            "password_changed")
+            self._conn.commit()
+        return True, ""
 
     def logout(self, token: str) -> bool:
         if not token:

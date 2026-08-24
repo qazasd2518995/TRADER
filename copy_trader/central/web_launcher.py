@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from copy_trader.config import DATA_DIR, _instance_name, load_config
+from copy_trader.central.membership import MIN_PASSWORD_LENGTH
 
 logger = logging.getLogger(__name__)
 
@@ -312,6 +313,29 @@ class LauncherState:
             except Exception as exc:                 # noqa: BLE001
                 logger.warning("登入後套用等級額度失敗：%s", exc)
         return {"ok": True, "member": self.auth}
+
+    def change_password(self, old_password: str, new_password: str) -> Dict[str, Any]:
+        """會員自己改密碼。改完 session 保留，不用重新登入。"""
+        token = (self.auth or {}).get("session_token") or ""
+        if not token:
+            return {"ok": False, "error": "尚未登入"}
+        status, body = self._hub_call("/auth/change-password", {
+            "old_password": old_password, "new_password": new_password}, token=token)
+        if status == 0:
+            return {"ok": False, "error": "連不上伺服器，請檢查網路"}
+        if body.get("ok"):
+            self._log("密碼已更新")
+            return {"ok": True}
+        code = str(body.get("error") or "unknown")
+        return {"ok": False, "error": self.PASSWORD_ERROR_TEXT.get(
+            code, self.AUTH_ERROR_TEXT.get(code, f"變更失敗（{code}）"))}
+
+    PASSWORD_ERROR_TEXT = {
+        "bad_old_password": "目前密碼不正確",
+        # 門檻直接引用 membership 的常數，前後端才不會各講一套
+        "too_short": f"新密碼至少要 {MIN_PASSWORD_LENGTH} 個字元",
+        "same_as_old": "新密碼不能跟目前的一樣",
+    }
 
     def logout(self, *, notify_hub: bool = True) -> None:
         token = (self.auth or {}).get("session_token") or ""
@@ -920,6 +944,13 @@ def make_handler(state: LauncherState):
                 if parsed.path == "/api/logout":
                     state.logout()
                     _json_response(self, 200, {"ok": True})
+                    return
+                if parsed.path == "/api/change-password":
+                    data = _read_json(self)
+                    result = state.change_password(
+                        str(data.get("old_password") or ""),
+                        str(data.get("new_password") or ""))
+                    _json_response(self, 200 if result.get("ok") else 400, result)
                     return
                 if parsed.path == "/api/settings":
                     settings = state.save_settings(_read_json(self))

@@ -18,6 +18,8 @@ OKLab ΔE 9.1（門檻 8.0），深色模式那組是 11.2。除了顏色，每�
 from __future__ import annotations
 
 import json
+
+from copy_trader.central.membership import MIN_PASSWORD_LENGTH
 from typing import Any
 
 CLIENT_FIELDS = """
@@ -683,7 +685,24 @@ body.auth-locked > *:not(#authGate) { display: none; }
 /* 剩不到一週就轉紅，會員自己看得到該續期了 */
 .auth-badge.is-soon { border-color: var(--loss); background: var(--loss-wash); }
 .auth-badge.is-soon .exp { color: var(--loss); font-weight: 600; }
-#authLogout { padding: 2px 9px; font-size: 11px; }
+#authLogout, #authChangePw { padding: 2px 9px; font-size: 11px; }
+
+/* 修改密碼對話框 —— 沿用登入卡的骨架，只是浮在面板上而不是佔滿整頁 */
+#pwModal {
+  position: fixed; inset: 0; z-index: 950;
+  display: none; align-items: center; justify-content: center;
+  padding: 24px; background: rgba(26, 20, 16, .45);
+}
+#pwModal.is-on { display: flex; }
+:root[data-theme="dark"] #pwModal { background: rgba(0, 0, 0, .6); }
+#pwModal .auth-card { max-width: 360px; }
+.pw-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+.pw-head h3 { font-size: 15px; }
+.pw-head span { font-size: 12px; color: var(--muted); }
+.pw-actions { display: flex; gap: 8px; margin-top: 4px; }
+.pw-actions .btn { flex: 1; padding: 9px; }
+.auth-msg.is-ok { background: var(--ok-wash); color: var(--ok); }
+.auth-msg.is-ok::before { content: "✓"; }
 
 @media (max-width: 420px) {
   .auth-card { padding: 26px 20px 20px; border-radius: 12px; }
@@ -739,6 +758,45 @@ body.auth-locked > *:not(#authGate) { display: none; }
   </form>
 </div>
 
+<div id="pwModal" class="client-only">
+  <form class="auth-card" id="pwForm" autocomplete="off">
+    <div class="pw-head">
+      <h3>修改密碼</h3>
+      <span id="pwWho"></span>
+    </div>
+    <p class="auth-lede">改完不需要重新登入，這台會繼續跟單。</p>
+
+    <label class="auth-field">
+      <span class="auth-label">目前密碼</span>
+      <span class="auth-input">
+        <input id="pwOld" type="password" autocomplete="current-password" required />
+      </span>
+    </label>
+    <label class="auth-field">
+      <span class="auth-label">新密碼</span>
+      <span class="auth-input">
+        <input id="pwNew" type="password" autocomplete="new-password" required />
+        <button class="btn btn-quiet auth-peek" id="pwPeek" type="button"
+                tabindex="-1" aria-label="顯示密碼">顯示</button>
+      </span>
+      <span class="auth-hint" id="pwCaps">Caps Lock 已開啟</span>
+    </label>
+    <label class="auth-field">
+      <span class="auth-label">再輸入一次</span>
+      <span class="auth-input">
+        <input id="pwNew2" type="password" autocomplete="new-password" required />
+      </span>
+    </label>
+
+    <div class="pw-actions">
+      <button class="btn btn-quiet" id="pwCancel" type="button">取消</button>
+      <button class="btn btn-go" id="pwSubmit" type="submit">確定變更</button>
+    </div>
+    <div class="auth-msg" id="pwMsg" role="alert"></div>
+    <p class="auth-foot">至少 __PWMIN__ 個字元。忘記目前密碼請聯繫管理員重設。</p>
+  </form>
+</div>
+
 <header class="rail">
   <div class="rail-id">
     <span class="bullion" aria-hidden="true"></span>
@@ -752,6 +810,7 @@ body.auth-locked > *:not(#authGate) { display: none; }
       <b id="authBadgeUser"></b>
       <span class="tier" id="authBadgeTier"></span>
       <span class="exp" id="authBadgeExp"></span>
+      <button class="btn" id="authChangePw" type="button">改密碼</button>
       <button class="btn" id="authLogout" type="button">登出</button>
     </span>
     <span class="chip is-off" id="chipService"><span class="dot"></span><span>載入中</span></span>
@@ -1039,6 +1098,9 @@ body.auth-locked > *:not(#authGate) { display: none; }
 "use strict";
 const ROLE = __ROLE_JSON__;
 const IS_CLIENT = ROLE !== "central";
+/* 密碼最短長度由後端的 membership.MIN_PASSWORD_LENGTH 帶過來，
+   前後端才不會各自寫死一個數字然後慢慢對不上。 */
+const PW_MIN = __PWMIN__;
 const S = { status: null, stats: null, period: "today", source: "all", from: "", to: "", ladderSource: "",
             filled: false, heroShown: null };
 // 趨勢線策略分頁的獨立篩選狀態——跟 S 分開，兩個分頁想看不同期間互不影響
@@ -2213,6 +2275,76 @@ if (IS_CLIENT) {
     await fetch("/api/logout", { method: "POST" });
     await refreshStatus();
   };
+
+  /* ---------------------------------------------------------- 修改密碼 */
+  const pwMsg = (text, ok) => {
+    const el = $("pwMsg");
+    el.textContent = text || "";
+    el.classList.toggle("is-on", Boolean(text));
+    el.classList.toggle("is-ok", Boolean(ok));
+  };
+  const pwClose = () => {
+    $("pwModal").classList.remove("is-on");
+    ["pwOld", "pwNew", "pwNew2"].forEach((id) => { $(id).value = ""; $(id).type = "password"; });
+    $("pwPeek").textContent = "顯示";
+    $("pwCaps").classList.remove("is-on");
+    pwMsg("");
+  };
+  $("authChangePw").onclick = () => {
+    const a = (S.status && S.status.auth) || {};
+    $("pwWho").textContent = a.username || "";
+    $("pwModal").classList.add("is-on");
+    $("pwOld").focus();
+  };
+  $("pwCancel").onclick = pwClose;
+  // 點灰色背景或按 Esc 都能關 —— 這是個可以隨時放棄的操作
+  $("pwModal").addEventListener("click", (e) => { if (e.target === $("pwModal")) pwClose(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && $("pwModal").classList.contains("is-on")) pwClose();
+  });
+  $("pwPeek").onclick = () => {
+    const shown = $("pwNew").type === "text";
+    ["pwNew", "pwNew2"].forEach((id) => { $(id).type = shown ? "password" : "text"; });
+    $("pwPeek").textContent = shown ? "顯示" : "隱藏";
+    $("pwNew").focus();
+  };
+  const pwCapsWatch = (evt) => {
+    if (typeof evt.getModifierState !== "function") return;
+    $("pwCaps").classList.toggle("is-on", evt.getModifierState("CapsLock"));
+  };
+  ["pwOld", "pwNew", "pwNew2"].forEach((id) => {
+    $(id).addEventListener("keydown", pwCapsWatch);
+    $(id).addEventListener("keyup", pwCapsWatch);
+  });
+
+  $("pwForm").addEventListener("submit", async (evt) => {
+    evt.preventDefault();
+    const oldPw = $("pwOld").value, a = $("pwNew").value, b = $("pwNew2").value;
+    // 兩次不一致要在本地就擋掉 —— 送到伺服器只會白跑一趟 PBKDF2 (要 0.4 秒)
+    if (a !== b) { pwMsg("兩次輸入的新密碼不一致"); $("pwNew2").select(); return; }
+    if (a.length < PW_MIN) { pwMsg(`新密碼至少要 ${PW_MIN} 個字元`); $("pwNew").select(); return; }
+    if (a === oldPw) { pwMsg("新密碼不能跟目前的一樣"); $("pwNew").select(); return; }
+
+    const btn = $("pwSubmit");
+    btn.disabled = true; btn.textContent = "變更中…"; pwMsg("");
+    try {
+      const res = await fetch("/api/change-password", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ old_password: oldPw, new_password: a }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        pwMsg("密碼已更新，下次登入請用新密碼", true);
+        ["pwOld", "pwNew", "pwNew2"].forEach((id) => ($(id).value = ""));
+        setTimeout(pwClose, 1800);
+      } else {
+        pwMsg(data.error || "變更失敗");
+        if (/目前密碼/.test(data.error || "")) $("pwOld").select();
+      }
+    } catch (e) {
+      pwMsg("連不上本機服務，請確認程式仍在執行");
+    } finally { btn.disabled = false; btn.textContent = "確定變更"; }
+  });
 }
 
 async function refreshStatus() {
@@ -2603,4 +2735,5 @@ def render(state: Any) -> str:
         .replace("__FIELDS__", CENTRAL_FIELDS if is_central else CLIENT_FIELDS)
         .replace("__EXTRA_BUTTON__", extra_button)
         .replace("__TAB1__", "訊號發布" if is_central else "訊號跟單")
+        .replace("__PWMIN__", str(MIN_PASSWORD_LENGTH))
     )

@@ -316,6 +316,23 @@ class HubRequestHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True})
             return
 
+        if parsed.path == "/auth/change-password":
+            old = str(data.get("old_password") or "")
+            new = str(data.get("new_password") or "")
+            for tok in self._presented_tokens():
+                if tok == self.token:
+                    continue        # 管理 token 沒有「自己的密碼」可改
+                ok, err = store.change_password(tok, old, new)
+                if ok:
+                    self._send_json(200, {"ok": True})
+                    return
+                # 401 給憑證問題 (舊密碼錯 / session 失效), 400 給輸入問題
+                status = 400 if err in ("too_short", "same_as_old") else 401
+                self._send_json(status, {"ok": False, "error": err})
+                return
+            self._send_json(401, {"ok": False, "error": "no_token"})
+            return
+
         member, err = store.login(
             str(data.get("username") or ""),
             str(data.get("password") or ""),
@@ -381,7 +398,7 @@ class HubRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
 
-        if parsed.path in ("/auth/login", "/auth/logout"):
+        if parsed.path in ("/auth/login", "/auth/logout", "/auth/change-password"):
             self._handle_auth_post(parsed)
             return
         if parsed.path.startswith("/admin/"):
