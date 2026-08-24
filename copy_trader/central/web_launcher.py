@@ -134,7 +134,16 @@ class LauncherState:
             }
         return {
             "hub_url": "https://gold-signal-hub-tw.fly.dev",
-            "token": "79yy4q8ldFRUqPZT",
+            # 這裡刻意沒有 "token"。
+            #
+            # 以前會員端內建那把共用 token，等於每個會員的硬碟上都躺著一份
+            # **管理權限**憑證 —— 帶著它打 Hub 可以拿到全部訊號來源，完全
+            # 繞過等級過濾。改成帳密登入之後，start_service() 沒登入就不給
+            # 啟動、_run_client() 只用 session token，那把已經是死碼，留著
+            # 只剩外洩風險。
+            #
+            # 舊的 settings.json 裡若還存著 token，也會在下一次存檔時被
+            # save_settings() 濾掉（它只保留 defaults() 有的鍵）。
             "mt5_files_dir": "",
             "interval": "1.0",
             "auto_start": "false",
@@ -281,7 +290,7 @@ class LauncherState:
 
     def login(self, username: str, password: str) -> Dict[str, Any]:
         if not self._hub_base():
-            self.auth_error = "尚未設定 Hub 網址"
+            self.auth_error = "尚未設定訊號伺服器，請聯繫管理員"
             return {"ok": False, "error": self.auth_error}
 
         status, body = self._hub_call("/auth/login", {
@@ -719,11 +728,14 @@ class LauncherState:
             from copy_trader.central.mt5_client_agent import HubClient, MT5ClientAgent
 
             hub_url = str(self.settings.get("hub_url") or "").rstrip("/")
-            # 登入後一律用會員自己的 session token —— Hub 會依他的等級過濾
-            # 來源。settings 裡那把共用 token 只留給還沒轉成帳號的舊部署,
-            # 帶著它等於拿到全部來源, 不可以在有 session 的時候還用它。
-            token = ((self.auth or {}).get("session_token")
-                     or str(self.settings.get("token") or ""))
+            # 只用會員自己的 session token —— Hub 會依他的等級過濾來源。
+            # 這裡不再回退到任何共用 token: 沒有 session 就代表沒登入,
+            # 而沒登入本來就不該跑 (start_service 會先擋下)。
+            token = str((self.auth or {}).get("session_token") or "")
+            if not token:
+                logger.error("尚未登入，無法連線訊號伺服器")
+                self.status = "請先登入"
+                return
             mt5_dir = str(self.settings.get("mt5_files_dir") or "")
             interval = max(0.5, float(self.settings.get("interval") or 1.0))
 
@@ -739,7 +751,8 @@ class LauncherState:
                     break
                 except (urllib.error.URLError, TimeoutError, OSError) as exc:
                     self.status = "等待 Hub 連線"
-                    logger.warning("無法連線 Hub（%s），10 秒後重試：%s", hub_url, exc)
+                    # 日誌會顯示在會員的面板上，不要把伺服器位址印出去
+                    logger.warning("無法連線訊號伺服器，10 秒後重試：%s", exc)
                     self.stop_event.wait(10)
             if self.client_agent is None:
                 return
@@ -753,7 +766,7 @@ class LauncherState:
                 cancel_if_price_beyond=cfg.cancel_if_price_beyond_percent,
             )
             self.client_agent.trade_manager.start()
-            logger.info("會員端已啟動，Hub=%s，last_seq=%s", hub_url, self.client_agent.last_seq)
+            logger.info("會員端已啟動，last_seq=%s", self.client_agent.last_seq)
             self.status = "運行中"
             self.service_started_at = time.time()
 
@@ -822,13 +835,31 @@ class LauncherState:
         # 丟到背景做：這是在 HTTP handler 執行緒裡被呼叫的，不能卡住面板
         threading.Thread(target=self.refresh_auth, daemon=True).start()
 
+    # 會員端絕不能送到瀏覽器的設定欄位。
+    #
+    # token 是**管理權限**的通行證 —— 帶著它打 Hub 可以拿到全部訊號來源，
+    # 完全繞過等級過濾。以前這個值會隨 /api/status 明文送進前端（設定面板
+    # 有個 type="password" 的欄位在填它），等於任何會員打開自己的面板網址
+    # 加 /api/status 就能把整個付費牆拆掉。
+    #
+    # hub_url 沒那麼致命，但也沒有讓會員知道的理由，一起擋掉。
+    _CLIENT_SECRET_KEYS = ("token", "hub_url")
+
+    def _public_settings(self) -> Dict[str, Any]:
+        if self.role != "client":
+            return self.settings
+        return {k: v for k, v in self.settings.items()
+                if k not in self._CLIENT_SECRET_KEYS}
+
     def snapshot(self) -> Dict[str, Any]:
         self.drain_logs()
         self._maybe_recheck_auth()
         return {
             "role": self.role,
             "title": self.title,
-            "settings": self.settings,
+            "settings": self._public_settings(),
+            # 前端只需要知道「有沒有設定好」，不需要知道設定成什麼
+            "hub_configured": bool(str(self.settings.get("hub_url") or "").strip()),
             "status": self.status,
             "running": self.is_running(),
             "logs": self.logs[-200:],

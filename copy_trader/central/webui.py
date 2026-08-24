@@ -26,8 +26,6 @@ CLIENT_FIELDS = """
       <div class="field-group">
         <h3>連線</h3>
         <div class="field-grid">
-          <label>中央 Hub URL<input id="hub_url" placeholder="http://中央電腦IP:8765" /></label>
-          <label>Hub 密碼<input id="token" type="password" /></label>
           <label>MT5 Files 路徑<input id="mt5_files_dir" placeholder="可留空自動偵測" /></label>
           <label>輪詢秒數<input id="interval" placeholder="1.0" /></label>
           <label class="switch">開啟程式後自動開始<input id="auto_start" type="checkbox" /></label>
@@ -752,8 +750,7 @@ body.auth-locked > *:not(#authGate) { display: none; }
 
     <p class="auth-foot">
       一組帳號同時只能在一台電腦使用；在別台登入會把這台登出。<br />
-      忘記密碼或需要續期，請聯繫管理員。<br />
-      伺服器 <code id="authHub">—</code>
+      忘記密碼或需要續期，請聯繫管理員。
     </p>
   </form>
 </div>
@@ -1124,7 +1121,9 @@ const srcName = (s) => SOURCE_ALIAS[s] || (s || "未標記來源");
 function ids() {
   return ROLE === "central"
     ? ["hub_url", "host", "port", "token", "interval", "cloudflare_tunnel", "cloudflared_path", "auto_start"]
-    : ["hub_url", "token", "mt5_files_dir", "interval", "auto_start", "default_lot_size", "use_martingale",
+    // 會員端刻意不含 hub_url / token：那兩個不該讓會員看到，也不該由前端回送
+    // （token 是管理權限的通行證，送到瀏覽器等於直接把付費牆拆了）
+    : ["mt5_files_dir", "interval", "auto_start", "default_lot_size", "use_martingale",
        "martingale_multiplier", "martingale_max_level", "martingale_lots", "partial_close_ratios",
        "cancel_pending_after_seconds", "cancel_if_price_beyond_percent", "source_profiles", "ea_sources"];
 }
@@ -2132,9 +2131,14 @@ function paintStatus() {
   chip.lastElementChild.textContent = snap.running ? "跟單運轉中" : snap.status;
 
   const hub = $("chipHub");
+  // 中央機顯示主機名（管理者要確認連對地方）；會員端只顯示連線與否 ——
+  // 會員沒有需要知道伺服器在哪，講出來只是給人探測的線索。
   const hubUrl = String((snap.settings && snap.settings.hub_url) || "").trim();
-  hub.className = "chip " + (hubUrl ? "is-live" : "is-warn");
-  hub.lastElementChild.textContent = hubUrl ? hubUrl.replace(/^https?:\/\//, "") : "未設定 Hub";
+  const linked = IS_CLIENT ? Boolean(snap.hub_configured) : Boolean(hubUrl);
+  hub.className = "chip " + (linked ? "is-live" : "is-warn");
+  hub.lastElementChild.textContent = IS_CLIENT
+    ? (linked ? "訊號伺服器" : "未連線")
+    : (hubUrl ? hubUrl.replace(/^https?:\/\//, "") : "未設定 Hub");
 
   $("start").disabled = !!snap.running;
   $("stop").disabled = !snap.running;
@@ -2186,12 +2190,6 @@ function paintAuth(snap) {
     // 被踢下線 / 到期 / 停權時，後端會把原因放在 auth.error
     if (a.error) showAuthMsg(a.error);
     $("authBadge").hidden = true;
-    // 讓會員自己確認連的是哪台伺服器 —— 設定打錯時最常見的症狀就是
-    // 「密碼明明對的卻登不進去」，把主機名擺出來一眼就看得出來
-    try {
-      const raw = String((snap.settings || {}).hub_url || "");
-      $("authHub").textContent = raw ? new URL(raw).host : "（尚未設定）";
-    } catch (e) { $("authHub").textContent = "（網址格式有誤）"; }
     const u = $("authUser");
     if (u && document.activeElement !== u && !$("authPass").value) u.focus();
     return;
