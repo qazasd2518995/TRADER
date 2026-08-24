@@ -1,0 +1,332 @@
+<!doctype html>
+<!-- 導覽與 Footer 跟 index.html 是同一份 markup。
+     改完 index.html 後跑 `python3 ../scripts/sync-website-partials.py` 同步。 -->
+<html lang="zh-Hant" data-root="/"
+      data-meta-title="features.metaTitle" data-meta-desc="features.metaDesc">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<title>功能總覽 — AI 黃金自動跟單系統</title>
+<meta name="description" content="馬丁階梯、分批止盈、多訊號源獨立控管、每日風險上限、自動排程、即時績效報表。每一項都可以自己調。">
+<link rel="canonical" href="/features/">
+<link rel="alternate" hreflang="zh-Hant" href="/features/?lang=zh-Hant">
+<link rel="alternate" hreflang="en" href="/features/?lang=en">
+<link rel="alternate" hreflang="x-default" href="/features/">
+
+<meta property="og:type" content="website">
+<meta property="og:title" content="功能總覽 — AI 黃金自動跟單系統">
+<meta property="og:description" content="馬丁階梯、分批止盈、多訊號源獨立控管、每日風險上限、自動排程、即時績效報表。每一項都可以自己調。">
+<meta property="og:image" content="/assets/img/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#0A0A0B">
+
+<link rel="icon" href="/assets/img/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@600;700;800&family=Noto+Sans+TC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/css/tokens.css">
+<link rel="stylesheet" href="/assets/css/base.css">
+<link rel="stylesheet" href="/assets/css/site.css">
+</head>
+
+<body>
+
+<!-- ================================================================ 導覽 -->
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="/">
+      <span class="bullion" aria-hidden="true"></span>
+      <span>
+        <span class="brand-name" data-i18n="brand.name">黃金自動跟單系統</span>
+        <span class="brand-sub" data-i18n="brand.sub">AI GOLD COPY TRADING</span>
+      </span>
+    </a>
+
+    <nav class="nav-links" aria-label="主選單">
+      <a href="/features/" data-i18n="nav.features">功能</a>
+      <a href="/pricing/"  data-i18n="nav.pricing">方案</a>
+      <a href="/download/" data-i18n="nav.download">開始使用</a>
+      <a href="/faq/"      data-i18n="nav.faq">支援</a>
+    </nav>
+
+    <div class="nav-actions">
+      <div class="lang">
+        <button class="lang-btn" type="button" aria-expanded="false" aria-haspopup="true"
+                aria-label="語言" data-i18n-attr="aria-label:nav.lang">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+            <circle cx="10" cy="10" r="7.5"/><path d="M2.5 10h15M10 2.5c4 4.5 4 10.5 0 15-4-4.5-4-10.5 0-15z"/>
+          </svg>
+          <span class="lang-current">繁中</span>
+          <svg class="lang-caret" viewBox="0 0 10 6" fill="none" stroke="currentColor" stroke-width="1.5" width="10" height="6" aria-hidden="true"><path d="M1 1l4 4 4-4"/></svg>
+        </button>
+        <div class="lang-menu" role="menu">
+          <button type="button" role="menuitem" data-lang="zh-Hant" aria-selected="true"  data-i18n="nav.langZh">繁體中文</button>
+          <button type="button" role="menuitem" data-lang="en"      aria-selected="false" data-i18n="nav.langEn">English</button>
+        </div>
+      </div>
+
+      <a class="btn btn--primary btn--sm" href="/download/" data-i18n="nav.cta">免費開始使用</a>
+
+      <button class="nav-burger" type="button" aria-expanded="false"
+              aria-label="選單" data-i18n-attr="aria-label:nav.menu">
+        <span></span><span></span><span></span>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<!-- ============================================================ 頁面 Hero -->
+<section class="page-hero section--bg bg-circuit" style="--bg-opacity:.6">
+  <div class="wrap measure--narrow" style="margin-inline:auto">
+    <h1 style="font-size:var(--t-section)" data-i18n="features.title">六件事　全部可調</h1>
+    <p class="lede" data-i18n="features.lede">訊號只決定方向與價位。手數、加碼、風控、時段，全部由你這台電腦說了算。</p>
+  </div>
+</section>
+
+<section class="section section--bg bg-mesh" style="--bg-opacity:.35">
+  <div class="wrap">
+      <article class="alt-row" data-reveal="0">
+        <div>
+          <span class="alt-num" data-i18n="f1.eyebrow">01</span>
+          <h2 data-i18n="f1.title">馬丁階梯引擎</h2>
+          <p data-i18n="f1.body">倍數、最大層數、每一層的手數都能個別設定。多個訊號來源各自獨立計算關卡，一組連虧不會把另一組也拖進去。任何時候都能手動重置回第一關。</p>
+          <ul class="alt-points">
+          <li data-i18n="f1.p1">每層手數可以用倍數自動推算，也可以逐層寫死</li>
+          <li data-i18n="f1.p2">各來源的關卡完全隔離，互不影響</li>
+          <li data-i18n="f1.p3">重啟後關卡狀態會還原，不會從頭再來一次</li>
+          </ul>
+        </div>
+        <div class="alt-media">
+          <div class="ladder" style="height:210px" aria-hidden="true">
+            <div class="rung"><span class="lot">0.01</span><i style="--h:14%"></i><span class="lv">1</span></div>
+            <div class="rung"><span class="lot">0.02</span><i style="--h:26%"></i><span class="lv">2</span></div>
+            <div class="rung"><span class="lot">0.04</span><i style="--h:44%"></i><span class="lv">3</span></div>
+            <div class="rung"><span class="lot">0.08</span><i style="--h:68%"></i><span class="lv">4</span></div>
+            <div class="rung"><span class="lot">0.16</span><i style="--h:100%"></i><span class="lv">5</span></div>
+          </div>
+        </div>
+      </article>
+      <article class="alt-row" data-reveal="0">
+        <div>
+          <span class="alt-num" data-i18n="f2.eyebrow">02</span>
+          <h2 data-i18n="f2.title">分批止盈與保本移損</h2>
+          <p data-i18n="f2.body">一筆訊號帶多組止盈時，可以按比例分批平倉；也可以改成第一個止盈到價就把停損推到成本價，剩下的部位零風險續抱。每個來源各自選一種。</p>
+          <ul class="alt-points">
+          <li data-i18n="f2.p1">分批比例自訂，例如 0.5 / 0.3 / 0.2</li>
+          <li data-i18n="f2.p2">保本移損模式：第一個止盈成交即移動停損</li>
+          <li data-i18n="f2.p3">兩種模式可以依來源分別設定</li>
+          </ul>
+        </div>
+        <div class="alt-media">
+          <div class="mock" aria-hidden="true">
+            <div class="mock-head"><b>XAUUSD</b><span class="tag tag--up" data-i18n="mock.buy">買入</span><span class="spacer"></span><span>0.10</span></div>
+            <div class="mock-row"><span class="k">TP1</span><span>2,348.0</span><span class="v">50%</span><span class="tag tag--up" data-i18n="mock.closed">已平</span></div>
+            <div class="mock-row"><span class="k">TP2</span><span>2,356.0</span><span class="v">30%</span><span class="tag" data-i18n="mock.waiting">等待</span></div>
+            <div class="mock-row"><span class="k">TP3</span><span>2,364.0</span><span class="v">20%</span><span class="tag" data-i18n="mock.waiting">等待</span></div>
+            <div class="mock-row"><span class="k">SL</span><span>2,340.0</span><span class="v"></span><span class="tag tag--gold" data-i18n="mock.breakeven">已移至保本</span></div>
+          </div>
+        </div>
+      </article>
+      <article class="alt-row" data-reveal="0">
+        <div>
+          <span class="alt-num" data-i18n="f3.eyebrow">03</span>
+          <h2 data-i18n="f3.title">多訊號源獨立控管</h2>
+          <p data-i18n="f3.body">每個訊號來源都是獨立的一組設定：跟或不跟、用馬丁還是均注、手數多少。停用的來源不佔版面，報表與統計也不會把它算進來。</p>
+          <ul class="alt-points">
+          <li data-i18n="f3.p1">跟單開關、下單模式、手數，逐一來源設定</li>
+          <li data-i18n="f3.p2">停用的來源自動從版面與統計中移除</li>
+          <li data-i18n="f3.p3">尚未上線的群組可以先手動建好設定</li>
+          </ul>
+        </div>
+        <div class="alt-media">
+          <div class="mock" aria-hidden="true">
+            <div class="mock-head"><b data-i18n="mock.sources">訊號來源</b><span class="spacer"></span><span>3</span></div>
+            <div class="mock-row"><span class="dot dot--on"></span><span data-i18n="mock.midFreq">中頻訊號</span><span class="v tag tag--gold" data-i18n="mock.martingale">馬丁</span></div>
+            <div class="mock-row"><span class="dot dot--on"></span><span data-i18n="mock.highFreq">高頻訊號</span><span class="v tag" data-i18n="mock.flat">均注</span></div>
+            <div class="mock-row"><span class="dot dot--off"></span><span style="opacity:.5" data-i18n="mock.lowFreq">低頻訊號</span><span class="v tag tag--off" data-i18n="mock.disabled">已停用</span></div>
+          </div>
+        </div>
+      </article>
+      <article class="alt-row" data-reveal="0">
+        <div>
+          <span class="alt-num" data-i18n="f4.eyebrow">04</span>
+          <h2 data-i18n="f4.title">每日風險上限</h2>
+          <p data-i18n="f4.body">設定每天最多能虧多少（金額或本金比例），觸線就自動停手、當日不再開新倉。掛單超過設定時間還沒成交會自動撤掉，並同步通知 MT5 刪除委託。</p>
+          <ul class="alt-points">
+          <li data-i18n="f4.p1">每日最大虧損可用金額或比例設定</li>
+          <li data-i18n="f4.p2">逾時未成交自動撤單，預設 3 小時</li>
+          <li data-i18n="f4.p3">撤單會同步通知 MT5，不會留下幽靈掛單</li>
+          </ul>
+        </div>
+        <div class="alt-media">
+          <div class="mock" aria-hidden="true">
+            <div class="mock-head"><b data-i18n="mock.dailyRisk">今日風險</b><span class="spacer"></span><span class="tag tag--up" data-i18n="mock.normal">正常</span></div>
+            <div class="gauge">
+              <div class="gauge-top"><span class="gauge-v">2.32%</span><span class="gauge-max">/ 10.00%</span></div>
+              <div class="gauge-bar"><div class="gauge-fill"></div></div>
+              <p class="gauge-note" data-i18n="mock.riskNote">觸線自動停手，當日不再開新倉</p>
+            </div>
+          </div>
+        </div>
+      </article>
+      <article class="alt-row" data-reveal="0">
+        <div>
+          <span class="alt-num" data-i18n="f5.eyebrow">05</span>
+          <h2 data-i18n="f5.title">自動排程</h2>
+          <p data-i18n="f5.body">設定每天自動啟動與停止的時間，不用手動開關。非開盤時段系統會自動暫停計時 —— 程式開著不代表在燒你的方案時間。</p>
+          <ul class="alt-points">
+          <li data-i18n="f5.p1">可設定每日自動啟動與停止時間</li>
+          <li data-i18n="f5.p2">非開盤時段自動暫停，不扣方案時間</li>
+          <li data-i18n="f5.p3">開機自動啟動，登入後即開始跟單</li>
+          </ul>
+        </div>
+        <div class="alt-media">
+          <div class="mock" aria-hidden="true">
+            <div class="mock-head"><b data-i18n="mock.schedule">跟單排程</b><span class="spacer"></span><span>09:00 – 23:30</span></div>
+            <div class="week">
+              <div><div class="week-d" data-i18n="mock.mon">一</div><div class="week-bar"><i style="--from:18%;--to:8%"></i></div></div>
+              <div><div class="week-d" data-i18n="mock.tue">二</div><div class="week-bar"><i style="--from:18%;--to:8%"></i></div></div>
+              <div><div class="week-d" data-i18n="mock.wed">三</div><div class="week-bar"><i style="--from:18%;--to:8%"></i></div></div>
+              <div><div class="week-d" data-i18n="mock.thu">四</div><div class="week-bar"><i style="--from:18%;--to:8%"></i></div></div>
+              <div><div class="week-d" data-i18n="mock.fri">五</div><div class="week-bar"><i style="--from:18%;--to:32%"></i></div></div>
+              <div><div class="week-d" data-i18n="mock.sat">六</div><div class="week-bar week-bar--off"><i></i></div></div>
+              <div><div class="week-d" data-i18n="mock.sun">日</div><div class="week-bar week-bar--off"><i></i></div></div>
+            </div>
+          </div>
+        </div>
+      </article>
+      <article class="alt-row" data-reveal="0">
+        <div>
+          <span class="alt-num" data-i18n="f6.eyebrow">06</span>
+          <h2 data-i18n="f6.title">即時績效報表</h2>
+          <p data-i18n="f6.body">今日、本週、本月的損益曲線、勝率、盈虧比、最大回撤、最大連敗，各訊號來源分開統計。同一個帳戶裡另外掛的 EA 也能標記後一起納入。</p>
+          <ul class="alt-points">
+          <li data-i18n="f6.p1">六種期間可切換，也能自訂日期區間</li>
+          <li data-i18n="f6.p2">每一筆交易的完整明細都查得到</li>
+          <li data-i18n="f6.p3">其他 EA 的單可標記後併入同一份報表</li>
+          </ul>
+        </div>
+        <div class="alt-media">
+          <div class="mock" aria-hidden="true">
+            <div class="mock-head"><b data-i18n="mock.equity">本週損益</b><span class="spacer"></span><span style="color:var(--c-up-2)">+1,284.60</span></div>
+            <div class="spark">
+              <svg viewBox="0 0 260 68" preserveAspectRatio="none" role="presentation">
+                <defs><linearGradient id="sparkFill2" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stop-color="#22AB94" stop-opacity=".28"/><stop offset="1" stop-color="#22AB94" stop-opacity="0"/>
+                </linearGradient></defs>
+                <path class="spark-area" style="fill:url(#sparkFill2)" d="M2,54 L20,50 L38,56 L56,44 L74,47 L92,34 L110,38 L128,26 L146,30 L164,18 L182,22 L200,13 L218,17 L236,9 L258,6 L258,68 L2,68 Z"/>
+                <path class="spark-path" d="M2,54 L20,50 L38,56 L56,44 L74,47 L92,34 L110,38 L128,26 L146,30 L164,18 L182,22 L200,13 L218,17 L236,9 L258,6"/>
+              </svg>
+              <div class="spark-foot">
+                <span><span data-i18n="mock.winrate">勝率</span> <b>78.6%</b></span>
+                <span><span data-i18n="mock.trades">筆數</span> <b>128</b></span>
+                <span><span data-i18n="mock.pf">盈虧比</span> <b>1.36</b></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </article>
+  </div>
+</section>
+
+<section class="section section--tight section--bg bg-aurora" style="--bg-opacity:.55">
+  <div class="wrap">
+    <div class="cta-band measure" data-reveal="0">
+      <h2 data-i18n="plans.title">從免費開始</h2>
+      <p class="lede" data-i18n="plans.lede">買的是可使用時間額度，不是日曆天。系統沒在跑，就不扣時間。</p>
+      <a class="btn btn--primary btn--lg" href="/pricing/">
+        <span data-i18n="features.cta">看看方案怎麼分</span>
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 8h11M9 3.5L13.5 8 9 12.5"/></svg>
+      </a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- ============================================================== Footer -->
+<footer class="foot">
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <a class="brand" href="/">
+          <span class="bullion bullion--sm" aria-hidden="true"></span>
+          <span>
+            <span class="brand-name" data-i18n="brand.name">黃金自動跟單系統</span>
+            <span class="brand-sub" data-i18n="brand.sub">AI GOLD COPY TRADING</span>
+          </span>
+        </a>
+        <p class="lede" data-i18n="foot.tagline">XAUUSD 黃金訊號自動跟單系統。訊號解析、風險控管與訂單執行，一套做完。</p>
+
+        <div class="social">
+          <a class="ig" href="https://instagram.com/goldyoung0927" target="_blank" rel="noopener noreferrer">
+            <!-- Instagram 字符標記。這是通用相機外框造型，不是 Meta 的官方彩色 logo 檔。 -->
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <rect x="2.6" y="2.6" width="18.8" height="18.8" rx="5.4"/>
+              <circle cx="12" cy="12" r="4.3"/>
+              <circle cx="17.4" cy="6.6" r="1.15" fill="currentColor" stroke="none"/>
+            </svg>
+            <span>@goldyoung0927</span>
+          </a>
+        </div>
+      </div>
+
+      <div>
+        <h3 data-i18n="foot.product">產品</h3>
+        <ul>
+          <li><a href="/features/" data-i18n="foot.features">功能總覽</a></li>
+          <li><a href="/pricing/"  data-i18n="foot.pricing">方案與定價</a></li>
+          <li><a href="/download/" data-i18n="foot.download">開始使用</a></li>
+        </ul>
+      </div>
+
+      <div>
+        <h3 data-i18n="foot.resources">資源</h3>
+        <ul>
+          <li><a href="/faq/" data-i18n="foot.faq">常見問題</a></li>
+          <li><a href="/download/#guide" data-i18n="foot.guide">安裝教學</a></li>
+        </ul>
+      </div>
+
+      <div>
+        <h3 data-i18n="foot.contact">聯絡</h3>
+        <ul>
+          <li><a href="https://instagram.com/goldyoung0927" target="_blank" rel="noopener noreferrer">Instagram</a></li>
+          <li><a href="/faq/#terms"   data-i18n="foot.terms">服務條款</a></li>
+          <li><a href="/faq/#privacy" data-i18n="foot.privacy">隱私政策</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- ===================================================== 免責聲明 -->
+    <section class="legal" aria-labelledby="legal-title">
+      <h3 id="legal-title" data-i18n="legal.title">免責聲明</h3>
+      <ol>
+        <li><b data-i18n="legal.1.h">非投資建議。</b><span data-i18n="legal.1.b">本網站與本系統所提供之一切內容，純屬技術研究與資訊分享，不構成任何投資建議、財務建議、招攬或買賣要約。本公司並非證券投資顧問事業、期貨顧問事業或任何形式之受監理金融機構，不提供個別化投資推薦，亦不代客操作或代為管理資金。</span></li>
+        <li><b data-i18n="legal.2.h">交易風險。</b><span data-i18n="legal.2.b">外匯及貴金屬保證金交易屬高槓桿商品，具有高度風險，可能導致您損失全部本金甚至超過本金，並不適合所有投資人。在決定參與交易前，請確實評估自身投資目的、經驗程度與風險承受能力，必要時應諮詢獨立且合格的專業顧問。</span></li>
+        <li><b data-i18n="legal.3.h">馬丁格爾策略之特殊風險。</b><span data-i18n="legal.3.b">本系統支援之馬丁格爾（Martingale）加碼策略，在連續虧損時會逐關放大部位，於行情單邊延伸時可能在極短時間內造成重大虧損，或因保證金不足而遭強制平倉。系統提供之最大層數、每層手數與每日虧損上限僅為風險控制工具，並非任何形式之損失保證。</span></li>
+        <li><b data-i18n="legal.4.h">過往績效不代表未來表現。</b><span data-i18n="legal.4.b">本網站所展示之任何績效數據、勝率、報酬率、回撤或交易紀錄，均可能為示範資料、歷史回測或特定期間之結果，不保證未來可重現，亦不代表個別使用者之實際結果。</span></li>
+        <li><b data-i18n="legal.5.h">訊號來源為獨立第三方。</b><span data-i18n="legal.5.b">本系統負責訊號之擷取、解析與訂單執行，對訊號內容本身之正確性、及時性、完整性或獲利能力，不作任何明示或默示之保證，亦不對依該訊號所生之任何損益負責。</span></li>
+        <li><b data-i18n="legal.6.h">本系統為訂單執行工具。</b><span data-i18n="legal.6.b">所有下單指令均在使用者自己的電腦上產生，並送往使用者自行開立之券商 MetaTrader 5 帳戶執行。本公司不經手、不保管、不轉移使用者之任何資金，資金全程存放於使用者與券商之間的帳戶關係中。</span></li>
+        <li><b data-i18n="legal.7.h">技術性中斷風險。</b><span data-i18n="legal.7.b">網路連線中斷、電力中斷、作業系統或 MetaTrader 5 異常、券商伺服器延遲、報價跳空、流動性不足或滑價等因素，均可能導致訂單延遲、未成交、部分成交，或以非預期價格成交。本公司對此類情形所生之損失不負賠償責任。</span></li>
+        <li><b data-i18n="legal.8.h">使用者責任。</b><span data-i18n="legal.8.b">所有交易決策、參數設定、資金配置與風險承擔，均由使用者自行判斷並自負盈虧。使用本系統即表示您已充分理解上述風險，並同意自行承擔一切交易結果。</span></li>
+        <li><b data-i18n="legal.9.h">法規遵循。</b><span data-i18n="legal.9.b">各國（地區）對於保證金交易、跟單交易與自動化交易之法令規範不同。使用者應自行確認在其所在司法管轄區內使用本系統及進行相關交易之合法性，並自行負擔一切稅務申報義務。</span></li>
+        <li><b data-i18n="legal.10.h">資料來源與異動。</b><span data-i18n="legal.10.b">本網站所引用之市場報價與圖表技術由 TradingView 提供，僅供參考，不作為交易依據。本公司保留隨時修改本聲明、服務內容與方案價格之權利，恕不另行個別通知。</span></li>
+      </ol>
+    </section>
+
+    <div class="foot-base">
+      <span class="foot-copy" data-i18n="foot.copy">© 2026 AI 黃金自動跟單系統</span>
+      <span data-i18n="foot.chartCredit">圖表技術由 TradingView Lightweight Charts 提供</span>
+    </div>
+  </div>
+</footer>
+
+<script src="/assets/js/site-config.js"></script>
+<script src="/assets/js/i18n.js"></script>
+<script src="/assets/js/site.js"></script>
+</body>
+</html>

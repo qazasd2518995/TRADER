@@ -1,0 +1,685 @@
+<!doctype html>
+<!-- 這一頁的導覽與 Footer 跟 index.html 是同一份 markup。
+     改完 index.html 之後跑 `python3 ../scripts/sync-website-partials.py` 同步。 -->
+<html lang="zh-Hant" data-root="/"
+      data-meta-title="pricing.metaTitle" data-meta-desc="pricing.metaDesc">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<title>方案與定價 — AI 黃金自動跟單系統</title>
+<meta name="description" content="FREE 永久免費，PLUS / PRO / PREMIUM 依需求升級。買的是可使用時間額度，非日曆天計費。">
+<link rel="canonical" href="/pricing/">
+<link rel="alternate" hreflang="zh-Hant" href="/pricing/?lang=zh-Hant">
+<link rel="alternate" hreflang="en" href="/pricing/?lang=en">
+<link rel="alternate" hreflang="x-default" href="/pricing/">
+
+<meta property="og:type" content="website">
+<meta property="og:title" content="方案與定價 — AI 黃金自動跟單系統">
+<meta property="og:description" content="FREE 永久免費，PLUS / PRO / PREMIUM 依需求升級。買的是可使用時間額度，非日曆天計費。">
+<meta property="og:image" content="/assets/img/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#0A0A0B">
+
+<link rel="icon" href="/assets/img/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@600;700;800&family=Noto+Sans+TC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/css/tokens.css">
+<link rel="stylesheet" href="/assets/css/base.css">
+<link rel="stylesheet" href="/assets/css/site.css">
+</head>
+
+<body>
+
+<!-- ================================================================ 導覽 -->
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="/">
+      <span class="bullion" aria-hidden="true"></span>
+      <span>
+        <span class="brand-name" data-i18n="brand.name">黃金自動跟單系統</span>
+        <span class="brand-sub" data-i18n="brand.sub">AI GOLD COPY TRADING</span>
+      </span>
+    </a>
+
+    <nav class="nav-links" aria-label="主選單">
+      <a href="/features/" data-i18n="nav.features">功能</a>
+      <a href="/pricing/"  data-i18n="nav.pricing">方案</a>
+      <a href="/download/" data-i18n="nav.download">開始使用</a>
+      <a href="/faq/"      data-i18n="nav.faq">支援</a>
+    </nav>
+
+    <div class="nav-actions">
+      <div class="lang">
+        <button class="lang-btn" type="button" aria-expanded="false" aria-haspopup="true"
+                aria-label="語言" data-i18n-attr="aria-label:nav.lang">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+            <circle cx="10" cy="10" r="7.5"/><path d="M2.5 10h15M10 2.5c4 4.5 4 10.5 0 15-4-4.5-4-10.5 0-15z"/>
+          </svg>
+          <span class="lang-current">繁中</span>
+          <svg class="lang-caret" viewBox="0 0 10 6" fill="none" stroke="currentColor" stroke-width="1.5" width="10" height="6" aria-hidden="true"><path d="M1 1l4 4 4-4"/></svg>
+        </button>
+        <div class="lang-menu" role="menu">
+          <button type="button" role="menuitem" data-lang="zh-Hant" aria-selected="true"  data-i18n="nav.langZh">繁體中文</button>
+          <button type="button" role="menuitem" data-lang="en"      aria-selected="false" data-i18n="nav.langEn">English</button>
+        </div>
+      </div>
+
+      <a class="btn btn--primary btn--sm" href="/download/" data-i18n="nav.cta">免費開始使用</a>
+
+      <button class="nav-burger" type="button" aria-expanded="false"
+              aria-label="選單" data-i18n-attr="aria-label:nav.menu">
+        <span></span><span></span><span></span>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<!-- ============================================================ 頁面 Hero -->
+<section class="page-hero section--bg bg-vault" style="--bg-opacity:.7">
+  <div class="wrap measure--narrow" style="margin-inline:auto">
+    <h1 style="font-size:var(--t-section)" data-i18n="pricing.title">各種方案　各種打法</h1>
+    <p class="lede" data-i18n="pricing.lede">從免費開始。需要更多策略、更細的風控，再往上走。</p>
+
+    <div class="billing" role="tablist" data-i18n-attr="aria-label:pricing.title">
+      <button type="button" role="tab" aria-selected="true"  data-billing="monthly" data-i18n="pricing.monthly">每月</button>
+      <button type="button" role="tab" aria-selected="false" data-billing="yearly"  data-i18n="pricing.yearly">每年</button>
+    </div>
+    <span class="billing-note" id="billingNote" data-i18n="pricing.yearlyBadge">一次買一年　多送 2 個月</span>
+  </div>
+</section>
+
+<!-- ============================================================== 方案卡 -->
+<section class="section section--tight section--bg bg-aurora" style="--bg-opacity:.45">
+  <div class="wrap">
+    <div class="plans" data-reveal="0">
+      <article class="plan plan--free">
+        <span class="plan-tag plan-tag--ghost" data-i18n="plans.free.tag">7 天 PRO 體驗</span>
+        <span class="plan-name" data-i18n="plans.free.name">FREE</span>
+        <div class="plan-price">
+          <span class="cur" data-currency>US$</span>
+          <span class="amt" data-price="free">0</span>
+          <span class="per" data-i18n="plans.perMonth">/月</span>
+        </div>
+        <ul class="plan-feats">
+          <li data-i18n="plans.free.f1">中頻策略，每日 1 筆訊號</li>
+          <li data-i18n="plans.free.f2">基礎手數範圍</li>
+          <li data-i18n="plans.free.f3">今日 / 本週 / 本月報表</li>
+        </ul>
+        <a class="btn btn--sm" href="/pricing/" data-i18n="plans.startFree">免費開始</a>
+      </article>
+
+      <article class="plan plan--plus">
+        <span class="plan-tag plan-tag--ghost" style="visibility:hidden">—</span>
+        <span class="plan-name" data-i18n="plans.plus.name">PLUS</span>
+        <div class="plan-price">
+          <span class="cur" data-currency>US$</span>
+          <span class="amt" data-price="plus">49</span>
+          <span class="per" data-i18n="plans.perMonth">/月</span>
+        </div>
+        <ul class="plan-feats">
+          <li data-i18n="plans.plus.f1">中頻策略完整跟單，不限次數</li>
+          <li data-i18n="plans.plus.f2">自訂手數設定</li>
+          <li data-i18n="plans.plus.f3">手機跟單通知</li>
+        </ul>
+        <a class="btn btn--sm" href="/pricing/" data-i18n="plans.pick">選擇方案</a>
+      </article>
+
+      <article class="plan plan--pro plan--featured tex tex-carbon" style="--tex-opacity:.09">
+        <span class="plan-tag" data-i18n="plans.popular">最受歡迎</span>
+        <span class="plan-name" data-i18n="plans.pro.name">PRO</span>
+        <div class="plan-price">
+          <span class="cur" data-currency>US$</span>
+          <span class="amt" data-price="pro">99</span>
+          <span class="per" data-i18n="plans.perMonth">/月</span>
+        </div>
+        <ul class="plan-feats">
+          <li data-i18n="plans.pro.f1">中頻 + 高頻策略完整跟單</li>
+          <li data-i18n="plans.pro.f2">基礎馬丁設定與分批止盈</li>
+          <li data-i18n="plans.pro.f3">不同頻率勝率分析</li>
+        </ul>
+        <a class="btn btn--primary btn--sm" href="/pricing/" data-i18n="plans.pick">選擇方案</a>
+      </article>
+
+      <article class="plan plan--premium tex tex-foil" style="--tex-opacity:.10">
+        <span class="plan-tag plan-tag--ghost" style="visibility:hidden">—</span>
+        <span class="plan-name" data-i18n="plans.premium.name">PREMIUM</span>
+        <div class="plan-price">
+          <span class="cur" data-currency>US$</span>
+          <span class="amt" data-price="premium">149</span>
+          <span class="per" data-i18n="plans.perMonth">/月</span>
+        </div>
+        <ul class="plan-feats">
+          <li data-i18n="plans.premium.f1">低頻 + 中頻 + 高頻全策略</li>
+          <li data-i18n="plans.premium.f2">完整馬丁策略與動態手數</li>
+          <li data-i18n="plans.premium.f3">每月真人專業分析與建議</li>
+        </ul>
+        <a class="btn btn--sm" href="/pricing/" data-i18n="plans.pick">選擇方案</a>
+      </article>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============================================================ 方案比較 -->
+<section class="section section--alt section--bg bg-terminal" style="--bg-opacity:.8">
+  <div class="wrap">
+    <div class="section-head measure" data-reveal="0">
+      <h2 data-i18n="pricing.cmpTitle">方案比較</h2>
+      <p class="lede" data-i18n="pricing.cmpLede">十三項功能逐項對照。看不到的那幾列在下面。</p>
+    </div>
+
+    <div class="cmp-wrap" id="cmpWrap">
+      <table class="cmp">
+        <thead>
+          <tr>
+            <th class="feat"><span class="visually-hidden" data-i18n="pricing.cmpTitle">方案比較</span></th>
+            <th class="plan-col p-free">FREE<small><span data-currency>US$</span><span data-price="free">0</span></small></th>
+            <th class="plan-col p-plus">PLUS<small><span data-currency>US$</span><span data-price="plus">49</span></small></th>
+            <th class="plan-col p-pro">PRO<small><span data-currency>US$</span><span data-price="pro">99</span></small></th>
+            <th class="plan-col p-premium">PREMIUM<small><span data-currency>US$</span><span data-price="premium">149</span></small></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row" class="feat">
+              <b data-i18n="cmp.r1.name">使用策略</b>
+              <span data-i18n="cmp.r1.desc">可跟單的策略頻率與範圍</span>
+            </th>
+            <td><span data-i18n="cmp.r1.free.head">中頻策略</span><small data-i18n="cmp.r1.free.sub">每日 1 筆訊號</small></td>
+            <td><span data-i18n="cmp.r1.plus.head">中頻策略</span><small data-i18n="cmp.r1.plus.sub">完整跟單</small></td>
+            <td><span data-i18n="cmp.r1.pro.head">中頻 + 高頻策略</span><small data-i18n="cmp.r1.pro.sub">完整跟單</small></td>
+            <td><span data-i18n="cmp.r1.premium.head">低頻 + 中頻 + 高頻策略</span><small data-i18n="cmp.r1.premium.sub">完整跟單</small></td>
+          </tr>
+          <tr>
+            <th scope="row" class="feat">
+              <b data-i18n="cmp.r2.name">每日跟單限制</b>
+              <span data-i18n="cmp.r2.desc">每日可跟單的中頻訊號數量</span>
+            </th>
+            <td><span data-i18n="cmp.r2.free.head">每日最多 1 筆</span></td>
+            <td><span data-i18n="cmp.r2.plus.head">不限次數</span></td>
+            <td><span data-i18n="cmp.r2.pro.head">不限次數</span></td>
+            <td><span data-i18n="cmp.r2.premium.head">不限次數</span></td>
+          </tr>
+          <tr>
+            <th scope="row" class="feat">
+              <b data-i18n="cmp.r3.name">馬丁策略設定</b>
+              <span data-i18n="cmp.r3.desc">設定馬丁策略參數與倍數</span>
+            </th>
+            <td><span class="mk mk--n" role="img" aria-label="無"></span></td>
+            <td><span class="mk mk--n" role="img" aria-label="無"></span></td>
+            <td><span data-i18n="cmp.r3.pro.head">基礎馬丁設定</span><small data-i18n="cmp.r3.pro.sub">倍數、最大層數限制</small></td>
+            <td><span data-i18n="cmp.r3.premium.head">完整馬丁策略</span><small data-i18n="cmp.r3.premium.sub">倍數、層數、最大風險控制</small></td>
+          </tr>
+          <tr>
+            <th scope="row" class="feat">
+              <b data-i18n="cmp.r4.name">跟單手數設定</b>
+              <span data-i18n="cmp.r4.desc">設定每筆跟單的手數範圍</span>
+            </th>
+            <td><span data-i18n="cmp.r4.free.head">基礎手數範圍</span><small data-i18n="cmp.r4.free.sub">有限制</small></td>
+            <td><span data-i18n="cmp.r4.plus.head">自訂手數設定</span><small data-i18n="cmp.r4.plus.sub">標準範圍</small></td>
+            <td><span data-i18n="cmp.r4.pro.head">自訂手數設定</span><small data-i18n="cmp.r4.pro.sub">+ 分批平倉</small></td>
+            <td><span data-i18n="cmp.r4.premium.head">自訂手數設定</span><small data-i18n="cmp.r4.premium.sub">+ 分批平倉 + 動態自動調整手數</small></td>
+          </tr>
+          <tr>
+            <th scope="row" class="feat">
+              <b data-i18n="cmp.r5.name">報表功能</b>
+              <span data-i18n="cmp.r5.desc">今日 / 本週 / 本月報表</span>
+            </th>
+            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
+            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
+            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
+            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
+          </tr>
+          <tr>
+            <th scope="row" class="feat">
+              <b data-i18n="cmp.r6.name">不同頻率勝率分析</b>
+              <span data-i18n="cmp.r6.desc">各頻率策略勝率與績效分析</span>
+            </th>
+            <td><span class="mk mk--n" role="img" aria-label="無"></span></td>
+            <td><span class="mk mk--n" role="img" aria-label="無"></span></td>
+            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
+            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
+          </tr>
+          <tr>
+            <th scope="row" class="feat">
+              <b data-i18n="cmp.r7.name">每日最大虧損設定</b>
+              <span data-i18n="cmp.r7.desc">設定每日最大虧損金額或比例</span>
+            </th>
+            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
+            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
+            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
+            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
+          </tr>
+          <tr>
+            <th scope="row" class="feat">
+              <b data-i18n="cmp.r8.name">手機跟單通知</b>
+              <span data-i18n="cmp.r8.desc">手機推播跟單訊號與系統通知</span>
+            </th>
+            <td><span class="mk mk--n" role="img" aria-label="無"></span></td>
+            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
+            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
+            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
+          </tr>
+          <tr>
+            <th scope="row" class="feat">
+              <b data-i18n="cmp.r9.name">分批止盈設定</b>
+              <span data-i18n="cmp.r9.desc">設定分批止盈比例與條件</span>
+            </th>
+            <td><span class="mk mk--n" role="img" aria-label="無"></span></td>
+            <td><span class="mk mk--n" role="img" aria-label="無"></span></td>
+            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
+            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
+          </tr>
+          <tr>
+            <th scope="row" class="feat">
+              <b data-i18n="cmp.r10.name">本金比例自動調整手數</b>
+              <span data-i18n="cmp.r10.desc">依本金比例自動調整跟單手數</span>
+            </th>
+            <td><span class="mk mk--n" role="img" aria-label="無"></span></td>
+            <td><span class="mk mk--n" role="img" aria-label="無"></span></td>
+            <td><span class="mk mk--n" role="img" aria-label="無"></span></td>
+            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
+          </tr>
+          <tr>
+            <th scope="row" class="feat">
+              <b data-i18n="cmp.r11.name">非開盤時間自動暫停計時</b>
+              <span data-i18n="cmp.r11.desc">非開盤時段自動暫停計時</span>
+            </th>
+            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
+            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
+            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
+            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
+          </tr>
+          <tr>
+            <th scope="row" class="feat">
+              <b data-i18n="cmp.r12.name">自動排程跟單時間</b>
+              <span data-i18n="cmp.r12.desc">設定自動啟動 / 停止跟單時間</span>
+            </th>
+            <td><span class="mk mk--n" role="img" aria-label="無"></span></td>
+            <td><span data-i18n="cmp.r12.plus.head">單一排程</span></td>
+            <td><span data-i18n="cmp.r12.pro.head">多組排程</span></td>
+            <td><span data-i18n="cmp.r12.premium.head">多組進階排程</span></td>
+          </tr>
+          <tr>
+            <th scope="row" class="feat">
+              <b data-i18n="cmp.r13.name">專業分析與策略建議</b>
+              <span data-i18n="cmp.r13.desc">每月真人訊息提供專業分析報表及如何調整策略</span>
+            </th>
+            <td><span class="mk mk--n" role="img" aria-label="無"></span></td>
+            <td><span class="mk mk--n" role="img" aria-label="無"></span></td>
+            <td><span class="mk mk--n" role="img" aria-label="無"></span></td>
+            <td><span data-i18n="cmp.r13.premium.head">每月提供</span><small data-i18n="cmp.r13.premium.sub">真人訊息分析與調整建議</small></td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="cmp-fade" aria-hidden="true"></div>
+    </div>
+
+    <div class="cmp-more">
+      <button class="btn" type="button" id="cmpToggle" aria-expanded="false" aria-controls="cmpWrap">
+        <span data-i18n="pricing.showAll">顯示所有功能</span>
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>
+      </button>
+    </div>
+
+    <!-- 手機版：橫向捲動的比較表沒人看，改成一個方案一張卡 -->
+    <div class="cmp-cards">
+      <article class="cmp-card">
+        <h3 class="p-free" style="color:var(--c-plan-free)">FREE</h3>
+        <dl>
+          <div>
+            <dt data-i18n="cmp.r1.name">使用策略</dt>
+            <dd><span data-i18n="cmp.r1.free.head">中頻策略</span><small data-i18n="cmp.r1.free.sub">每日 1 筆訊號</small></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r2.name">每日跟單限制</dt>
+            <dd><span data-i18n="cmp.r2.free.head">每日最多 1 筆</span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r3.name">馬丁策略設定</dt>
+            <dd><span class="mk mk--n" role="img" aria-label="無"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r4.name">跟單手數設定</dt>
+            <dd><span data-i18n="cmp.r4.free.head">基礎手數範圍</span><small data-i18n="cmp.r4.free.sub">有限制</small></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r5.name">報表功能</dt>
+            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r6.name">不同頻率勝率分析</dt>
+            <dd><span class="mk mk--n" role="img" aria-label="無"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r7.name">每日最大虧損設定</dt>
+            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r8.name">手機跟單通知</dt>
+            <dd><span class="mk mk--n" role="img" aria-label="無"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r9.name">分批止盈設定</dt>
+            <dd><span class="mk mk--n" role="img" aria-label="無"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r10.name">本金比例自動調整手數</dt>
+            <dd><span class="mk mk--n" role="img" aria-label="無"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r11.name">非開盤時間自動暫停計時</dt>
+            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r12.name">自動排程跟單時間</dt>
+            <dd><span class="mk mk--n" role="img" aria-label="無"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r13.name">專業分析與策略建議</dt>
+            <dd><span class="mk mk--n" role="img" aria-label="無"></span></dd>
+          </div>
+        </dl>
+      </article>
+      <article class="cmp-card">
+        <h3 class="p-plus" style="color:var(--c-plan-plus)">PLUS</h3>
+        <dl>
+          <div>
+            <dt data-i18n="cmp.r1.name">使用策略</dt>
+            <dd><span data-i18n="cmp.r1.plus.head">中頻策略</span><small data-i18n="cmp.r1.plus.sub">完整跟單</small></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r2.name">每日跟單限制</dt>
+            <dd><span data-i18n="cmp.r2.plus.head">不限次數</span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r3.name">馬丁策略設定</dt>
+            <dd><span class="mk mk--n" role="img" aria-label="無"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r4.name">跟單手數設定</dt>
+            <dd><span data-i18n="cmp.r4.plus.head">自訂手數設定</span><small data-i18n="cmp.r4.plus.sub">標準範圍</small></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r5.name">報表功能</dt>
+            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r6.name">不同頻率勝率分析</dt>
+            <dd><span class="mk mk--n" role="img" aria-label="無"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r7.name">每日最大虧損設定</dt>
+            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r8.name">手機跟單通知</dt>
+            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r9.name">分批止盈設定</dt>
+            <dd><span class="mk mk--n" role="img" aria-label="無"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r10.name">本金比例自動調整手數</dt>
+            <dd><span class="mk mk--n" role="img" aria-label="無"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r11.name">非開盤時間自動暫停計時</dt>
+            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r12.name">自動排程跟單時間</dt>
+            <dd><span data-i18n="cmp.r12.plus.head">單一排程</span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r13.name">專業分析與策略建議</dt>
+            <dd><span class="mk mk--n" role="img" aria-label="無"></span></dd>
+          </div>
+        </dl>
+      </article>
+      <article class="cmp-card">
+        <h3 class="p-pro" style="color:var(--c-plan-pro)">PRO</h3>
+        <dl>
+          <div>
+            <dt data-i18n="cmp.r1.name">使用策略</dt>
+            <dd><span data-i18n="cmp.r1.pro.head">中頻 + 高頻策略</span><small data-i18n="cmp.r1.pro.sub">完整跟單</small></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r2.name">每日跟單限制</dt>
+            <dd><span data-i18n="cmp.r2.pro.head">不限次數</span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r3.name">馬丁策略設定</dt>
+            <dd><span data-i18n="cmp.r3.pro.head">基礎馬丁設定</span><small data-i18n="cmp.r3.pro.sub">倍數、最大層數限制</small></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r4.name">跟單手數設定</dt>
+            <dd><span data-i18n="cmp.r4.pro.head">自訂手數設定</span><small data-i18n="cmp.r4.pro.sub">+ 分批平倉</small></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r5.name">報表功能</dt>
+            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r6.name">不同頻率勝率分析</dt>
+            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r7.name">每日最大虧損設定</dt>
+            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r8.name">手機跟單通知</dt>
+            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r9.name">分批止盈設定</dt>
+            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r10.name">本金比例自動調整手數</dt>
+            <dd><span class="mk mk--n" role="img" aria-label="無"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r11.name">非開盤時間自動暫停計時</dt>
+            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r12.name">自動排程跟單時間</dt>
+            <dd><span data-i18n="cmp.r12.pro.head">多組排程</span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r13.name">專業分析與策略建議</dt>
+            <dd><span class="mk mk--n" role="img" aria-label="無"></span></dd>
+          </div>
+        </dl>
+      </article>
+      <article class="cmp-card">
+        <h3 class="p-premium" style="color:var(--c-plan-premium)">PREMIUM</h3>
+        <dl>
+          <div>
+            <dt data-i18n="cmp.r1.name">使用策略</dt>
+            <dd><span data-i18n="cmp.r1.premium.head">低頻 + 中頻 + 高頻策略</span><small data-i18n="cmp.r1.premium.sub">完整跟單</small></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r2.name">每日跟單限制</dt>
+            <dd><span data-i18n="cmp.r2.premium.head">不限次數</span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r3.name">馬丁策略設定</dt>
+            <dd><span data-i18n="cmp.r3.premium.head">完整馬丁策略</span><small data-i18n="cmp.r3.premium.sub">倍數、層數、最大風險控制</small></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r4.name">跟單手數設定</dt>
+            <dd><span data-i18n="cmp.r4.premium.head">自訂手數設定</span><small data-i18n="cmp.r4.premium.sub">+ 分批平倉 + 動態自動調整手數</small></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r5.name">報表功能</dt>
+            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r6.name">不同頻率勝率分析</dt>
+            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r7.name">每日最大虧損設定</dt>
+            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r8.name">手機跟單通知</dt>
+            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r9.name">分批止盈設定</dt>
+            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r10.name">本金比例自動調整手數</dt>
+            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r11.name">非開盤時間自動暫停計時</dt>
+            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r12.name">自動排程跟單時間</dt>
+            <dd><span data-i18n="cmp.r12.premium.head">多組進階排程</span></dd>
+          </div>
+          <div>
+            <dt data-i18n="cmp.r13.name">專業分析與策略建議</dt>
+            <dd><span data-i18n="cmp.r13.premium.head">每月提供</span><small data-i18n="cmp.r13.premium.sub">真人訊息分析與調整建議</small></dd>
+          </div>
+        </dl>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ 保證區塊 -->
+<section class="section section--bg bg-mesh" style="--bg-opacity:.4">
+  <div class="wrap">
+    <div class="section-head measure" data-reveal="0">
+      <h2 data-i18n="pricing.assureTitle">每個方案都算數</h2>
+    </div>
+
+    <div class="assure">
+      <div data-reveal="0">
+        <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7.5 3.4v5.1c0 4.4-3.1 8.5-7.5 9.5-4.4-1-7.5-5.1-7.5-9.5V6.4z"/><path d="M9 12l2 2 4-4"/></svg></span>
+        <h3 data-i18n="assure.1.h">所有方案皆包含</h3>
+        <p data-i18n="assure.1.b">安全加密、穩定系統、持續更新。免費方案不是閹割版的試用，是真的可以一直用下去。</p>
+      </div>
+      <div data-reveal="60">
+        <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="13" rx="2"/><path d="M3 12h18M12 8v13"/><path d="M12 8S9.5 3 7 3a2.5 2.5 0 000 5zM12 8s2.5-5 5-5a2.5 2.5 0 010 5z"/></svg></span>
+        <h3 data-i18n="assure.2.h">一次購買一年份　多送 2 個月</h3>
+        <p data-i18n="assure.2.b">最划算的選擇。付 12 個月的錢，拿到 14 個月的可使用時間額度。</p>
+      </div>
+      <div data-reveal="120">
+        <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v.1M11 11h1v5.5h1"/></svg></span>
+        <h3 data-i18n="assure.3.h">新會員享 7 天 PRO 全功能體驗</h3>
+        <p data-i18n="assure.3.b">先把所有功能都用過一遍再決定。體驗結束後可以升級，也可以回到 FREE 繼續用。</p>
+      </div>
+      <div data-reveal="180">
+        <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg></span>
+        <h3 data-i18n="assure.4.h">買的是「可使用時間額度」</h3>
+        <p data-i18n="assure.4.b">非日曆天計費，只在系統實際運行時扣除時間。非開盤時段自動暫停，不會白白燒掉。</p>
+      </div>
+    </div>
+
+    <p class="fineprint" data-reveal="0">
+      <span data-i18n="pricing.note1">所有方案價格皆以美金（USD）計價</span>
+      <span data-i18n="pricing.note2">本公司保留方案內容與價格調整之權利</span>
+      <span data-i18n="pricing.note3">交易涉及風險，請詳閱頁尾免責聲明</span>
+    </p>
+  </div>
+</section>
+
+</main>
+
+<!-- ============================================================== Footer -->
+<footer class="foot">
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <a class="brand" href="/">
+          <span class="bullion bullion--sm" aria-hidden="true"></span>
+          <span>
+            <span class="brand-name" data-i18n="brand.name">黃金自動跟單系統</span>
+            <span class="brand-sub" data-i18n="brand.sub">AI GOLD COPY TRADING</span>
+          </span>
+        </a>
+        <p class="lede" data-i18n="foot.tagline">XAUUSD 黃金訊號自動跟單系統。訊號解析、風險控管與訂單執行，一套做完。</p>
+
+        <div class="social">
+          <a class="ig" href="https://instagram.com/goldyoung0927" target="_blank" rel="noopener noreferrer">
+            <!-- Instagram 字符標記。這是通用相機外框造型，不是 Meta 的官方彩色 logo 檔。 -->
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <rect x="2.6" y="2.6" width="18.8" height="18.8" rx="5.4"/>
+              <circle cx="12" cy="12" r="4.3"/>
+              <circle cx="17.4" cy="6.6" r="1.15" fill="currentColor" stroke="none"/>
+            </svg>
+            <span>@goldyoung0927</span>
+          </a>
+        </div>
+      </div>
+
+      <div>
+        <h3 data-i18n="foot.product">產品</h3>
+        <ul>
+          <li><a href="/features/" data-i18n="foot.features">功能總覽</a></li>
+          <li><a href="/pricing/"  data-i18n="foot.pricing">方案與定價</a></li>
+          <li><a href="/download/" data-i18n="foot.download">開始使用</a></li>
+        </ul>
+      </div>
+
+      <div>
+        <h3 data-i18n="foot.resources">資源</h3>
+        <ul>
+          <li><a href="/faq/" data-i18n="foot.faq">常見問題</a></li>
+          <li><a href="/download/#guide" data-i18n="foot.guide">安裝教學</a></li>
+        </ul>
+      </div>
+
+      <div>
+        <h3 data-i18n="foot.contact">聯絡</h3>
+        <ul>
+          <li><a href="https://instagram.com/goldyoung0927" target="_blank" rel="noopener noreferrer">Instagram</a></li>
+          <li><a href="/faq/#terms"   data-i18n="foot.terms">服務條款</a></li>
+          <li><a href="/faq/#privacy" data-i18n="foot.privacy">隱私政策</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- ===================================================== 免責聲明 -->
+    <section class="legal" aria-labelledby="legal-title">
+      <h3 id="legal-title" data-i18n="legal.title">免責聲明</h3>
+      <ol>
+        <li><b data-i18n="legal.1.h">非投資建議。</b><span data-i18n="legal.1.b">本網站與本系統所提供之一切內容，純屬技術研究與資訊分享，不構成任何投資建議、財務建議、招攬或買賣要約。本公司並非證券投資顧問事業、期貨顧問事業或任何形式之受監理金融機構，不提供個別化投資推薦，亦不代客操作或代為管理資金。</span></li>
+        <li><b data-i18n="legal.2.h">交易風險。</b><span data-i18n="legal.2.b">外匯及貴金屬保證金交易屬高槓桿商品，具有高度風險，可能導致您損失全部本金甚至超過本金，並不適合所有投資人。在決定參與交易前，請確實評估自身投資目的、經驗程度與風險承受能力，必要時應諮詢獨立且合格的專業顧問。</span></li>
+        <li><b data-i18n="legal.3.h">馬丁格爾策略之特殊風險。</b><span data-i18n="legal.3.b">本系統支援之馬丁格爾（Martingale）加碼策略，在連續虧損時會逐關放大部位，於行情單邊延伸時可能在極短時間內造成重大虧損，或因保證金不足而遭強制平倉。系統提供之最大層數、每層手數與每日虧損上限僅為風險控制工具，並非任何形式之損失保證。</span></li>
+        <li><b data-i18n="legal.4.h">過往績效不代表未來表現。</b><span data-i18n="legal.4.b">本網站所展示之任何績效數據、勝率、報酬率、回撤或交易紀錄，均可能為示範資料、歷史回測或特定期間之結果，不保證未來可重現，亦不代表個別使用者之實際結果。</span></li>
+        <li><b data-i18n="legal.5.h">訊號來源為獨立第三方。</b><span data-i18n="legal.5.b">本系統負責訊號之擷取、解析與訂單執行，對訊號內容本身之正確性、及時性、完整性或獲利能力，不作任何明示或默示之保證，亦不對依該訊號所生之任何損益負責。</span></li>
+        <li><b data-i18n="legal.6.h">本系統為訂單執行工具。</b><span data-i18n="legal.6.b">所有下單指令均在使用者自己的電腦上產生，並送往使用者自行開立之券商 MetaTrader 5 帳戶執行。本公司不經手、不保管、不轉移使用者之任何資金，資金全程存放於使用者與券商之間的帳戶關係中。</span></li>
+        <li><b data-i18n="legal.7.h">技術性中斷風險。</b><span data-i18n="legal.7.b">網路連線中斷、電力中斷、作業系統或 MetaTrader 5 異常、券商伺服器延遲、報價跳空、流動性不足或滑價等因素，均可能導致訂單延遲、未成交、部分成交，或以非預期價格成交。本公司對此類情形所生之損失不負賠償責任。</span></li>
+        <li><b data-i18n="legal.8.h">使用者責任。</b><span data-i18n="legal.8.b">所有交易決策、參數設定、資金配置與風險承擔，均由使用者自行判斷並自負盈虧。使用本系統即表示您已充分理解上述風險，並同意自行承擔一切交易結果。</span></li>
+        <li><b data-i18n="legal.9.h">法規遵循。</b><span data-i18n="legal.9.b">各國（地區）對於保證金交易、跟單交易與自動化交易之法令規範不同。使用者應自行確認在其所在司法管轄區內使用本系統及進行相關交易之合法性，並自行負擔一切稅務申報義務。</span></li>
+        <li><b data-i18n="legal.10.h">資料來源與異動。</b><span data-i18n="legal.10.b">本網站所引用之市場報價與圖表技術由 TradingView 提供，僅供參考，不作為交易依據。本公司保留隨時修改本聲明、服務內容與方案價格之權利，恕不另行個別通知。</span></li>
+      </ol>
+    </section>
+
+    <div class="foot-base">
+      <span class="foot-copy" data-i18n="foot.copy">© 2026 AI 黃金自動跟單系統</span>
+      <span data-i18n="foot.chartCredit">圖表技術由 TradingView Lightweight Charts 提供</span>
+    </div>
+  </div>
+</footer>
+
+<script src="/assets/js/site-config.js"></script>
+<script src="/assets/js/i18n.js"></script>
+<script src="/assets/js/site.js"></script>
+</body>
+</html>

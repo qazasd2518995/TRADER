@@ -93,50 +93,81 @@ PAGE = r"""<!doctype html>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>__TITLE__</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 /* ---------------------------------------------------------------- tokens */
+/* 這組 token 跟官網 (website/assets/css/tokens.css) 是同一套。
+   兩邊共用同一組色碼與字型，會員從官網點進來、裝好打開程式，看到的是同一個產品，
+   而不是兩個長得不一樣的東西。改色請兩邊一起改。 */
 :root {
-  color-scheme: light;
-  --paper:    #f6f0e3;
-  --card:     #fdfaf3;
-  --sunk:     #efe8d8;
-  --ink:      #1a1410;
-  --ink-2:    #5c5348;
-  --muted:    #8a8073;
-  --hair:     #e8e0cf;
-  --rule:     #cdc4b0;
-  --gold:     #8a6318;
-  --gold-mark:#a8781a;
-  --gold-lit: #d4a017;
-  --gold-hi:  #ffd86b;
-  /* 獲利=藍、虧損=紅。刻意不用台股的紅漲綠跌 —— 做黃金整天看下來滿屏紅字，
-     即使是賺的也會有壓迫感。藍色在亮底與暗底都夠清楚，跟紅的色相距離也遠，
-     不會像橘/綠那樣在小圖例裡被誤讀。 */
-  --win:      #1668dc;
-  --loss:     #d42a3f;
-  --win-wash: rgba(22, 104, 220, 0.10);
-  --loss-wash:rgba(212, 42, 63, 0.10);
-  /* 連線/存活指示燈用的綠 —— 以前借用 --loss，翻轉配色後會變成紅燈，語意相反。 */
-  --ok:       #0e7c5a;
-  --ok-wash:  rgba(14, 124, 90, 0.10);
-  --shadow:   0 1px 2px rgba(26,20,16,.05), 0 8px 24px -16px rgba(26,20,16,.30);
-
-  --sans: system-ui, -apple-system, "Segoe UI", "PingFang TC", "Noto Sans TC",
-          "Microsoft JhengHei", sans-serif;
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-}
-/* 亮色是預設，不跟隨系統的深色偏好——會員端要的就是明亮。
-   夜間可用右上角的日夜切換，選擇會記在 localStorage。 */
-:root[data-theme="dark"] {
   color-scheme: dark;
-  --paper:#100d0a; --card:#17130f; --sunk:#1f1a15;
-  --ink:#f4efe4; --ink-2:#a89c8a; --muted:#8f8474;
-  --hair:#2a231c; --rule:#3a3128;
-  --gold:#f0c65c; --gold-mark:#e0b23f; --gold-lit:#e8b93f; --gold-hi:#ffe08a;
-  --win:#4d9bff; --loss:#fa3a46;
-  --win-wash:rgba(77,155,255,.16); --loss-wash:rgba(250,58,70,.14);
-  --ok:#1e9c80; --ok-wash:rgba(30,156,128,.14);
-  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
+
+  --paper:    #0A0A0B;   /* 頁面底 */
+  --card:     #141416;   /* 卡片 */
+  --sunk:     #1E1E21;   /* 卡片內凹 / 軌道底 */
+  --raised:   #2A2A2E;   /* 再上一層 */
+
+  --ink:      #EDEDEF;   /* 主文（對 --card 15.7:1） */
+  --ink-2:    #A0A0A8;   /* 次要（7.1:1） */
+  --muted:    #82828C;   /* 說明（4.8:1，剛好過 WCAG AA） */
+
+  --hair:     #26262A;   /* 細線 */
+  --rule:     #3A3A40;   /* hover 邊框 / 輸入框 */
+
+  --gold:     #D4A017;
+  --gold-mark:#F0C65C;
+  --gold-lit: #F0C65C;
+  --gold-hi:  #FFE08A;
+
+  /* 獲利=綠、虧損=紅。
+     這裡從原本的「獲利=藍」改過來 —— 官網、使用者提供的設計圖、以及 MT5 原生
+     配色都是綠漲紅跌，產品跟行銷頁對不起來比配色偏好更傷。
+     深底上用亮一階的 400 色階，不用 500，否則在 #141416 上對比不足。 */
+  --win:      #22AB94;
+  --loss:     #F7525F;
+  --win-wash: rgba(34, 171, 148, 0.14);
+  --loss-wash:rgba(247, 82, 95, 0.14);
+
+  /* 連線/存活指示燈。跟 --win 同色系但更沉，才不會跟損益數字搶眼。 */
+  --ok:       #089981;
+  --ok-wash:  rgba(8, 153, 129, 0.14);
+
+  /* 點綴色。金色是品牌主軸，但整頁只有金 + 綠紅會太素；
+     這幾個只用在圖表線條與卡片頂邊，不進文字，避免畫面變彩虹。 */
+  --accent-cyan:   #22B8CF;
+  --accent-violet: #A855F7;
+  --accent-blue:   #3179F5;
+
+  --shadow:   0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
+  /* 卡片的玻璃質感：頂部一層極淡的白，模擬光從上方打下來。
+     沒有這層，深色卡片會扁成一塊色塊。 */
+  --glass: linear-gradient(180deg, rgba(255,255,255,.045), rgba(255,255,255,0) 42%);
+
+  /* Manrope 只有拉丁字，中文會自動落到後面的系統字型。
+     這正是我們要的：英數用 Manrope 的幾何感，中文用平台原生字。 */
+  --display: 'Manrope', -apple-system, BlinkMacSystemFont, "PingFang TC",
+             "Microsoft JhengHei", sans-serif;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC",
+          "Microsoft JhengHei", "Noto Sans TC", sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, "SF Mono",
+          Menlo, Consolas, monospace;
+}
+
+/* 深色是預設。想要亮底的人可以用右上角切換，選擇記在 localStorage。 */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --paper:#F7F7F5; --card:#FFFFFF; --sunk:#F0F0EE; --raised:#E6E6E3;
+  --ink:#16161A; --ink-2:#54545C; --muted:#6E6E76;
+  --hair:#E5E5E2; --rule:#CFCFCA;
+  --gold:#A87C10; --gold-mark:#C08F14; --gold-lit:#D4A017; --gold-hi:#F0C65C;
+  --win:#089981; --loss:#D92C3C;
+  --win-wash:rgba(8,153,129,.10); --loss-wash:rgba(217,44,60,.10);
+  --ok:#068043; --ok-wash:rgba(6,128,67,.10);
+  --accent-cyan:#0E8FA8; --accent-violet:#7C3AED; --accent-blue:#1E53E5;
+  --shadow: 0 1px 2px rgba(22,22,26,.05), 0 8px 24px -16px rgba(22,22,26,.28);
+  --glass: linear-gradient(180deg, rgba(0,0,0,.02), rgba(0,0,0,0) 42%);
 }
 
 * { box-sizing: border-box; }
@@ -149,7 +180,12 @@ body {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
-h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+h1, h2, h3, h4 {
+  margin: 0; font-family: var(--display);
+  font-weight: 700; letter-spacing: -0.02em; line-height: 1.15;
+}
+/* 中文是方塊字，負字距一大就糊。西文字母之間本來就有視覺空隙才收得動。 */
+:lang(zh-Hant) h1, :lang(zh-Hant) h2, :lang(zh-Hant) h3 { letter-spacing: -0.005em; }
 :focus-visible { outline: 2px solid var(--gold-mark); outline-offset: 2px; border-radius: 3px; }
 
 /* ------------------------------------------------------------------ rail */
@@ -162,7 +198,7 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
   border-bottom: 1px solid var(--hair);
 }
 .rail-id { display: flex; align-items: center; gap: 12px; margin-right: auto; }
-.rail-id h1 { font-size: 17px; }
+.rail-id h1 { font-size: 17px; font-weight: 800; }
 .rail-sub { margin: 0; font-size: 12px; color: var(--muted); letter-spacing: .06em; }
 
 /* 金條標記：這支程式的識別，也是階梯的縮影 */
@@ -193,9 +229,10 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
 
 .rail-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .btn {
-  font: inherit; font-size: 13px; font-weight: 500;
-  padding: 7px 14px; border-radius: 7px;
-  border: 1px solid var(--rule); background: var(--card); color: var(--ink);
+  font: inherit; font-family: var(--display);
+  font-size: 13px; font-weight: 700; letter-spacing: -.01em;
+  padding: 8px 16px; border-radius: 999px;
+  border: 1px solid var(--rule); background: transparent; color: var(--ink);
   cursor: pointer; transition: background .15s, border-color .15s, transform .08s;
 }
 .btn:hover { background: var(--sunk); }
@@ -210,11 +247,331 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
 .btn-quiet { border-color: transparent; background: transparent; color: var(--muted); }
 .btn-quiet:hover { background: var(--sunk); color: var(--ink); }
 
+
+/* ------------------------------------------------------------------ side */
+/* 左側欄。訊號中心沒有等級制度，所以整條是 client-only。 */
+.shell { display: grid; grid-template-columns: 248px minmax(0, 1fr); gap: 26px; align-items: start; }
+.shell-main { min-width: 0; }   /* 沒有這行，裡面的寬表格會把整個 grid 撐爆 */
+
+/* 視窗窄的時候側欄收起來 —— 硬擠成兩欄會讓表格沒地方站 */
+@media (max-width: 1180px) {
+  .shell { grid-template-columns: 1fr; }
+  .side { display: none; }
+}
+
+.side {
+  position: sticky; top: 76px;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.side[hidden] { display: none; }
+
+.side-head {
+  margin: 0 0 10px; font-size: 11px; font-weight: 700;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--muted);
+}
+
+/* 會員卡 */
+.side-card {
+  padding: 16px 18px 18px;
+  background: var(--card); border: 1px solid var(--hair); border-radius: 16px;
+  box-shadow: var(--shadow);
+  position: relative; overflow: hidden;
+}
+/* 頂邊一道金線，讓這張卡在側欄裡是主角 */
+.side-card::before {
+  content: ''; position: absolute; inset: 0 0 auto; height: 2px;
+  background: linear-gradient(90deg, transparent, var(--gold-lit), transparent);
+}
+.side-tier { display: flex; align-items: baseline; gap: 7px; margin: 0; }
+.side-tier b {
+  font-family: var(--display); font-size: 21px; font-weight: 800;
+  letter-spacing: -.02em; color: var(--gold-mark);
+}
+.side-tier span { font-size: 13px; color: var(--ink-2); }
+.side-exp { margin: 10px 0 0; font-size: 12px; color: var(--muted); }
+.side-exp b { color: var(--ink-2); font-weight: 600; font-family: var(--mono); }
+
+/* 到期進度條。剩不到 7 天轉紅 —— 這是會員最需要提早知道的一件事。 */
+.side-meter { height: 4px; border-radius: 999px; background: var(--sunk); margin-top: 12px; overflow: hidden; }
+.side-meter i {
+  display: block; height: 100%; border-radius: 999px;
+  background: linear-gradient(90deg, var(--gold), var(--gold-lit));
+  transition: width .6s cubic-bezier(.2,.7,.3,1);
+}
+.side-meter.is-soon i { background: var(--loss); }
+.side-left { margin: 8px 0 0; font-size: 12px; color: var(--muted); }
+.side-left.is-soon { color: var(--loss); }
+
+/* 區塊導覽 */
+.side-nav {
+  padding: 16px 14px 14px;
+  background: var(--card); border: 1px solid var(--hair); border-radius: 16px;
+}
+.side-nav a {
+  display: block; padding: 8px 10px; border-radius: 8px;
+  font-size: 13.5px; color: var(--ink-2); text-decoration: none;
+  transition: background-color .15s, color .15s;
+}
+.side-nav a:hover { background: var(--sunk); color: var(--ink); }
+
+/* 方案功能。每一項都對應後端 entitlements 的一個欄位，沒有裝飾用的假項目。 */
+.side-feats {
+  padding: 16px 14px 14px;
+  background: var(--card); border: 1px solid var(--hair); border-radius: 16px;
+}
+.side-feats ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.side-feats li {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 10px; border-radius: 8px;
+  font-size: 13px; color: var(--ink-2);
+}
+.side-feats li.is-off { color: var(--muted); }
+.side-feats li .val { margin-left: auto; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+
+.dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--muted); }
+.dot--on { background: var(--win); box-shadow: 0 0 0 3px var(--win-wash); }
+
+/* 鎖頭用 CSS 畫，不用 emoji —— emoji 在 Windows 與 macOS 上長得不一樣，
+   而且會跟著系統字型走，大小控制不了。 */
+.lockmark {
+  position: relative; flex: none; width: 9px; height: 8px;
+  border-radius: 1.5px; background: currentColor; opacity: .55; margin-top: 3px;
+}
+.lockmark::before {
+  content: ''; position: absolute; left: 50%; top: -5px;
+  width: 6px; height: 6px; transform: translateX(-50%);
+  border: 1.5px solid currentColor; border-bottom: 0;
+  border-radius: 3px 3px 0 0;
+}
+
+.side-legend {
+  display: flex; gap: 14px; flex-wrap: wrap;
+  margin: 12px 0 0; padding-top: 11px;
+  border-top: 1px solid var(--hair);
+  font-size: 11.5px; color: var(--muted);
+}
+.side-legend .lg { display: inline-flex; align-items: center; gap: 6px; }
+
+
+/* ------------------------------------------------------------- dashboard */
+/* 儀表板網格。原本整頁是單欄往下堆，資訊密度低、看起來不像交易介面。
+   改成上方一列統計卡、中間分欄、下方表格。 */
+
+/* 頂部統計卡列。sparkline 只畫得出真實序列的才畫 ——
+   畫不出來的（例如來源數）就留白，不硬湊一條假曲線。 */
+.dash-stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+@media (max-width: 1400px) { .dash-stats { grid-template-columns: repeat(3, minmax(0,1fr)); } }
+@media (max-width: 820px)  { .dash-stats { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+
+.dstat {
+  position: relative;
+  padding: 15px 17px 0;
+  background: var(--card); border: 1px solid var(--hair); border-radius: 14px;
+  overflow: hidden;
+  transition: border-color .25s;
+}
+.dstat:hover { border-color: var(--rule); }
+.dstat dt { font-size: 11.5px; color: var(--muted); margin-bottom: 6px; }
+.dstat dd {
+  margin: 0; font-family: var(--display);
+  font-size: 26px; font-weight: 800; letter-spacing: -.035em; line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+}
+.dstat .sub { display: block; margin-top: 5px; font-size: 11.5px; color: var(--muted); min-height: 16px; }
+.dstat .spark { display: block; width: calc(100% + 34px); height: 42px; margin: 10px -17px 0; }
+
+/* 主網格 */
+.dash-grid { display: grid; gap: 14px; margin-bottom: 14px; }
+.dash-grid--2 { grid-template-columns: minmax(0, 1.85fr) minmax(0, 1fr); }
+.dash-grid--3 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.35fr); }
+@media (max-width: 1180px) { .dash-grid--2, .dash-grid--3 { grid-template-columns: 1fr; } }
+
+/* 面板：標題進到卡片裡，整頁才會是一個個明確的方塊，
+   而不是浮在外面的小標題配一張沒有頭的卡。 */
+.panel {
+  display: flex; flex-direction: column;
+  background: var(--card); border: 1px solid var(--hair); border-radius: 16px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.panel-head {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--hair);
+}
+.panel-head h2 { font-size: 14.5px; font-weight: 700; }
+.panel-head p { margin: 0; font-size: 12px; color: var(--muted); }
+.panel-head .spacer { margin-left: auto; text-align: right; }
+.panel-body { padding: 16px 18px; flex: 1; min-height: 0; }
+.panel-body--flush { padding: 0; }
+.panel-body--tight { padding: 12px 14px; }
+
+/* hero 卡在三欄網格裡要跟其他 panel 對齊 */
+.dash-grid--3 > .card.hero { border-radius: 16px; grid-template-columns: 1fr; }
+
+/* 圓環：勝率的視覺化。中央放總筆數，右邊是圖例。 */
+.donut-wrap { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+.donut { position: relative; flex: none; width: 146px; height: 146px; }
+.donut svg { transform: rotate(-90deg); display: block; }
+.donut-mid {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+}
+.donut-mid b {
+  font-family: var(--display); font-size: 27px; font-weight: 800;
+  letter-spacing: -.035em; font-variant-numeric: tabular-nums;
+}
+.donut-mid span { font-size: 11px; color: var(--muted); }
+.donut-legend { display: grid; gap: 14px; min-width: 0; margin: 0; }
+.donut-legend > div { display: flex; align-items: flex-start; gap: 9px; }
+.donut-legend i { width: 8px; height: 8px; border-radius: 2px; margin-top: 5px; flex: none; }
+.donut-legend dt { font-size: 12px; color: var(--muted); }
+.donut-legend dd {
+  margin: 2px 0 0; font-family: var(--mono);
+  font-size: 15px; font-variant-numeric: tabular-nums; color: var(--ink);
+}
+.donut-legend dd em { font-style: normal; font-size: 12px; color: var(--muted); margin-left: 5px; }
+
+/* 底部狀態列。黏在視窗底部，讓「系統到底有沒有在跑」隨時看得到 ——
+   原本要捲回頁面最上面才看得到那幾顆狀態燈。 */
+.statusbar {
+  position: sticky; bottom: 0; z-index: 30;
+  display: flex; align-items: center; gap: 22px; flex-wrap: wrap;
+  margin: 22px -28px -72px;
+  padding: 11px 28px;
+  background: color-mix(in srgb, var(--card) 92%, transparent);
+  backdrop-filter: saturate(1.4) blur(12px);
+  border-top: 1px solid var(--hair);
+  font-size: 12px; color: var(--muted);
+}
+.statusbar .sb { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.statusbar .sb b { color: var(--ink-2); font-weight: 600; }
+.statusbar .sb .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.statusbar .spacer { margin-left: auto; }
+.sb-meter { width: 84px; height: 4px; border-radius: 999px; background: var(--sunk); overflow: hidden; }
+.sb-meter i { display: block; height: 100%; border-radius: 999px; background: var(--win); transition: width .5s; }
+.sb-meter.is-warn i { background: var(--gold-lit); }
+.sb-meter.is-over i { background: var(--loss); }
+@media (max-width: 900px) { .statusbar { display: none; } }
+
+
+/* 面板裡的長表格要自己捲，不然一個有幾十筆紀錄的表格會把整列撐到近千像素高，
+   同列的其他面板被拉出一大片空白。 */
+.dash-grid--3 .table-scroll { max-height: 360px; overflow: auto; }
+.dash-grid--2 .table-scroll { max-height: 300px; overflow: auto; }
+.dash-grid .source-grid { max-height: 344px; overflow: auto; }
+.dash-grid--2 #pending, .dash-grid--2 #positions { max-height: 300px; overflow: auto; }
+
+/* 面板內的捲軸細一點，不要在卡片裡切出一條粗灰帶 */
+.panel-body ::-webkit-scrollbar, .panel-body::-webkit-scrollbar { width: 8px; height: 8px; }
+.panel-body ::-webkit-scrollbar-thumb, .panel-body::-webkit-scrollbar-thumb {
+  background: var(--rule); border-radius: 999px; border: 2px solid var(--card);
+}
+.panel-body ::-webkit-scrollbar-track, .panel-body::-webkit-scrollbar-track { background: transparent; }
+
+/* 馬丁階梯在三欄裡不需要撐滿，內容多高就多高 */
+.dash-grid--3 > .card.hero { align-self: stretch; }
+
+
+/* ------------------------------------------------------------------ 質感 */
+/* 深色介面很容易變成一片扁平的黑。這一段補的是「光」——
+   卡片頂部的受光面、關鍵數字的光暈、按鈕的金屬漸層。
+   點綴色只進圖形（線條、頂邊、圓環），不進文字，畫面才不會變彩虹。 */
+
+.card, .panel, .dstat, .side-card, .side-nav, .side-feats {
+  background-image: var(--glass);
+  background-repeat: no-repeat;
+}
+
+/* 統計卡：頂邊一道該指標自己的顏色。0.5px 太細會被螢幕吃掉，用 2px 加低透明度。 */
+.dstat::before {
+  content: ''; position: absolute; inset: 0 0 auto; height: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent, var(--gold-lit)) 42%, transparent);
+  opacity: .55;
+}
+.dstat:hover::before { opacity: 1; }
+.dstat--cyan   { --accent: var(--accent-cyan); }
+.dstat--win    { --accent: var(--win); }
+.dstat--violet { --accent: var(--accent-violet); }
+.dstat--gold   { --accent: var(--gold-lit); }
+.dstat--loss   { --accent: var(--loss); }
+
+/* 關鍵數字的光暈。只給有語意顏色的數字（賺/賠/勝率），中性數字不加，
+   否則整排都在發光就等於都沒發光。 */
+.dstat dd.up    { text-shadow: 0 0 26px color-mix(in srgb, var(--win) 42%, transparent); }
+.dstat dd.down  { text-shadow: 0 0 26px color-mix(in srgb, var(--loss) 38%, transparent); }
+.dstat dd.gold  { color: var(--gold-mark); text-shadow: 0 0 26px color-mix(in srgb, var(--gold-lit) 40%, transparent); }
+.figure-value.up   { text-shadow: 0 0 40px color-mix(in srgb, var(--win) 34%, transparent); }
+.figure-value.down { text-shadow: 0 0 40px color-mix(in srgb, var(--loss) 30%, transparent); }
+
+/* 面板標題列：底部一條極淡的金線，讓標題跟內容之間有層次而不只是一條灰線 */
+.panel-head {
+  position: relative;
+  background: linear-gradient(180deg, rgba(255,255,255,.03), transparent);
+}
+.panel-head::after {
+  content: ''; position: absolute; inset: auto 0 -1px; height: 1px;
+  background: linear-gradient(90deg, var(--gold-line, rgba(212,160,23,.22)), transparent 60%);
+}
+
+/* 主要按鈕：真的金屬漸層，不是一塊平的金色 */
+.btn-go {
+  background: linear-gradient(158deg, var(--gold-hi) 0%, var(--gold-lit) 46%, var(--gold-mark) 100%);
+  border-color: transparent;
+  color: #2a1d05;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.55), 0 6px 20px -10px rgba(212,160,23,.7);
+}
+.btn-go:hover { filter: brightness(1.06); }
+
+/* 側欄的等級卡：加一層徑向金光，讓它在側欄裡是主角 */
+.side-card {
+  background-image:
+    radial-gradient(120% 90% at 50% -10%, rgba(212,160,23,.16), transparent 62%),
+    var(--glass);
+}
+
+/* 各來源績效卡：左側一道彩色邊，兩個來源用不同顏色，一眼分得出來 */
+.source-card { position: relative; overflow: hidden; }
+.source-card::before {
+  content: ''; position: absolute; inset: 0 auto 0 0; width: 3px;
+  background: var(--src-accent, var(--accent-cyan));
+  opacity: .8;
+}
+.source-grid > .source-card:nth-child(2n)   { --src-accent: var(--accent-violet); }
+.source-grid > .source-card:nth-child(3n+1) { --src-accent: var(--accent-cyan); }
+
+/* 圓環發光 */
+.donut svg circle { filter: drop-shadow(0 0 10px color-mix(in srgb, currentColor 40%, transparent)); }
+.donut-mid b { text-shadow: 0 0 30px rgba(255,255,255,.18); }
+
+/* 分頁選中時的金線加一點光 */
+.view-tab.is-on::after { box-shadow: 0 0 12px color-mix(in srgb, var(--gold-lit) 60%, transparent); }
+
+/* 狀態列的指示燈：加呼吸感，讓「還在跑」是看得出來的 */
+.statusbar .dot { box-shadow: 0 0 0 0 currentColor; }
+.statusbar .sb .dot[style*="--ok"] { animation: sb-pulse 2.4s ease-out infinite; }
+@keyframes sb-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(8,153,129,.45); }
+  70%  { box-shadow: 0 0 0 6px rgba(8,153,129,0); }
+  100% { box-shadow: 0 0 0 0 rgba(8,153,129,0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .statusbar .sb .dot { animation: none; }
+}
+
 /* ------------------------------------------------------------------ main */
-main { max-width: 1240px; margin: 0 auto; padding: 22px 24px 72px; }
+/* 1240px 對桌面程式來說太窄，右邊會空一大片。放寬到 1560，
+   表格與圖表才有呼吸空間。 */
+main { max-width: 1560px; margin: 0 auto; padding: 22px 28px 72px; }
 .card {
   background: var(--card); border: 1px solid var(--hair);
-  border-radius: 12px; padding: 18px 20px; box-shadow: var(--shadow);
+  border-radius: 16px; padding: 20px 22px; box-shadow: var(--shadow);
 }
 .eyebrow {
   margin: 0 0 6px; font-size: 11px; font-weight: 600;
@@ -224,7 +581,7 @@ main { max-width: 1240px; margin: 0 auto; padding: 22px 24px 72px; }
   display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
   margin: 30px 0 12px;
 }
-.section-head h2 { font-size: 15px; }
+.section-head h2 { font-size: 20px; font-weight: 800; }
 .section-head p { margin: 0; font-size: 12.5px; color: var(--muted); }
 .section-head .spacer { margin-left: auto; }
 
@@ -309,7 +666,10 @@ main { max-width: 1240px; margin: 0 auto; padding: 22px 24px 72px; }
   border: 1px dashed var(--rule); border-radius: 10px; background: var(--sunk);
 }
 .flat-note[hidden] { display: none; }
-.flat-note .big { font-size: 34px; font-weight: 650; letter-spacing: -.02em; }
+.flat-note .big {
+  font-family: var(--display); font-size: 34px; font-weight: 800;
+  letter-spacing: -.035em; font-variant-numeric: tabular-nums;
+}
 .flat-note p { margin: 4px 0 0; font-size: 12.5px; color: var(--muted); max-width: 30ch; }
 
 /* 每群下單設定表 */
@@ -345,8 +705,10 @@ main { max-width: 1240px; margin: 0 auto; padding: 22px 24px 72px; }
 /* 主數字：整頁只有這一個 48px 以上的數字 */
 .figure { display: flex; flex-direction: column; justify-content: center; }
 .figure-value {
-  margin: 2px 0 0; font-size: 52px; line-height: 1.05; font-weight: 650;
-  letter-spacing: -0.035em; white-space: nowrap;
+  margin: 2px 0 0; font-family: var(--display);
+  font-size: 56px; line-height: 1.02; font-weight: 800;
+  letter-spacing: -0.045em; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 .figure-sub { margin: 10px 0 0; font-size: 13px; color: var(--ink-2); }
 .figure-facts {
@@ -366,7 +728,11 @@ main { max-width: 1240px; margin: 0 auto; padding: 22px 24px 72px; }
 }
 .tile { background: var(--card); border: 1px solid var(--hair); border-radius: 11px; padding: 14px 16px; }
 .tile dt { font-size: 11.5px; color: var(--muted); margin-bottom: 5px; }
-.tile dd { margin: 0; font-size: 25px; font-weight: 620; letter-spacing: -.02em; line-height: 1.1; }
+.tile dd {
+  margin: 0; font-family: var(--display);
+  font-size: 27px; font-weight: 800; letter-spacing: -.035em; line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+}
 .tile small { display: block; margin-top: 5px; font-size: 11.5px; color: var(--muted); }
 
 /* 勝率量表：填色是勝、軌道是敗，兩段都有文字標籤 */
@@ -385,15 +751,22 @@ main { max-width: 1240px; margin: 0 auto; padding: 22px 24px 72px; }
    比 .pillset 大一號、更顯眼——這是切換整個畫面內容的動作，不是篩選 */
 .view-tabs { display: flex; gap: 6px; margin-bottom: 18px; }
 .view-tab {
-  font: inherit; font-size: 13.5px; font-weight: 500; padding: 9px 18px;
-  border-radius: 9px; border: 1px solid var(--hair); background: var(--card);
-  color: var(--ink-2); cursor: pointer; box-shadow: var(--shadow);
+  position: relative;
+  font: inherit; font-family: var(--display);
+  font-size: 14px; font-weight: 700; padding: 10px 20px;
+  border-radius: 10px; border: 1px solid transparent; background: transparent;
+  color: var(--muted); cursor: pointer;
+  transition: color .18s, background-color .18s, border-color .18s;
 }
-.view-tab:hover { color: var(--ink); border-color: var(--rule); }
+.view-tab:hover { color: var(--ink); background: var(--sunk); }
 .view-tab.is-on {
-  color: #2a1d05; font-weight: 600; border-color: transparent;
-  background: linear-gradient(158deg, var(--gold-hi), var(--gold-lit) 60%, var(--gold-mark));
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.5);
+  color: var(--gold-mark); background: var(--card); border-color: var(--hair);
+}
+/* 底部那道金線是「你在這裡」的訊號。整塊塗金會蓋掉旁邊的內容。 */
+.view-tab.is-on::after {
+  content: ''; position: absolute; inset: auto 20px -1px;
+  height: 2px; border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--gold-lit), transparent);
 }
 .filters .label { font-size: 11.5px; color: var(--muted); letter-spacing: .06em; }
 .pillset { display: flex; gap: 4px; background: var(--sunk); padding: 3px; border-radius: 8px; }
@@ -826,6 +1199,45 @@ body.auth-locked > *:not(#authGate) { display: none; }
 <main>
   <div id="notice"></div>
 
+  <div class="shell">
+
+  <!-- 左側欄。只有會員端有 —— 訊號中心沒有等級也沒有這些區塊。
+       這裡不放任何「還沒做出來的功能」：導覽連到的每個錨點都真的存在，
+       方案功能列出的每一項都直接對應後端 entitlements 的欄位。 -->
+  <aside class="side client-only" id="sideBar" hidden>
+
+    <div class="side-card">
+      <p class="side-tier"><b id="sideTier">—</b><span>會員</span></p>
+      <p class="side-exp">方案到期日　<b id="sideExp">—</b></p>
+      <div class="side-meter" id="sideMeterWrap" hidden><i id="sideMeter"></i></div>
+      <p class="side-left" id="sideLeft"></p>
+    </div>
+
+    <nav class="side-nav" aria-label="區塊導覽">
+      <p class="side-head">快速前往</p>
+      <a href="#secLadder">馬丁階梯</a>
+      <a href="#secPending">待成交掛單</a>
+      <a href="#secPositions">目前持倉</a>
+      <a href="#secPerf">績效分析</a>
+      <a href="#secCurve">累計損益曲線</a>
+      <a href="#secSources">各來源績效</a>
+      <a href="#secTrades">交易紀錄</a>
+      <a href="#secLogs">狀態紀錄</a>
+    </nav>
+
+    <div class="side-feats">
+      <p class="side-head">方案功能</p>
+      <ul id="sideEnt"></ul>
+      <p class="side-legend">
+        <span class="lg"><i class="dot dot--on"></i>可使用</span>
+        <span class="lg"><i class="lockmark"></i>需更高等級</span>
+      </p>
+    </div>
+
+  </aside>
+
+  <div class="shell-main">
+
   <!-- 只有設定過「其他策略(EA)」才出現；沒用這功能的人畫面完全不變 -->
   <div class="view-tabs" id="viewTabs" hidden>
     <button type="button" class="view-tab is-on" data-view="signals">__TAB1__</button>
@@ -834,8 +1246,64 @@ body.auth-locked > *:not(#authGate) { display: none; }
   </div>
 
 <div id="viewSignals">
-  <!-- 現在的狀態：不受下方篩選影響 -->
-  <section class="card hero">
+
+  <!-- ① 頂部統計卡列。內容由 renderDashStats() 依實際資料產生。 -->
+  <dl class="dash-stats" id="dashStats"></dl>
+
+  <!-- ② 篩選列：期間與來源。下方所有圖表與表格共用這一組。 -->
+    <div class="filters">
+      <span class="label">期間</span>
+      <div class="pillset" id="filterPeriod">
+        <button class="pill is-on" data-period="today">今日</button>
+        <button class="pill" data-period="week">本週</button>
+        <button class="pill" data-period="lastweek">上週</button>
+        <button class="pill" data-period="month">本月</button>
+        <button class="pill" data-period="lastmonth">上月</button>
+        <button class="pill" data-period="all">全部</button>
+        <button class="pill" data-period="custom">自訂</button>
+      </div>
+      <div class="daterange" id="dateRange" hidden>
+        <input type="date" id="dateFrom" aria-label="起始日期" />
+        <span class="label">至</span>
+        <input type="date" id="dateTo" aria-label="結束日期" />
+      </div>
+      <span class="label">來源</span>
+      <select id="filterSource"><option value="all">全部來源</option></select>
+      <span class="count" id="filterCount"></span>
+    </div>
+
+  <!-- ③ 主網格。設計圖這個位置原本是 K 線圖，但會員端沒有價格歷史資料，
+       畫出來會是假的；改放會員自己的損益曲線，對跟單者也更有意義。 -->
+  <div class="dash-grid dash-grid--2">
+    <section class="panel" id="secCurve">
+      <div class="panel-head">
+        <h2>累計損益曲線</h2>
+        <p>每一筆平倉後的累積結果，單位 <span id="curCode">USD</span></p>
+      </div>
+      <div class="panel-body">
+    <div class="card">
+      <div class="chart-wrap" id="equityWrap">
+        <svg id="equityChart" role="img" aria-label="累計損益曲線"></svg>
+        <div class="tip" id="equityTip"></div>
+      </div>
+    </div>
+      </div>
+    </section>
+
+    <section class="panel" id="secSources">
+      <div class="panel-head">
+        <h2>各來源績效</h2>
+        <p class="spacer">點卡片可篩選</p>
+      </div>
+      <div class="panel-body panel-body--tight">
+    <div class="source-grid" id="sourcePerf"></div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ④ 三欄：馬丁階梯 / 績效圓環 / 交易紀錄 -->
+  <div class="dash-grid dash-grid--3">
+  <section class="card hero" id="secLadder">
     <div class="ladder client-only">
       <div class="ladder-head">
         <h2 id="ladderTitle">馬丁階梯</h2>
@@ -862,57 +1330,54 @@ body.auth-locked > *:not(#authGate) { display: none; }
     </div>
   </section>
 
-  <div class="client-only">
-    <div class="section-head">
-      <h2>待成交掛單</h2>
-      <p id="pendingSummary">—</p>
-    </div>
-    <div class="card" style="padding:0"><div id="pending"></div></div>
-
-    <div class="section-head">
-      <h2>目前持倉</h2>
-      <p id="posSummary">—</p>
-    </div>
-    <div class="card" style="padding:0"><div id="positions"></div></div>
-
-    <div class="section-head">
-      <h2>績效分析</h2>
-      <p>下方全部圖表與表格共用同一組篩選</p>
-    </div>
-
-    <div class="filters">
-      <span class="label">期間</span>
-      <div class="pillset" id="filterPeriod">
-        <button class="pill is-on" data-period="today">今日</button>
-        <button class="pill" data-period="week">本週</button>
-        <button class="pill" data-period="lastweek">上週</button>
-        <button class="pill" data-period="month">本月</button>
-        <button class="pill" data-period="lastmonth">上月</button>
-        <button class="pill" data-period="all">全部</button>
-        <button class="pill" data-period="custom">自訂</button>
+    <section class="panel">
+      <div class="panel-head"><h2>績效統計</h2></div>
+      <div class="panel-body">
+        <div class="donut-wrap">
+          <div class="donut" id="donut"></div>
+          <dl class="donut-legend" id="donutLegend"></dl>
+        </div>
       </div>
-      <div class="daterange" id="dateRange" hidden>
-        <input type="date" id="dateFrom" aria-label="起始日期" />
-        <span class="label">至</span>
-        <input type="date" id="dateTo" aria-label="結束日期" />
-      </div>
-      <span class="label">來源</span>
-      <select id="filterSource"><option value="all">全部來源</option></select>
-      <span class="count" id="filterCount"></span>
-    </div>
+    </section>
 
-    <dl class="tiles" id="tiles"></dl>
-
-    <div class="section-head">
-      <h2>累計損益曲線</h2>
-      <p>每一筆平倉後的累積結果，單位 <span id="curCode">USD</span></p>
-    </div>
-    <div class="card">
-      <div class="chart-wrap" id="equityWrap">
-        <svg id="equityChart" role="img" aria-label="累計損益曲線"></svg>
-        <div class="tip" id="equityTip"></div>
+    <section class="panel" id="secTrades">
+      <div class="panel-head">
+        <h2>交易紀錄</h2>
+        <p class="spacer">每一筆的完整數字</p>
       </div>
+      <div class="panel-body panel-body--flush">
+    <div class="card" style="padding:0">
+      <div class="table-scroll" id="records"></div>
     </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ⑤ 掛單與持倉 -->
+  <div class="dash-grid dash-grid--2">
+    <section class="panel" id="secPending">
+      <div class="panel-head">
+        <h2>待成交掛單</h2>
+        <p class="spacer" id="pendingSummary">—</p>
+      </div>
+      <div class="panel-body panel-body--flush"><div id="pending"></div></div>
+    </section>
+
+    <section class="panel" id="secPositions">
+      <div class="panel-head">
+        <h2>目前持倉</h2>
+        <p class="spacer" id="posSummary">—</p>
+      </div>
+      <div class="panel-body panel-body--flush"><div id="positions"></div></div>
+    </section>
+  </div>
+
+  <!-- ⑥ 完整績效指標與每筆損益 -->
+  <div class="section-head" id="secPerf">
+    <h2>績效分析</h2>
+    <p>下方全部圖表與表格共用同一組篩選</p>
+  </div>
+  <dl class="tiles" id="tiles"></dl>
 
     <div class="card" style="margin-top:14px">
       <p class="eyebrow">每筆損益</p>
@@ -927,20 +1392,6 @@ body.auth-locked > *:not(#authGate) { display: none; }
       </div>
     </div>
 
-    <div class="section-head">
-      <h2>各來源績效</h2>
-      <p>每個訊號群組各自獨立計算，點卡片可把下方全部篩選到那一個來源</p>
-    </div>
-    <div class="source-grid" id="sourcePerf"></div>
-
-    <div class="section-head">
-      <h2>交易紀錄</h2>
-      <p>每一筆的完整數字，也是上方圖表的表格版</p>
-    </div>
-    <div class="card" style="padding:0">
-      <div class="table-scroll" id="records"></div>
-    </div>
-  </div>
 </div><!-- /viewSignals -->
 
 <div id="viewEA" class="client-only" hidden>
@@ -1071,7 +1522,7 @@ body.auth-locked > *:not(#authGate) { display: none; }
   </div>
 </div><!-- /viewMembers -->
 
-  <div class="section-head">
+  <div class="section-head" id="secLogs">
     <h2>狀態紀錄</h2>
     <p id="uptime"></p>
   </div>
@@ -1089,6 +1540,19 @@ body.auth-locked > *:not(#authGate) { display: none; }
       <button class="btn" id="closeSettings">收起</button>
     </div>
   </section>
+
+  </div><!-- /shell-main -->
+  </div><!-- /shell -->
+
+<!-- 底部狀態列。只有會員端有 —— 訊號中心沒有 MT5 也沒有風險額度。 -->
+<div class="statusbar client-only" id="statusBar">
+  <span class="sb" id="sbRun">—</span>
+  <span class="sb" id="sbTime">—</span>
+  <span class="sb" id="sbLink">—</span>
+  <span class="spacer"></span>
+  <span class="sb" id="sbRisk">—</span>
+  <span class="sb-meter" id="sbMeter"><i style="width:0"></i></span>
+</div>
 </main>
 
 <script>
@@ -1117,6 +1581,12 @@ const SOURCE_ALIAS = {
   "黃金報單🈲言群": "中頻交易",
 };
 const srcName = (s) => SOURCE_ALIAS[s] || (s || "未標記來源");
+
+/* entitlements 回來的是原始群組名，這裡從別名表反查，
+   避免把群組名寫死在兩個地方。 */
+const HIGH_SOURCE = Object.keys(SOURCE_ALIAS).find((k) => SOURCE_ALIAS[k] === "高頻交易") || "";
+const MID_SOURCE  = Object.keys(SOURCE_ALIAS).find((k) => SOURCE_ALIAS[k] === "中頻交易") || "";
+
 
 function ids() {
   return ROLE === "central"
@@ -1317,7 +1787,9 @@ function renderEquity(trades, ids, state) {
   const svg = $(ids.svg);
   const wrap = $(ids.wrap);
   svg.textContent = "";
-  const W = Math.max(320, wrap.clientWidth), H = 268;
+  // 儀表板面板裡給高一點，讓圖填滿卡片；趨勢線分頁還是舊版單欄排版，維持 268。
+  const inPanel = !!wrap.closest(".panel-body");
+  const W = Math.max(320, wrap.clientWidth), H = inPanel ? 340 : 268;
   const pad = { t: 18, r: 74, b: 30, l: 58 };
   svg.setAttribute("viewBox", "0 0 " + W + " " + H);
   svg.setAttribute("height", H);
@@ -2023,6 +2495,173 @@ function syncSourceProfiles() {
 }
 
 /* -------------------------------------------------------------- painting */
+/* ------------------------------------------------------------- dashboard */
+
+/* 小折線。給統計卡用，沒有座標軸、沒有互動，只表達走勢方向。
+   series 少於兩點就回傳空字串 —— 一個點連不成線，硬畫會是一條假的水平線。 */
+function sparkPath(series, w, h, pad) {
+  if (!series || series.length < 2) return null;
+  let lo = Infinity, hi = -Infinity;
+  for (const v of series) { if (v < lo) lo = v; if (v > hi) hi = v; }
+  if (lo === hi) { lo -= 1; hi += 1; }
+  const n = series.length;
+  const x = (i) => (i / (n - 1)) * w;
+  const y = (v) => pad + (1 - (v - lo) / (hi - lo)) * (h - pad * 2);
+  let d = `M${x(0).toFixed(1)},${y(series[0]).toFixed(1)}`;
+  for (let i = 1; i < n; i++) d += ` L${x(i).toFixed(1)},${y(series[i]).toFixed(1)}`;
+  return { line: d, area: d + ` L${w},${h} L0,${h} Z` };
+}
+
+function sparkSvg(series, tone) {
+  const W = 240, H = 42;
+  const p = sparkPath(series, W, H, 6);
+  if (!p) return "";
+  const stroke = {
+    down: "var(--loss)", gold: "var(--gold-lit)", up: "var(--win)",
+    cyan: "var(--accent-cyan)", violet: "var(--accent-violet)", blue: "var(--accent-blue)",
+  }[tone] || "var(--win)";
+  const gid = "sg" + Math.random().toString(36).slice(2, 8);
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+    <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="${stroke}" stop-opacity=".28"/>
+      <stop offset="1" stop-color="${stroke}" stop-opacity="0"/>
+    </linearGradient></defs>
+    <path d="${p.area}" fill="url(#${gid})"/>
+    <path d="${p.line}" fill="none" stroke="${stroke}" stroke-width="1.6"
+          stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+  </svg>`;
+}
+
+/* 頂部五張統計卡。
+   每個數字與每條 sparkline 都是從實際成交紀錄算出來的，沒有裝飾用的假資料；
+   算不出序列的那張（跟單來源）就不畫線。 */
+function renderDashStats(sum, account, trades, srcRows) {
+  const host = $("dashStats");
+  if (!host) return;
+
+  // 由舊到新的累積損益。統計卡的三條線都從這裡衍生。
+  const cum = [];
+  let run = 0;
+  for (const t of trades) { run += t.profit; cum.push(round2(run)); }
+
+  // 資產曲線 = 期末淨值往回推。沒有帳戶資料就不畫。
+  let equitySeries = null;
+  if (account && cum.length > 1) {
+    const end = account.equity;
+    equitySeries = cum.map((c) => round2(end - (cum[cum.length - 1] - c)));
+  }
+
+  // 滾動勝率：每一筆之後重算一次到目前為止的勝率
+  let wr = null;
+  if (trades.length > 1) {
+    let w = 0;
+    wr = trades.map((t, i) => { if (t.is_win) w += 1; return (w / (i + 1)) * 100; });
+  }
+
+  // 回撤序列：距離歷史高點的差距，畫成往下的走勢
+  let ddSeries = null;
+  if (cum.length > 1) {
+    let peak = 0;
+    ddSeries = cum.map((c) => { peak = Math.max(peak, c); return -(peak - c); });
+  }
+
+  const active = (srcRows || []).filter((r) => r.enabled !== false).length;
+  const total = (srcRows || []).length;
+
+  const cards = [
+    { k: "總資產", v: account ? money(account.equity, { compact: true }) : "—",
+      sub: account ? "餘額 " + money(account.balance, { compact: true }) : "尚未連上 MT5",
+      series: equitySeries, tone: "cyan", accent: "cyan" },
+    { k: "已實現損益", v: money(sum.net, { signed: true, compact: true }),
+      sub: sum.total + " 筆已平倉", cls: toneClass(sum.net),
+      series: cum.length > 1 ? cum : null, tone: sum.net >= 0 ? "up" : "down",
+      accent: sum.net >= 0 ? "win" : "loss" },
+    { k: "跟單來源", v: String(active),
+      sub: total ? "共 " + total + " 組 · 停用 " + (total - active) : "尚未設定",
+      series: null, accent: "violet" },
+    { k: "勝率", v: sum.total ? pct(sum.win_rate) : "—",
+      sub: sum.total ? "贏 " + sum.wins + " · 輸 " + sum.losses : "尚無平倉紀錄",
+      cls: "gold", series: wr, tone: "gold", accent: "gold" },
+    { k: "最大回撤", v: sum.max_dd ? "-" + money(sum.max_dd, { compact: true }).replace("$", "$") : "—",
+      sub: "從高點下來最深的一段", cls: sum.max_dd ? "down" : "",
+      series: ddSeries, tone: "down", accent: "loss" },
+  ];
+
+  host.innerHTML = cards.map((c) => `
+    <div class="dstat dstat--${c.accent || "gold"}">
+      <dt>${esc(c.k)}</dt>
+      <dd class="${c.cls || ""}">${esc(c.v)}</dd>
+      <span class="sub">${esc(c.sub)}</span>
+      ${c.series ? sparkSvg(c.series, c.tone) : '<span class="spark"></span>'}
+    </div>`).join("");
+}
+
+/* 勝負圓環。用兩段 stroke-dasharray 畫，不需要任何圖表函式庫。 */
+function renderDonut(sum) {
+  const host = $("donut");
+  const legend = $("donutLegend");
+  if (!host || !legend) return;
+
+  const R = 58, C = 2 * Math.PI * R, SW = 16;
+  const total = sum.total || 0;
+  const winFrac = total ? sum.wins / total : 0;
+
+  host.innerHTML = `<svg width="146" height="146" viewBox="0 0 146 146" role="img"
+      aria-label="勝負比例：贏 ${sum.wins} 筆、輸 ${sum.losses} 筆">
+    <circle cx="73" cy="73" r="${R}" fill="none" stroke="var(--sunk)" stroke-width="${SW}"/>
+    ${total ? `
+    <circle cx="73" cy="73" r="${R}" fill="none" stroke="var(--loss)" stroke-width="${SW}"
+            stroke-dasharray="${C}" stroke-dashoffset="0"/>
+    <circle cx="73" cy="73" r="${R}" fill="none" stroke="var(--win)" stroke-width="${SW}"
+            stroke-dasharray="${(C * winFrac).toFixed(2)} ${C}" stroke-linecap="butt"/>` : ""}
+  </svg>
+  <div class="donut-mid"><b>${total}</b><span>總交易</span></div>`;
+
+  const pctOf = (n) => total ? ((n / total) * 100).toFixed(1) + "%" : "—";
+  legend.innerHTML = `
+    <div><i style="background:var(--win)"></i><div>
+      <dt>獲利交易</dt><dd>${sum.wins}<em>${pctOf(sum.wins)}</em></dd>
+    </div></div>
+    <div><i style="background:var(--loss)"></i><div>
+      <dt>虧損交易</dt><dd>${sum.losses}<em>${pctOf(sum.losses)}</em></dd>
+    </div></div>
+    <div><i style="background:var(--gold-lit)"></i><div>
+      <dt>盈虧比</dt><dd>${sum.profit_factor == null ? "—" : sum.profit_factor.toFixed(2)}</dd>
+    </div></div>`;
+}
+
+/* 底部狀態列。全部是既有的狀態資料，只是搬到隨時看得到的位置。 */
+function renderStatusBar(stats, sum) {
+  const bar = $("statusBar");
+  if (!bar) return;
+
+  const running = !!(S.status && S.status.running);
+  const account = stats.account;
+
+  // 今日風險 = 今天已實現的虧損 ÷ 帳戶淨值。沒有設上限就只顯示數字不畫條。
+  const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
+  const todayLoss = (stats.trades || [])
+    .filter((t) => t.close_timestamp * 1000 >= dayStart.getTime() && t.profit < 0)
+    .reduce((a, t) => a + Math.abs(t.profit), 0);
+  const cap = Number((S.status && S.status.settings && S.status.settings.max_daily_loss) || 0);
+  const equity = account ? account.equity : 0;
+  const usedPct = cap ? (todayLoss / cap) * 100 : (equity ? (todayLoss / equity) * 100 : 0);
+  const meterCls = usedPct >= 100 ? "is-over" : usedPct >= 60 ? "is-warn" : "";
+
+  $("sbRun").innerHTML = `<span class="dot" style="background:${running ? "var(--ok)" : "var(--muted)"}"></span>
+    系統狀態 <b>${running ? "運行中" : "已停止"}</b>`;
+  $("sbTime").innerHTML = `伺服器時間 <span class="mono">${esc(
+    (account && account.server_time) || "—")}</span>`;
+  $("sbLink").innerHTML = `<span class="dot" style="background:${stats.connected ? "var(--ok)" : "var(--gold-lit)"}"></span>
+    MT5 <b>${stats.connected ? "已連線" : "未更新"}</b>`;
+  $("sbRisk").innerHTML = `今日虧損 <span class="mono">${money(todayLoss, { compact: true })}</span>` +
+    (cap ? ` <span class="mono">/ ${money(cap, { compact: true })}</span>` : "");
+  const meter = $("sbMeter");
+  meter.className = "sb-meter " + meterCls;
+  meter.firstElementChild.style.width = Math.min(100, Math.max(0, usedPct)) + "%";
+  meter.hidden = !cap && !equity;
+}
+
 function paintStats() {
   const stats = S.stats;
   if (!stats) return;
@@ -2093,6 +2732,9 @@ function paintStats() {
   renderBars(trades);
   renderSourcePerformance(trades, srcRows);
   renderRecords(trades);
+  renderDashStats(sum, account, trades, srcRows);
+  renderDonut(sum);
+  renderStatusBar(stats, sum);
 
   // 分頁列：完全沒設定過其他 EA 就不出現，訊號跟單畫面跟以前一模一樣
   const hasEa = (stats.ea_sources || []).length > 0;
@@ -2178,9 +2820,70 @@ function paintCentralHint(snap) {
 /* ----------------------------------------------------------------- auth */
 /* 登入閘門。後端每次 /api/status 都會回目前的登入狀態，前端只是照著畫；
    session token 一律留在後端，不會出現在瀏覽器裡。 */
+/* ------------------------------------------------------------------ side */
+/* 側欄的等級卡與方案功能清單。
+   每一項都直接讀 auth.entitlements 的欄位，不自己推斷、也不列出後端沒有的東西——
+   側欄上寫「可使用」但實際上被擋掉，比不顯示還糟。 */
+const TIER_ORDER = ["trial", "basic", "advanced", "flagship"];
+/* 到期進度條的滿格基準。方案多半是 30 天一期，用它當分母；
+   買一年的人會直接滿格，那是對的——剩很多就是剩很多。 */
+const TIER_FULL_DAYS = 30;
+
+function paintSide(a) {
+  const bar = $("sideBar");
+  if (!bar) return;
+  if (!a || !a.logged_in) { bar.hidden = true; return; }
+  bar.hidden = false;
+
+  $("sideTier").textContent = a.tier_label || a.tier || "—";
+
+  const exp = Number(a.expires_at || 0);
+  const wrap = $("sideMeterWrap");
+  if (exp) {
+    const d = new Date(exp * 1000);
+    const pad = (n) => String(n).padStart(2, "0");
+    $("sideExp").textContent = `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())}`;
+
+    const days = Math.floor((exp * 1000 - Date.now()) / 86400000);
+    const soon = days <= 7;
+    wrap.hidden = false;
+    $("sideMeter").style.width = Math.max(0, Math.min(100, (days / TIER_FULL_DAYS) * 100)) + "%";
+    wrap.classList.toggle("is-soon", soon);
+    const left = $("sideLeft");
+    left.textContent = days >= 0 ? `還剩 ${days} 天` : "已到期，請聯繫管理員續期";
+    left.classList.toggle("is-soon", soon);
+  } else {
+    $("sideExp").textContent = "無期限";
+    wrap.hidden = true;
+    $("sideLeft").textContent = "";
+  }
+
+  const e = a.entitlements || {};
+  const srcs = Array.isArray(e.sources) ? e.sources : [];
+  const has = (name) => srcs.indexOf(name) !== -1;
+  const maxLot = e.max_lot;
+
+  const rows = [
+    { label: "中頻訊號跟單", on: has(MID_SOURCE) },
+    { label: "高頻訊號跟單", on: has(HIGH_SOURCE) },
+    { label: "跟單手數上限", on: true,
+      value: maxLot == null ? "不限" : lots(maxLot) + " 手" },
+    { label: "馬丁策略設定", on: !!e.martingale },
+    { label: "分批止盈設定", on: !!e.partial_close },
+  ];
+
+  $("sideEnt").innerHTML = rows.map((r) => `
+    <li class="${r.on ? "" : "is-off"}">
+      ${r.on ? '<i class="dot dot--on"></i>' : '<i class="lockmark"></i>'}
+      <span>${esc(r.label)}</span>
+      ${r.value ? `<span class="val">${esc(r.value)}</span>` : ""}
+    </li>`).join("");
+}
+
 function paintAuth(snap) {
   if (!IS_CLIENT) return;
   const a = snap.auth || { logged_in: false };
+  paintSide(a);
   const gate = $("authGate");
   const locked = !a.logged_in;
   gate.classList.toggle("is-on", locked);
@@ -2378,8 +3081,8 @@ function applyTheme(mode) {
   if (at) at.textContent = glyph;
   try { localStorage.setItem(THEME_KEY, mode); } catch (e) { /* 無痕模式 */ }
 }
-let savedTheme = "light";
-try { if (localStorage.getItem(THEME_KEY) === "dark") savedTheme = "dark"; } catch (e) { /* 同上 */ }
+let savedTheme = "dark";
+try { if (localStorage.getItem(THEME_KEY) === "light") savedTheme = "light"; } catch (e) { /* 同上 */ }
 applyTheme(savedTheme);
 $("themeToggle").onclick = () =>
   applyTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark");

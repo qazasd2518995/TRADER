@@ -1,0 +1,45 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+
+  "//": [
+    "官網是純靜態、沒有建置步驟，所以不設 buildCommand。",
+    "outputDirectory 指向 website/ —— repo 根目錄是跟單系統的原始碼，不是網站。",
+    "cleanUrls 讓 /pricing 也能開（不必寫成 /pricing/）。"
+  ],
+
+  "buildCommand": null,
+  "outputDirectory": "website",
+  "framework": null,
+  "cleanUrls": true,
+  "trailingSlash": true,
+
+  "headers": [
+    {
+      "//": "帶指紋的靜態資源可以長快取；HTML 不行，改了要馬上生效。",
+      "source": "/assets/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
+      ]
+    },
+    {
+      "source": "/i18n/(.*)",
+      "headers": [
+        { "//": "語言檔會改，給短快取並要求重新驗證",
+          "key": "Cache-Control", "value": "public, max-age=300, must-revalidate" }
+      ]
+    },
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+        { "key": "X-Frame-Options", "value": "SAMEORIGIN" },
+        {
+          "//": "只開實際會用到的來源：TradingView 的 widget 與行情、Google Fonts、Instagram 連結。",
+          "key": "Content-Security-Policy",
+          "value": "default-src 'self'; script-src 'self' https://s3.tradingview.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://s3.tradingview.com https://static.tradingview.com; frame-src https://www.tradingview-widget.com https://s.tradingview.com; connect-src 'self' https://*.tradingview.com; base-uri 'self'; form-action 'none'; frame-ancestors 'self'"
+        }
+      ]
+    }
+  ]
+}

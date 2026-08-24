@@ -1,0 +1,1363 @@
+/* ============================================================================
+   site — 版面與元件
+
+   排版方法取自 tw.tradingview.com 的實測（研究筆記見 scratchpad/tv-layout-method.md）。
+   三個原則，第一版全部做反了：
+
+   1. 功能項目用「細線分隔的欄」，不是一格一格的圓角描邊盒子。
+   2. 每個功能配一張真的介面縮圖，不是圓角方塊裡放一個線條圖示。
+   3. 視覺刻意溢出容器、互相重疊，不是全部乖乖對齊在格線內。
+   ========================================================================== */
+
+/* ================================================================= 按鈕 === */
+/* 他們的按鈕是 pill 形。方角圓角按鈕滿街都是，pill + 右側小圖示是他們的手勢。 */
+.btn {
+  --btn-bg: transparent;
+  --btn-fg: var(--c-text);
+  --btn-bd: var(--c-line-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-3);
+  padding: 13px 26px;
+  border: 1px solid var(--btn-bd);
+  border-radius: var(--r-full);
+  background: var(--btn-bg);
+  color: var(--btn-fg);
+  font-family: var(--f-display);
+  font-size: var(--t-15);
+  font-weight: 700;
+  letter-spacing: -.01em;
+  white-space: nowrap;
+  transition: background-color 60ms var(--e-out),
+              border-color var(--d-base) var(--e-out),
+              color var(--d-base) var(--e-out),
+              transform 120ms var(--e-out),
+              box-shadow var(--d-base) var(--e-out);
+}
+.btn:hover { border-color: var(--c-text-2); background: var(--c-surface-2); }
+.btn:active { transform: translateY(1px); }
+.btn svg { width: 16px; height: 16px; flex: none; transition: transform var(--d-base) var(--e-out); }
+.btn:hover svg { transform: translateX(3px); }
+
+/* 主 CTA 白底 —— 深色頁面上白色的視覺重量最大，金色留給品牌標記與強調數字 */
+.btn--primary { --btn-bg: #FFFFFF; --btn-fg: #0A0A0B; --btn-bd: #FFFFFF; }
+.btn--primary:hover {
+  background: var(--c-gold-300); border-color: var(--c-gold-300); color: #0A0A0B;
+  box-shadow: 0 8px 32px -10px rgba(255, 224, 138, .55);
+}
+
+.btn--gold { --btn-bd: var(--c-gold-line); --btn-fg: var(--c-gold-300); }
+.btn--gold:hover { background: var(--c-gold-wash); border-color: var(--c-gold-500); color: var(--c-gold-300); }
+
+.btn--ghost { --btn-bd: transparent; --btn-fg: var(--c-text-2); }
+.btn--ghost:hover { --btn-fg: var(--c-text); border-color: var(--c-line); }
+
+.btn--lg { padding: 17px 34px; font-size: var(--t-16); }
+.btn--sm { padding: 9px 18px; font-size: var(--t-13); }
+.btn[aria-disabled="true"] { opacity: .45; pointer-events: none; }
+
+/* ================================================================ 金條標記 == */
+/* 產品的識別符號：一塊受光的金條。梯形取自實際金錠的脫模斜度。 */
+.bullion {
+  position: relative;
+  width: 30px; height: 20px;
+  flex: none;
+  background: var(--g-metal);
+  clip-path: polygon(11% 0, 89% 0, 100% 100%, 0 100%);
+  border-radius: 2px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.6), inset 0 -3px 5px rgba(0,0,0,.28);
+}
+.bullion::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: linear-gradient(105deg, transparent 38%, rgba(255,255,255,.75) 48%, transparent 58%);
+  clip-path: inherit;
+  transform: translateX(-120%);
+}
+.brand:hover .bullion::after { animation: sheen 1.1s var(--e-out); }
+@keyframes sheen { to { transform: translateX(120%); } }
+.bullion--sm { width: 22px; height: 15px; }
+
+/* ================================================================== 導覽 === */
+.nav {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 100;
+  height: var(--nav-h);
+  display: flex;
+  align-items: center;
+  transition: background-color var(--d-slow) var(--e-out),
+              border-color var(--d-slow) var(--e-out);
+  border-bottom: 1px solid transparent;
+}
+.nav.is-stuck {
+  background: rgba(10, 10, 11, .82);
+  backdrop-filter: saturate(1.6) blur(14px);
+  -webkit-backdrop-filter: saturate(1.6) blur(14px);
+  border-bottom-color: var(--c-line);
+}
+.nav > .wrap { display: flex; align-items: center; gap: var(--s-5); width: 100%; }
+
+.brand { display: inline-flex; align-items: center; gap: 10px; margin-right: auto; }
+.brand-name {
+  font-family: var(--f-display);
+  font-size: var(--t-16);
+  font-weight: 800;
+  letter-spacing: -.02em;
+  line-height: 1.05;
+}
+.brand-sub {
+  display: block;
+  font-family: var(--f-display);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .16em;
+  color: var(--c-text-3);
+}
+
+.nav-links { display: flex; align-items: center; gap: var(--s-1); }
+.nav-links a {
+  padding: 8px 14px;
+  border-radius: var(--r-full);
+  font-size: var(--t-14);
+  font-weight: 500;
+  color: var(--c-text-2);
+}
+.nav-links a:hover { color: var(--c-text); background: var(--c-surface-2); }
+.nav-links a[aria-current="page"] { color: var(--c-gold-400); }
+
+.nav-actions { display: flex; align-items: center; gap: var(--s-2); }
+
+/* 語言切換 */
+.lang { position: relative; }
+.lang-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 40px;
+  padding: 8px 12px;
+  border-radius: var(--r-full);
+  font-size: var(--t-13);
+  font-weight: 600;
+  color: var(--c-text-2);
+  transition: color var(--d-base), background-color var(--d-base);
+}
+.lang-btn:hover { color: var(--c-text); background: var(--c-surface-2); }
+.lang-btn svg { width: 15px; height: 15px; }
+.lang-caret { transition: transform var(--d-base) var(--e-out); }
+.lang-btn[aria-expanded="true"] .lang-caret { transform: rotate(180deg); }
+
+.lang-menu {
+  position: absolute; top: calc(100% + 8px); right: 0;
+  min-width: 148px;
+  padding: 6px;
+  background: var(--c-surface);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-3);
+  box-shadow: var(--sh-3);
+  opacity: 0; visibility: hidden;
+  transform: translateY(-6px) scale(.97);
+  transform-origin: top right;
+  transition: opacity var(--d-base) var(--e-out),
+              transform var(--d-base) var(--e-out),
+              visibility 0s linear var(--d-base);
+}
+.lang-menu.is-open { opacity: 1; visibility: visible; transform: none; transition-delay: 0s; }
+.lang-menu button {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s-3);
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: var(--r-2);
+  font-size: var(--t-14);
+  color: var(--c-text-2);
+  text-align: left;
+  transition: background-color var(--d-fast), color var(--d-fast);
+}
+.lang-menu button:hover { background: var(--c-surface-2); color: var(--c-text); }
+.lang-menu button[aria-selected="true"] { color: var(--c-gold-400); }
+.lang-menu button[aria-selected="true"]::after { content: '✓'; font-size: var(--t-12); }
+
+/* 漢堡 */
+.nav-burger { display: none; width: 40px; height: 40px; border-radius: var(--r-full); }
+.nav-burger:hover { background: var(--c-surface-2); }
+.nav-burger span {
+  display: block; width: 18px; height: 1.5px; margin: 4px auto;
+  background: var(--c-text);
+  border-radius: 2px;
+  transition: transform var(--d-base) var(--e-out), opacity var(--d-fast);
+}
+.nav-burger[aria-expanded="true"] span:nth-child(1) { transform: translateY(5.5px) rotate(45deg); }
+.nav-burger[aria-expanded="true"] span:nth-child(2) { opacity: 0; }
+.nav-burger[aria-expanded="true"] span:nth-child(3) { transform: translateY(-5.5px) rotate(-45deg); }
+
+@media (max-width: 960px) {
+  .nav-burger { display: block; }
+  .nav-links {
+    position: fixed;
+    inset: var(--nav-h) 0 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    padding: var(--s-4) var(--pad-x) var(--s-6);
+    overflow-y: auto;
+    background: rgba(10,10,11,.97);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    transform: translateY(-8px);
+    opacity: 0; visibility: hidden;
+    transition: opacity var(--d-base) var(--e-out),
+                transform var(--d-base) var(--e-out),
+                visibility 0s linear var(--d-base);
+  }
+  .nav-links.is-open { opacity: 1; visibility: visible; transform: none; transition-delay: 0s; }
+  .nav-links a { padding: 16px 4px; font-size: var(--t-20); border-bottom: 1px solid var(--c-line); border-radius: 0; }
+  .nav-links a:hover { background: none; }
+  .nav-actions .btn--primary { display: none; }
+}
+
+/* ================================================================== Hero === */
+.hero {
+  position: relative;
+  padding-top: calc(var(--nav-h) + var(--v-2));
+  padding-bottom: calc(var(--v-1) * .8);
+  min-height: min(88vh, 900px);
+  display: flex; align-items: center;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+/* 氛圍層。四層疊出深度，由下往上：
+   1) 生成的金色地貌照片（Codex 內建 ImageGen 產出，非 TradingView 素材）
+   2) 由上而下的暗色漸層，把標題後方壓暗到文字讀得清楚
+   3) 徑向金光
+   4) 顆粒噪點
+   換另一張背景只要改 --hero-img，assets/img/ 裡還有 molten 與 nebula 兩個版本。 */
+.hero-atmos {
+  --hero-img: url('/assets/img/hero-gold-topography.webp');
+  position: absolute; inset: 0; z-index: -1;
+  pointer-events: none;
+  background-image: var(--hero-img);
+  background-size: cover;
+  background-position: center 62%;
+}
+/* 壓暗層。文字落在畫面上半部，所以上面壓得比下面重。
+   沒有這一層的話，白色標題會踩在圖的亮處上讀不出來。 */
+.hero-atmos::before {
+  content: '';
+  position: absolute; inset: 0;
+  background:
+    linear-gradient(180deg,
+      rgba(10,10,11,.94) 0%,
+      rgba(10,10,11,.82) 38%,
+      rgba(10,10,11,.55) 68%,
+      rgba(10,10,11,.88) 100%),
+    radial-gradient(ellipse 60% 46% at 50% 34%,
+      rgba(212,160,23,.16) 0%, transparent 70%);
+}
+/* 下緣收邊，讓 hero 與底下的行情條無縫接上 */
+.hero-atmos::after {
+  content: '';
+  position: absolute; inset: auto 0 0; height: 22%;
+  background: linear-gradient(to top, var(--c-bg), transparent);
+}
+.grain {
+  position: absolute; inset: 0; z-index: -1;
+  pointer-events: none; opacity: .22; mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.42'/%3E%3C/svg%3E");
+}
+
+.hero-inner { position: relative; text-align: center; }
+
+.hero-badge {
+  display: inline-flex; align-items: center; gap: var(--s-2);
+  padding: 6px 14px 6px 6px;
+  margin-bottom: var(--s-6);
+  background: var(--c-surface);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-full);
+  font-size: var(--t-14);
+  color: var(--c-text-2);
+}
+.hero-badge b {
+  padding: 4px 11px;
+  border-radius: var(--r-full);
+  background: var(--c-gold-wash);
+  color: var(--c-gold-300);
+  font-family: var(--f-display);
+  font-size: var(--t-11);
+  font-weight: 800;
+  letter-spacing: .06em;
+}
+
+.hero h1 { max-width: 15ch; margin-inline: auto; }
+.hero h1 .line { display: block; }
+/* 斜線：中文用全形本身自帶邊距、英文沒有，尺寸與間距統一在這裡給 */
+.hero h1 .slash {
+  display: inline-block;
+  margin-inline: .06em;
+  font-family: var(--f-sans);
+  font-weight: 400;
+  color: var(--c-gold-500);
+  transform: translateY(-.04em);
+}
+
+.hero .lede { margin: var(--s-6) auto 0; text-align: center; }
+.hero-cta { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--s-3); margin-top: var(--v-5); }
+.hero-note { margin-top: var(--s-4); font-size: var(--t-14); color: var(--c-text-3); }
+
+.hero-inner > * { animation: rise .7s var(--e-out) both; }
+.hero-inner > *:nth-child(1) { animation-delay: .05s; }
+.hero-inner > *:nth-child(2) { animation-delay: .14s; }
+.hero-inner > *:nth-child(3) { animation-delay: .23s; }
+.hero-inner > *:nth-child(4) { animation-delay: .32s; }
+.hero-inner > *:nth-child(5) { animation-delay: .41s; }
+@keyframes rise { from { opacity: 0; transform: translateY(22px); } }
+
+/* ============================================================== 行情條 ==== */
+.tape { border-block: 1px solid var(--c-line); background: var(--c-surface); }
+.tape-inner { min-height: 46px; display: flex; align-items: center; }
+/* widget 在 iframe 內部自己畫了一圈淺色框，跨網域改不到。
+   把 iframe 每邊外推 1px 再由容器裁掉。寬高是它用行內樣式寫死的，故需 !important。 */
+.tape .tradingview-widget-container { width: 100%; overflow: hidden; }
+.tape iframe {
+  border: 0 !important; display: block;
+  margin: -1px !important; width: calc(100% + 2px) !important;
+}
+.tape-fallback { display: none; width: 100%; }
+.tape.is-fallback .tape-fallback { display: flex; gap: var(--s-6); overflow-x: auto; padding: 12px 0; }
+.tape.is-fallback .tradingview-widget-container { display: none; }
+.tape-item { display: flex; align-items: baseline; gap: var(--s-2); white-space: nowrap; font-size: var(--t-13); }
+.tape-item b { font-weight: 600; color: var(--c-text-2); }
+
+/* ============================================================== 三步驟 ==== */
+/* 沒有盒子。三欄之間一條 1px 細線，序號放大到 40px 當視覺錨點。 */
+.steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border-top: 1px solid var(--c-line);
+}
+.step {
+  padding: var(--v-4) var(--s-7) var(--v-4) 0;
+  border-left: 1px solid var(--c-line);
+  padding-left: var(--s-7);
+}
+.step:first-child { border-left: 0; padding-left: 0; }
+
+.step-n {
+  display: block;
+  margin-bottom: var(--s-5);
+  font-family: var(--f-mono);
+  font-size: var(--t-40);
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: -.04em;
+  color: var(--c-gold-500);
+  opacity: .5;
+  transition: opacity var(--d-slow) var(--e-out), color var(--d-slow) var(--e-out);
+}
+.step:hover .step-n { opacity: 1; color: var(--c-gold-400); }
+.step h3 { margin-bottom: var(--s-4); }
+.step p { color: var(--c-text-2); font-size: var(--t-16); line-height: 1.75; }
+
+@media (max-width: 900px) {
+  .steps { grid-template-columns: 1fr; }
+  .step { border-left: 0; padding: var(--v-5) 0; border-bottom: 1px solid var(--c-line); padding-left: 0; }
+  .step:last-child { border-bottom: 0; }
+}
+
+/* ============================================================== 功能區 ==== */
+/* 細線分隔的欄，不是描邊盒子。每一格上面是一張真的介面縮圖，
+   下面才是標題與說明 —— TradingView 的 31 張卡全部都是圖在上、字在下。 */
+.features {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border-top: 1px solid var(--c-line);
+}
+.feature {
+  display: flex;
+  flex-direction: column;
+  padding: var(--v-4) var(--s-7) var(--v-4) var(--s-7);
+  border-left: 1px solid var(--c-line);
+  border-bottom: 1px solid var(--c-line);
+  position: relative;
+}
+.feature:nth-child(3n+1) { border-left: 0; padding-left: 0; }
+.feature:nth-child(3n)   { padding-right: 0; }
+
+/* 游標經過時，那一格底下浮出一層很淡的金色，邊界靠細線本身，不加外框 */
+.feature::before {
+  content: '';
+  position: absolute; inset: 0;
+  background: radial-gradient(460px circle at var(--mx, 50%) var(--my, 20%), var(--c-gold-wash), transparent 62%);
+  opacity: 0;
+  transition: opacity var(--d-slow) var(--e-out);
+  pointer-events: none;
+}
+.feature:hover::before { opacity: 1; }
+
+.feature h3 { margin-bottom: var(--s-3); }
+.feature p { color: var(--c-text-2); font-size: var(--t-16); line-height: 1.75; }
+
+/* 縮圖區。固定高度讓三欄的文字底線對齊 —— 高度不一致是版面看起來鬆散的主因。 */
+.feature-shot {
+  height: 200px;
+  margin-bottom: var(--v-5);
+  display: flex;
+  align-items: flex-end;
+  position: relative;
+}
+
+@media (max-width: 1024px) {
+  .features { grid-template-columns: repeat(2, 1fr); }
+  .feature:nth-child(3n+1) { border-left: 1px solid var(--c-line); padding-left: var(--s-7); }
+  .feature:nth-child(3n)   { padding-right: var(--s-7); }
+  .feature:nth-child(2n+1) { border-left: 0; padding-left: 0; }
+  .feature:nth-child(2n)   { padding-right: 0; }
+}
+@media (max-width: 640px) {
+  .features { grid-template-columns: 1fr; }
+  .feature, .feature:nth-child(n) {
+    border-left: 0; padding-left: 0; padding-right: 0;
+    padding-block: var(--v-5);
+  }
+  .feature-shot { height: 170px; }
+}
+
+/* ==================================================== 介面縮圖共用零件 ==== */
+/* 這些是用 CSS 畫的產品介面片段，不是圖示。目的是讓人看到「東西長什麼樣」，
+   而不是看到一個抽象符號再自己想像。 */
+.mock {
+  width: 100%;
+  background: var(--c-surface);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-3);
+  overflow: hidden;
+  font-family: var(--f-mono);
+  font-size: var(--t-11);
+  font-variant-numeric: tabular-nums;
+  box-shadow: var(--sh-2);
+}
+.mock-head {
+  display: flex; align-items: center; gap: var(--s-2);
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--c-line);
+  background: var(--c-surface-2);
+  color: var(--c-text-3);
+  font-size: var(--t-10);
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+.mock-head b { color: var(--c-text-2); font-weight: 600; letter-spacing: 0; text-transform: none; }
+.mock-head .spacer { margin-left: auto; }
+.mock-row {
+  display: flex; align-items: center; gap: var(--s-3);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--c-line);
+  color: var(--c-text-2);
+}
+.mock-row:last-child { border-bottom: 0; }
+.mock-row .k { color: var(--c-text-3); }
+.mock-row .v { margin-left: auto; color: var(--c-text); }
+
+/* 狀態小點 */
+.dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--c-text-3); }
+.dot--on  { background: var(--c-up-2); box-shadow: 0 0 0 3px var(--c-up-wash); }
+.dot--off { background: var(--c-text-3); opacity: .5; }
+
+/* 標籤 */
+.tag {
+  padding: 2px 7px;
+  border-radius: var(--r-1);
+  background: var(--c-surface-3);
+  color: var(--c-text-2);
+  font-size: var(--t-10);
+  letter-spacing: .02em;
+}
+.tag--gold { background: var(--c-gold-wash); color: var(--c-gold-300); }
+.tag--up   { background: var(--c-up-wash);   color: var(--c-up-2); }
+.tag--off  { opacity: .45; }
+
+/* ---- ① 馬丁階梯 ---- */
+.ladder {
+  display: flex; align-items: flex-end; gap: 7px;
+  width: 100%; height: 100%;
+  padding: var(--s-4) var(--s-2) 0;
+}
+.rung {
+  flex: 1;
+  display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
+  gap: 7px; height: 100%;
+}
+.rung .lot { font-family: var(--f-mono); font-size: var(--t-10); color: var(--c-text-3); }
+.rung i {
+  width: 100%; height: var(--h);
+  background: var(--g-metal-soft);
+  border-radius: 3px 3px 0 0;
+  opacity: .5;
+  animation: rung-climb 4s var(--e-out) infinite;
+}
+.rung .lv {
+  width: 100%; padding-top: 6px;
+  border-top: 1px solid var(--c-line);
+  text-align: center;
+  font-family: var(--f-mono); font-size: var(--t-10); color: var(--c-text-3);
+}
+.rung:nth-child(1) i { animation-delay: 0s; }
+.rung:nth-child(2) i { animation-delay: .28s; }
+.rung:nth-child(3) i { animation-delay: .56s; }
+.rung:nth-child(4) i { animation-delay: .84s; }
+.rung:nth-child(5) i { animation-delay: 1.12s; }
+@keyframes rung-climb {
+  0%, 8%    { opacity: .5; }
+  16%, 42%  { opacity: 1; }
+  58%, 100% { opacity: .5; }
+}
+
+/* ---- ④ 風險量表 ---- */
+.gauge { padding: var(--s-4) 12px 14px; }
+.gauge-top { display: flex; align-items: baseline; gap: var(--s-2); margin-bottom: 10px; }
+.gauge-v { font-size: var(--t-28); color: var(--c-text); letter-spacing: -.03em; line-height: 1; }
+.gauge-max { color: var(--c-text-3); }
+.gauge-bar { height: 6px; border-radius: var(--r-full); background: var(--c-surface-3); overflow: hidden; }
+.gauge-fill {
+  height: 100%; width: 23%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--c-up), var(--c-gold-500));
+  animation: gauge-in 1.6s var(--e-out) both;
+}
+@keyframes gauge-in { from { width: 0; } }
+.gauge-note { margin-top: 10px; color: var(--c-text-3); }
+
+/* ---- ⑤ 排程週條 ---- */
+.week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; padding: var(--s-4) 12px 12px; }
+.week-d { text-align: center; color: var(--c-text-3); font-size: var(--t-10); margin-bottom: 6px; }
+.week-bar { height: 46px; border-radius: 3px; background: var(--c-surface-3); position: relative; overflow: hidden; }
+.week-bar i {
+  position: absolute; left: 0; right: 0;
+  top: var(--from); bottom: var(--to);
+  background: var(--g-metal-soft);
+  opacity: .8;
+}
+.week-bar--off i { background: var(--c-surface-3); opacity: 1; }
+
+/* ---- ⑥ 績效曲線 ---- */
+.spark { padding: var(--s-3) 12px 12px; }
+.spark svg { width: 100%; height: 68px; display: block; }
+.spark-path { fill: none; stroke: var(--c-up-2); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.spark-area { fill: url(#sparkFill); }
+.spark-foot { display: flex; gap: var(--s-4); margin-top: 10px; color: var(--c-text-3); }
+.spark-foot b { color: var(--c-text); font-weight: 500; }
+
+/* ================================================================= 數據 === */
+/* 一樣去掉盒子。四個數字用細線隔開，字級拉到 --t-hero 等級當視覺主體。 */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  border-block: 1px solid var(--c-line);
+}
+.stat {
+  padding: var(--v-4) var(--s-6);
+  border-left: 1px solid var(--c-line);
+}
+.stat:first-child { border-left: 0; padding-left: 0; }
+.stat-v {
+  display: block;
+  font-family: var(--f-display);
+  font-size: clamp(2.5rem, 4.4vw, 4rem);
+  font-weight: 800;
+  letter-spacing: -.045em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.stat-k { display: block; margin-top: var(--s-4); font-size: var(--t-14); color: var(--c-text-3); }
+
+.disclaimer {
+  margin-top: var(--v-5);
+  font-size: var(--t-13);
+  color: var(--c-text-3);
+  line-height: 1.8;
+  max-width: 92ch;
+}
+.disclaimer b { color: var(--c-text-2); font-weight: 600; }
+
+@media (max-width: 860px) {
+  .stats { grid-template-columns: repeat(2, 1fr); }
+  .stat { padding: var(--v-5) var(--s-5); border-top: 1px solid var(--c-line); }
+  .stat:nth-child(2n+1) { border-left: 0; padding-left: 0; }
+  .stat:nth-child(-n+2) { border-top: 0; }
+}
+
+/* ============================================================== 圖表展示 == */
+.showcase { display: grid; grid-template-columns: 1fr 1.25fr; gap: var(--v-3); align-items: center; }
+.chart-frame {
+  position: relative;
+  padding: var(--s-4);
+  background: var(--c-surface);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-5);
+  box-shadow: var(--sh-3);
+}
+.chart-bar {
+  display: flex; align-items: center; gap: var(--s-3);
+  padding: 0 var(--s-2) var(--s-3);
+  margin-bottom: var(--s-3);
+  border-bottom: 1px solid var(--c-line);
+  font-size: var(--t-13);
+}
+.chart-sym { font-family: var(--f-display); font-weight: 800; letter-spacing: -.01em; }
+.chart-tf { padding: 3px 9px; border-radius: var(--r-1); background: var(--c-surface-2); color: var(--c-text-3); font-size: var(--t-11); }
+.chart-last { margin-left: auto; font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.chart-host { height: 340px; }
+.chart-host[data-failed] { display: grid; place-items: center; color: var(--c-text-3); font-size: var(--t-13); }
+
+/* 勾選清單。取代原本的圓角圖示卡，直接列事實。 */
+.checks { display: grid; gap: var(--s-4); margin-top: var(--v-5); }
+.checks li { display: flex; gap: var(--s-3); font-size: var(--t-16); color: var(--c-text-2); line-height: 1.6; }
+.checks li::before {
+  content: '';
+  flex: none; width: 18px; height: 18px; margin-top: 3px;
+  background: currentColor; color: var(--c-up-2);
+  -webkit-mask: var(--icon-check) center / 18px no-repeat;
+          mask: var(--icon-check) center / 18px no-repeat;
+}
+:root {
+  --icon-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M13.5 4.5l-7 7-4-4' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+@media (max-width: 960px) { .showcase { grid-template-columns: 1fr; } .chart-host { height: 260px; } }
+
+/* ============================================================ 會員端預覽 == */
+/* 刻意讓截圖比容器寬 —— TradingView 的產品圖都是溢出的，
+   全部乖乖框在格線裡是版面顯得拘謹的原因。 */
+.preview-bleed {
+  margin-top: var(--v-3);
+  position: relative;
+}
+.preview-bleed::after {
+  content: '';
+  position: absolute; inset: auto 0 0; height: 34%;
+  background: linear-gradient(to top, var(--c-bg), transparent);
+  pointer-events: none;
+}
+/* 104% 是刻意讓截圖溢出容器邊緣（設計上的「破格」）。
+   但只有在版面兩側留白夠寬時才安全 —— 窄螢幕上那 4% 會撐出水平捲軸。
+   1100px 以下改成不溢出。 */
+.laptop { position: relative; width: min(1180px, 100%); margin-inline: auto; }
+@media (min-width: 1100px) {
+  .laptop { width: min(1180px, 104%); }
+}
+.laptop-screen {
+  padding: 12px 12px 0;
+  background: linear-gradient(160deg, #34343A, #1A1A1D);
+  border-radius: 16px 16px 0 0;
+  border: 1px solid var(--c-line-strong);
+  border-bottom: 0;
+}
+/* height:auto 這裡再寫一次是刻意的。base.css 已經有全域規則，
+   但這條規則動了 width，萬一將來載入順序改了、全域那條沒進來，
+   img 上的 height 屬性就會變成固定高度把圖拉扁。這種 bug 很難一眼看出來。 */
+.laptop-screen img {
+  display: block; width: 100%; height: auto;
+  border-radius: 5px 5px 0 0; background: var(--c-bg);
+}
+.laptop-base {
+  height: 15px;
+  background: linear-gradient(180deg, #2A2A2E, #1A1A1D);
+  border: 1px solid var(--c-line-strong);
+  border-radius: 0 0 16px 16px;
+  position: relative;
+}
+.laptop-base::after {
+  content: '';
+  position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+  width: 96px; height: 4px; background: #0A0A0B; border-radius: 0 0 4px 4px;
+}
+
+/* ================================================================ 方案 ==== */
+/* 四欄同框、內部用細線分隔 —— 這是 TradingView 定價頁的做法，
+   不是四張各自漂浮的卡片。 */
+.plans {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-5);
+  overflow: hidden;
+  position: relative;
+}
+.plans::before {
+  content: '';
+  position: absolute; inset: 0 0 auto; height: 2px; z-index: 2;
+  background: linear-gradient(90deg,
+    transparent, var(--c-plan-plus) 28%, var(--c-plan-pro) 58%, var(--c-plan-premium) 86%, transparent);
+}
+
+.plan {
+  --plan: var(--c-text-2);
+  display: flex; flex-direction: column;
+  padding: var(--v-4) var(--s-6);
+  border-left: 1px solid var(--c-line);
+  position: relative;
+  transition: background-color var(--d-slow) var(--e-out);
+}
+.plan:first-child { border-left: 0; }
+.plan:hover { background: var(--c-surface); }
+
+.plan--free    { --plan: var(--c-plan-free); }
+.plan--plus    { --plan: var(--c-plan-plus); }
+.plan--pro     { --plan: var(--c-plan-pro); }
+.plan--premium { --plan: var(--c-plan-premium); }
+
+.plan--featured { background: var(--c-surface); }
+
+.plan-tag {
+  align-self: flex-start;
+  margin-bottom: var(--s-3);
+  padding: 4px 11px;
+  border-radius: var(--r-full);
+  background: var(--plan);
+  color: #0A0A0B;
+  font-family: var(--f-display);
+  font-size: var(--t-11);
+  font-weight: 800;
+  letter-spacing: .03em;
+}
+.plan-tag--ghost { background: transparent; color: var(--c-text-3); border: 1px solid var(--c-line); }
+
+.plan-name {
+  font-family: var(--f-display);
+  font-size: var(--t-22);
+  font-weight: 800;
+  letter-spacing: .01em;
+  color: var(--plan);
+}
+.plan-price { display: flex; align-items: baseline; gap: 5px; margin-top: var(--s-4); }
+.plan-price .cur { font-size: var(--t-15); color: var(--c-text-3); }
+.plan-price .amt {
+  font-family: var(--f-display);
+  font-size: var(--t-48);
+  font-weight: 800;
+  letter-spacing: -.04em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.plan-price .per { font-size: var(--t-14); color: var(--c-text-3); }
+
+.plan-feats { margin: var(--v-5) 0 var(--s-6); display: grid; gap: 12px; }
+.plan-feats li { display: flex; gap: var(--s-2); font-size: var(--t-14); color: var(--c-text-2); line-height: 1.55; }
+.plan-feats li::before {
+  content: '';
+  flex: none; width: 15px; height: 15px; margin-top: 3px;
+  background: currentColor; color: var(--c-up-2);
+  -webkit-mask: var(--icon-check) center / 15px no-repeat;
+          mask: var(--icon-check) center / 15px no-repeat;
+}
+.plan .btn { margin-top: auto; width: 100%; }
+
+@media (max-width: 1000px) {
+  .plans { grid-template-columns: repeat(2, 1fr); }
+  .plan:nth-child(2n+1) { border-left: 0; }
+  .plan:nth-child(n+3)  { border-top: 1px solid var(--c-line); }
+}
+@media (max-width: 560px) {
+  .plans { grid-template-columns: 1fr; }
+  .plan { border-left: 0; border-top: 1px solid var(--c-line); }
+  .plan:first-child { border-top: 0; }
+}
+
+/* ================================================================== FAQ === */
+.faq { max-width: var(--w-text); margin-inline: auto; border-top: 1px solid var(--c-line); }
+.faq-item { border-bottom: 1px solid var(--c-line); }
+.faq-q {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s-5);
+  width: 100%;
+  padding: var(--s-7) 0;
+  font-family: var(--f-display);
+  font-size: var(--t-20);
+  font-weight: 700;
+  letter-spacing: -.015em;
+  text-align: left;
+  transition: color var(--d-base);
+}
+.faq-q:hover { color: var(--c-gold-400); }
+.faq-q .plus { flex: none; position: relative; width: 18px; height: 18px; }
+.faq-q .plus::before, .faq-q .plus::after {
+  content: '';
+  position: absolute; inset: 50% 0 auto;
+  height: 1.5px; background: currentColor; border-radius: 2px;
+  transition: transform var(--d-slow) var(--e-out), opacity var(--d-base);
+}
+.faq-q .plus::after { transform: rotate(90deg); }
+.faq-q[aria-expanded="true"] .plus::after { transform: rotate(0); opacity: 0; }
+
+/* grid-template-rows 0fr→1fr 是唯一能對「未知高度」做 CSS 過場的做法 */
+.faq-a { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--d-slow) var(--e-out); }
+.faq-q[aria-expanded="true"] + .faq-a { grid-template-rows: 1fr; }
+.faq-a > div { overflow: hidden; }
+.faq-a p {
+  padding-bottom: var(--s-7);
+  max-width: 76ch;
+  color: var(--c-text-2);
+  font-size: var(--t-16);
+  line-height: 1.85;
+}
+
+/* ============================================================== 收尾 CTA == */
+/* margin-inline:auto 不能少。.measure 只負責限寬、不負責置中
+   （靠左的段落標題要跟下方網格的左緣切齊），所以本來就置中排版的元件
+   得自己置中，不然會變成一塊靠左的 1000px 區塊裡放置中文字，整段偏左。 */
+.cta-band {
+  text-align: center; position: relative;
+  padding-block: var(--v-2);
+  margin-inline: auto;
+}
+.cta-band::before {
+  content: '';
+  position: absolute; inset: 0 auto auto 50%;
+  transform: translateX(-50%);
+  width: min(900px, 100%); height: 1px;
+  background: linear-gradient(90deg, transparent, var(--c-gold-line), transparent);
+}
+.cta-band h2 { max-width: 18ch; margin-inline: auto; }
+.cta-band .lede { margin: var(--s-5) auto 0; }
+.cta-band .btn { margin-top: var(--v-5); }
+
+/* ================================================================ Footer == */
+.foot { border-top: 1px solid var(--c-line); background: var(--c-bg-2); padding-block: var(--v-3) var(--v-5); }
+.foot-grid { display: grid; grid-template-columns: 1.7fr repeat(3, 1fr); gap: var(--v-4) var(--s-6); }
+.foot-brand .lede { font-size: var(--t-15); margin-top: var(--s-4); max-width: 32ch; line-height: 1.7; }
+.foot h3 {
+  font-size: var(--t-12);
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--c-text-3);
+  margin-bottom: var(--s-5);
+}
+.foot li + li { margin-top: 12px; }
+.foot li a {
+  display: inline-block;
+  font-size: var(--t-15); color: var(--c-text-2);
+}
+.foot li a:hover { color: var(--c-gold-400); }
+
+/* 觸控裝置上把點擊範圍撐到 44px（WCAG 2.5.5 的建議值）。
+   用 pointer:coarse 而不是螢幕寬度 —— 決定因素是「用手指還是滑鼠」，
+   不是視窗多寬。桌機縮小視窗不該讓 Footer 突然變鬆。 */
+@media (pointer: coarse) {
+  .foot li + li { margin-top: 2px; }
+  .foot li a { padding-block: 11px; }
+  .lang-menu button { padding-block: 12px; }
+}
+
+/* 社群 */
+.social { display: flex; gap: var(--s-3); margin-top: var(--s-5); }
+.social a {
+  display: inline-flex; align-items: center; gap: var(--s-2);
+  padding: 9px 16px 9px 12px;
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-full);
+  font-size: var(--t-14);
+  font-weight: 600;
+  color: var(--c-text-2);
+  transition: border-color var(--d-base), color var(--d-base), background-color var(--d-base);
+}
+.social a:hover { color: var(--c-text); border-color: var(--c-line-strong); background: var(--c-surface); }
+.social svg { width: 17px; height: 17px; flex: none; }
+/* IG 的品牌漸層。hover 才上色，平常維持中性，免得footer變成彩色跑馬燈。 */
+.social a.ig:hover {
+  color: #fff;
+  border-color: transparent;
+  background: linear-gradient(45deg, #F09433, #E6683C 25%, #DC2743 50%, #CC2366 75%, #BC1888);
+}
+
+.foot-base {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-4);
+  margin-top: var(--v-4);
+  padding-top: var(--s-5);
+  border-top: 1px solid var(--c-line);
+  font-size: var(--t-13);
+  color: var(--c-text-3);
+}
+.foot-copy { margin-right: auto; }
+
+/* 免責聲明。字小但行距鬆，讓它是「可讀的正式文件」而不是「藏起來的細字」。 */
+.legal {
+  margin-top: var(--s-5);
+  padding-top: var(--s-5);
+  border-top: 1px solid var(--c-line);
+}
+.legal h3 { margin-bottom: var(--s-4); }
+.legal ol { counter-reset: legal; display: grid; gap: var(--s-3); max-width: 108ch; }
+.legal li {
+  counter-increment: legal;
+  position: relative;
+  padding-left: 28px;
+  font-size: var(--t-12);
+  line-height: 1.85;
+  color: var(--c-text-3);
+}
+.legal li::before {
+  content: counter(legal) ".";
+  position: absolute; left: 0; top: 0;
+  font-family: var(--f-mono);
+  color: var(--c-text-3);
+  opacity: .7;
+}
+.legal li b { color: var(--c-text-2); font-weight: 600; margin-right: .5em; }
+
+@media (max-width: 860px) {
+  .foot-grid { grid-template-columns: 1fr 1fr; }
+  .foot-brand { grid-column: 1 / -1; }
+}
+
+/* ============================================================ 月/年切換 == */
+.billing {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px; margin-top: var(--v-5);
+  background: var(--c-surface); border: 1px solid var(--c-line);
+  border-radius: var(--r-full);
+}
+.billing button {
+  padding: 9px 20px; border-radius: var(--r-full);
+  font-family: var(--f-display); font-size: var(--t-14); font-weight: 700;
+  color: var(--c-text-2);
+  transition: background-color var(--d-base), color var(--d-base);
+}
+.billing button:hover { color: var(--c-text); }
+.billing button[aria-selected="true"] { background: var(--c-surface-3); color: var(--c-text); }
+.billing-note {
+  display: inline-flex; align-items: center; gap: 7px;
+  margin-left: var(--s-3); padding: 6px 14px;
+  border-radius: var(--r-full);
+  background: var(--c-gold-wash); border: 1px solid var(--c-gold-line);
+  color: var(--c-gold-300);
+  font-size: var(--t-13); font-weight: 600;
+  opacity: 0; transform: translateX(-6px);
+  transition: opacity var(--d-base) var(--e-out), transform var(--d-base) var(--e-out);
+}
+.billing-note.is-on { opacity: 1; transform: none; }
+@media (max-width: 560px) {
+  .billing-note { display: flex; margin: var(--s-3) 0 0; }
+}
+
+/* ============================================================ 方案比較表 == */
+.cmp-wrap { position: relative; }
+.cmp {
+  width: 100%; border-collapse: collapse;
+  font-size: var(--t-14);
+}
+.cmp th, .cmp td { padding: 16px 14px; text-align: center; vertical-align: middle; }
+
+/* 表頭黏在導覽列下方 —— 表格很長，捲到一半看不到欄位是誰的話就沒用了 */
+.cmp thead th {
+  position: sticky; top: var(--nav-h); z-index: 5;
+  background: var(--c-bg-2);
+  border-bottom: 1px solid var(--c-line);
+  padding-block: 20px;
+}
+.section:not(.section--alt) .cmp thead th { background: var(--c-bg); }
+.cmp thead .plan-col { font-family: var(--f-display); font-size: var(--t-18); font-weight: 800; }
+.cmp thead .plan-col small { display: block; margin-top: 5px; font-size: var(--t-12); font-weight: 500; color: var(--c-text-3); }
+.cmp thead .p-free    { color: var(--c-plan-free); }
+.cmp thead .p-plus    { color: var(--c-plan-plus); }
+.cmp thead .p-pro     { color: var(--c-plan-pro); }
+.cmp thead .p-premium { color: var(--c-plan-premium); }
+
+/* 功能欄靠左，說明用小一級的灰字疊在下面 */
+.cmp .feat { text-align: left; width: 26%; min-width: 220px; }
+.cmp .feat b { display: block; font-size: var(--t-15); font-weight: 600; color: var(--c-text); }
+.cmp .feat span { display: block; margin-top: 4px; font-size: var(--t-12); color: var(--c-text-3); line-height: 1.6; }
+
+.cmp tbody tr { border-bottom: 1px solid var(--c-line); }
+.cmp tbody tr:hover { background: var(--c-surface); }
+.cmp tbody td { color: var(--c-text-2); line-height: 1.6; }
+.cmp tbody td small { display: block; margin-top: 3px; font-size: var(--t-12); color: var(--c-text-3); }
+
+/* ✓ / ✗。不能只靠顏色 —— 形狀本身就要能分辨。 */
+.mk { display: inline-block; width: 20px; height: 20px; }
+.mk--y { background: var(--c-up-2);   -webkit-mask: var(--icon-check) center / 20px no-repeat; mask: var(--icon-check) center / 20px no-repeat; }
+.mk--n { background: var(--c-text-3); -webkit-mask: var(--icon-cross) center / 15px no-repeat; mask: var(--icon-cross) center / 15px no-repeat; opacity: .6; }
+:root {
+  --icon-cross: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 3.5l9 9M12.5 3.5l-9 9' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+
+/* 摺疊：預設只顯示前 8 列，底部一層漸層遮罩暗示還有東西 */
+.cmp-wrap:not(.is-open) .cmp tbody tr:nth-child(n+9) { display: none; }
+.cmp-fade {
+  position: absolute; inset: auto 0 0; height: 120px;
+  background: linear-gradient(to top, var(--c-bg-2), transparent);
+  pointer-events: none;
+}
+.section:not(.section--alt) .cmp-fade { background: linear-gradient(to top, var(--c-bg), transparent); }
+.cmp-wrap.is-open .cmp-fade { display: none; }
+.cmp-more { display: flex; justify-content: center; margin-top: var(--v-5); }
+
+/* 手機：橫向捲動的表格沒人看，改成一個方案一張卡 */
+.cmp-cards { display: none; }
+@media (max-width: 900px) {
+  .cmp-wrap { display: none; }
+  .cmp-more { display: none; }
+  .cmp-cards { display: grid; gap: var(--s-5); }
+  .cmp-card {
+    border: 1px solid var(--c-line); border-radius: var(--r-4);
+    background: var(--c-surface); overflow: hidden;
+  }
+  .cmp-card > h3 {
+    padding: var(--s-5) var(--s-5) var(--s-4);
+    font-family: var(--f-display); font-size: var(--t-20); font-weight: 800;
+    border-bottom: 1px solid var(--c-line);
+  }
+  .cmp-card dl { margin: 0; }
+  .cmp-card div {
+    display: flex; align-items: flex-start; gap: var(--s-4);
+    padding: 12px var(--s-5); border-bottom: 1px solid var(--c-line);
+  }
+  .cmp-card div:last-child { border-bottom: 0; }
+  .cmp-card dt { flex: 1; font-size: var(--t-14); color: var(--c-text-2); }
+  .cmp-card dd { margin: 0; text-align: right; font-size: var(--t-14); color: var(--c-text); max-width: 55%; }
+  /* 副標要自己一行。桌機版的 block 規則掛在 td 上，卡片裡的 dd 吃不到。 */
+  .cmp-card dd small { display: block; margin-top: 3px; font-size: var(--t-12); color: var(--c-text-3); }
+}
+
+/* ============================================================ 保證區塊 ==== */
+.assure { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--c-line); }
+.assure > div {
+  padding: var(--v-4) var(--s-6);
+  border-left: 1px solid var(--c-line);
+}
+.assure > div:first-child { border-left: 0; padding-left: 0; }
+.assure .ico {
+  width: 34px; height: 34px; margin-bottom: var(--s-4);
+  display: grid; place-items: center;
+  color: var(--c-gold-400);
+}
+.assure .ico svg { width: 26px; height: 26px; }
+.assure h3 { font-size: var(--t-18); margin-bottom: var(--s-3); }
+.assure p { font-size: var(--t-14); color: var(--c-text-2); line-height: 1.75; }
+
+@media (max-width: 1000px) {
+  .assure { grid-template-columns: repeat(2, 1fr); }
+  .assure > div:nth-child(2n+1) { border-left: 0; padding-left: 0; }
+  .assure > div:nth-child(n+3) { border-top: 1px solid var(--c-line); }
+}
+@media (max-width: 560px) {
+  .assure { grid-template-columns: 1fr; }
+  .assure > div { border-left: 0; padding-inline: 0; border-top: 1px solid var(--c-line); }
+  .assure > div:first-child { border-top: 0; }
+}
+
+/* 頁尾註記 */
+.fineprint {
+  display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-6);
+  margin-top: var(--v-5);
+  font-size: var(--t-12); color: var(--c-text-3);
+}
+
+/* ============================================================ 頁面 Hero == */
+/* 內頁的 hero 比首頁矮，也不放大圖 —— 內頁是來辦事的，不是來被說服的 */
+.page-hero {
+  padding-top: calc(var(--nav-h) + var(--v-3));
+  padding-bottom: var(--v-3);
+  text-align: center;
+  position: relative;
+  border-bottom: 1px solid var(--c-line);
+}
+.page-hero::before {
+  content: '';
+  position: absolute; inset: 0; z-index: -1;
+  background: radial-gradient(ellipse 70% 100% at 50% 0%, rgba(212,160,23,.14), transparent 66%);
+}
+.page-hero .lede { margin: var(--s-5) auto 0; }
+
+/* ========================================================== 交錯圖文區 ==== */
+/* 功能頁的主體。左右交錯，方向逐段翻轉 —— 全部同一邊會變成一長條清單。 */
+.alt-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--v-3);
+  align-items: center;
+  padding-block: var(--v-3);
+  border-top: 1px solid var(--c-line);
+}
+.alt-row:first-of-type { border-top: 0; }
+/* 偶數段把視覺換到左邊。用 order 而不是重排 HTML，
+   這樣手機上收成一欄時順序仍然是「標題 → 說明 → 圖」。 */
+.alt-row:nth-child(even) .alt-media { order: -1; }
+
+.alt-num {
+  display: block;
+  font-family: var(--f-mono);
+  font-size: var(--t-14);
+  letter-spacing: .1em;
+  color: var(--c-gold-500);
+  margin-bottom: var(--s-4);
+}
+.alt-row h2 { font-size: var(--t-feature); }
+.alt-row > div > p { margin-top: var(--s-5); color: var(--c-text-2); font-size: var(--t-16); line-height: 1.8; }
+.alt-points { display: grid; gap: var(--s-3); margin-top: var(--v-5); }
+.alt-points li {
+  display: flex; gap: var(--s-3);
+  font-size: var(--t-14); color: var(--c-text-2); line-height: 1.6;
+}
+.alt-points li::before {
+  content: ''; flex: none;
+  width: 16px; height: 16px; margin-top: 3px;
+  background: currentColor; color: var(--c-up-2);
+  -webkit-mask: var(--icon-check) center / 16px no-repeat;
+          mask: var(--icon-check) center / 16px no-repeat;
+}
+.alt-media { display: flex; justify-content: center; }
+.alt-media > * { width: 100%; max-width: 420px; }
+
+@media (max-width: 900px) {
+  .alt-row { grid-template-columns: 1fr; gap: var(--v-5); }
+  .alt-row:nth-child(even) .alt-media { order: 0; }
+}
+
+/* ============================================================== 下載頁 ==== */
+.dl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-5); }
+.dl-card {
+  display: flex; flex-direction: column;
+  padding: var(--v-4) var(--s-7);
+  background: var(--c-surface);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-4);
+  transition: border-color var(--d-slow) var(--e-out);
+}
+.dl-card:hover { border-color: var(--c-line-strong); }
+/* JS 偵測到作業系統後會加這個 class，把對應的那張排到前面並標起來 */
+.dl-card.is-you { border-color: var(--c-gold-line); order: -1; }
+.dl-os { width: 34px; height: 34px; margin-bottom: var(--s-4); color: var(--c-text-2); }
+.dl-card h2 { font-size: var(--t-24); }
+.dl-card p { margin-top: var(--s-3); font-size: var(--t-14); color: var(--c-text-3); }
+.dl-you {
+  display: none; align-self: flex-start;
+  margin-top: var(--s-3); padding: 4px 11px;
+  border-radius: var(--r-full);
+  background: var(--c-gold-wash); border: 1px solid var(--c-gold-line);
+  color: var(--c-gold-300); font-size: var(--t-12); font-weight: 600;
+}
+.dl-card.is-you .dl-you { display: inline-block; }
+.dl-card .btn { margin-top: var(--v-5); align-self: flex-start; }
+.dl-ver { margin-top: var(--s-3); font-family: var(--f-mono); font-size: var(--t-12); color: var(--c-text-3); }
+
+@media (max-width: 720px) { .dl-grid { grid-template-columns: 1fr; } }
+
+/* 安裝步驟：編號用超大的字當視覺錨，細線分隔 */
+.steps-num { display: grid; gap: 0; border-top: 1px solid var(--c-line); }
+.steps-num > li {
+  display: grid; grid-template-columns: 96px minmax(0, 1fr);
+  gap: var(--s-6);
+  padding-block: var(--v-4);
+  border-bottom: 1px solid var(--c-line);
+}
+.steps-num .n {
+  font-family: var(--f-display);
+  font-size: var(--t-48); font-weight: 800;
+  line-height: 1; letter-spacing: -.05em;
+  color: var(--c-surface-3);
+}
+.steps-num h3 { margin-bottom: var(--s-3); }
+.steps-num p { color: var(--c-text-2); font-size: var(--t-16); line-height: 1.8; max-width: 74ch; }
+.steps-num code {
+  font-family: var(--f-mono); font-size: .92em;
+  padding: 2px 6px; border-radius: var(--r-1);
+  background: var(--c-surface-2); color: var(--c-gold-300);
+}
+@media (max-width: 640px) {
+  .steps-num > li { grid-template-columns: 1fr; gap: var(--s-3); }
+  .steps-num .n { font-size: var(--t-32); }
+}
+
+/* 需求表 */
+.req { width: 100%; border-collapse: collapse; border-top: 1px solid var(--c-line); }
+.req th, .req td { padding: 16px 0; text-align: left; vertical-align: top; border-bottom: 1px solid var(--c-line); }
+.req th { width: 200px; font-size: var(--t-14); font-weight: 600; color: var(--c-text-3); }
+.req td { font-size: var(--t-15); color: var(--c-text-2); line-height: 1.7; }
+@media (max-width: 640px) {
+  .req th, .req td { display: block; border-bottom: 0; padding-block: 4px; }
+  .req th { width: auto; padding-top: 16px; }
+  .req tr { display: block; border-bottom: 1px solid var(--c-line); padding-bottom: 12px; }
+}
+
+/* ============================================================== 支援頁 ==== */
+.faq-cat { margin-top: var(--v-3); }
+.faq-cat:first-of-type { margin-top: 0; }
+.faq-cat > h2 {
+  font-size: var(--t-20); font-weight: 800;
+  margin-bottom: var(--s-5);
+  color: var(--c-gold-400);
+}
+
+.contact-card {
+  display: grid; grid-template-columns: minmax(0,1fr) auto;
+  gap: var(--v-5);
+  align-items: center;
+  padding: var(--v-4) var(--s-7);
+  background: var(--c-surface);
+  border: 1px solid var(--c-gold-line);
+  border-radius: var(--r-4);
+}
+.contact-card h2 { font-size: var(--t-24); margin-bottom: var(--s-3); }
+.contact-card p { color: var(--c-text-2); font-size: var(--t-15); line-height: 1.7; }
+.contact-card .hours { margin-top: var(--s-4); font-size: var(--t-12); color: var(--c-text-3); }
+@media (max-width: 760px) {
+  .contact-card { grid-template-columns: 1fr; }
+}
+
+.terms-note {
+  margin-top: var(--v-3);
+  padding: var(--v-5) var(--s-6);
+  border: 1px dashed var(--c-line-strong);
+  border-radius: var(--r-3);
+}
+.terms-note h2 { font-size: var(--t-18); margin-bottom: var(--s-3); }
+.terms-note p { font-size: var(--t-14); color: var(--c-text-3); line-height: 1.8; max-width: 88ch; }
+
+/* ============================================================ 區塊氛圍層 == */
+/* 每個區塊給一張自己的背景。這些圖是刻意做得很暗、細節集中在邊緣的
+   （中央保持近黑，因為上面要壓白字），所以還要再蓋一層漸層把中央再壓暗一次，
+   文字對比才穩。整組四張加起來 77 KB。 */
+.section--bg { position: relative; isolation: isolate; overflow: hidden; }
+.section--bg::before {
+  content: '';
+  position: absolute; inset: 0; z-index: -2;
+  background-image: var(--bg-img);
+  background-size: cover;
+  background-position: var(--bg-pos, center);
+  opacity: var(--bg-opacity, .5);
+}
+/* 壓暗層：上下各一道，讓區塊之間的接縫看不出來，中央也保持可讀。 */
+.section--bg::after {
+  content: '';
+  position: absolute; inset: 0; z-index: -1;
+  background:
+    linear-gradient(180deg, var(--bg-fade) 0%, transparent 22%, transparent 78%, var(--bg-fade) 100%),
+    radial-gradient(ellipse 62% 54% at 50% 50%, var(--bg-fade) 0%, transparent 76%);
+}
+.section--bg              { --bg-fade: var(--c-bg); }
+.section--bg.section--alt { --bg-fade: var(--c-bg-2); }
+
+.bg-flow   { --bg-img: url('/assets/img/bg-flow.webp'); }
+.bg-grid   { --bg-img: url('/assets/img/bg-grid.webp'); }
+.bg-aurora { --bg-img: url('/assets/img/bg-aurora.webp'); }
+.bg-dust   { --bg-img: url('/assets/img/bg-dust.webp'); }
+
+/* 極光那張的亮部在上緣，翻轉過來讓它從區塊底部往上暈，
+   接到下一個區塊時比較順 */
+.bg-aurora { --bg-pos: center; transform: none; }
+.bg-aurora::before { transform: scaleY(-1); }
+
+@media (prefers-reduced-motion: no-preference) {
+  /* 極慢的位移，讓背景不是一張死圖。幅度很小，捲動時才會注意到。 */
+  .section--bg::before { transition: background-position 1.2s var(--e-out); }
+}
+
+/* ============================================================ TV Widgets == */
+/* 統一的容器。widget 載不到時 .is-fallback 會把備援內容換上來，
+   版面高度由 min-height 撐住，不會因為載入失敗就塌掉。 */
+.tv-slot { position: relative; }
+.tv-slot .tv-widget { width: 100%; }
+.tv-slot .tv-fallback { display: none; }
+.tv-slot.is-fallback .tv-widget { display: none; }
+.tv-slot.is-fallback .tv-fallback { display: block; }
+
+/* widget 在 iframe 內部畫了一圈淺色框，跨網域改不到。
+   每邊外推 1px 再由容器裁掉。寬高是它用行內樣式寫死的，所以要 !important。 */
+.tv-slot .tradingview-widget-container { overflow: hidden; border-radius: inherit; }
+.tv-slot iframe {
+  border: 0 !important; display: block;
+  margin: -1px !important; width: calc(100% + 2px) !important;
+}
+
+/* widget 底下那行「TradingView 提供」的版權列是嵌入條款要求保留的，
+   不能移除，但可以讓它不要那麼跳。 */
+.tv-slot .tradingview-widget-copyright,
+.tv-slot .tradingview-widget-copyright a { font-size: 11px !important; color: var(--c-text-3) !important; }
+
+.tv-frame {
+  padding: var(--s-3);
+  background: var(--c-surface);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-4);
+  box-shadow: var(--sh-2);
+  overflow: hidden;
+}
+
+/* 備援：連不到 TradingView 時顯示的說明，不留空白 */
+.tv-fallback-note {
+  display: grid; place-items: center; gap: var(--s-3);
+  min-height: 260px;
+  padding: var(--s-6);
+  text-align: center;
+  color: var(--c-text-3);
+  font-size: var(--t-14);
+  line-height: 1.7;
+}
+.tv-fallback-note b { color: var(--c-text-2); font-weight: 600; }
+
+/* 市場總覽：左邊清單、右邊技術分析儀表 */
+.market-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: var(--s-5); }
+@media (max-width: 900px) { .market-grid { grid-template-columns: 1fr; } }
+
+.tv-caption {
+  display: flex; align-items: center; gap: var(--s-2);
+  margin-top: var(--s-3);
+  font-size: var(--t-12); color: var(--c-text-3);
+}
+.tv-caption::before {
+  content: ''; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--c-up-2); flex: none;
+}
+
+/* ========================================================== 索取安裝包 ==== */
+/* 取代原本的下載按鈕。安裝包與帳號一起私訊開通，
+   所以這張卡是「怎麼拿到」而不是「點這裡下載」。 */
+.ask-card {
+  display: grid; grid-template-columns: minmax(0,1fr) auto;
+  gap: var(--v-5);
+  align-items: center;
+  margin-top: var(--s-5);
+  padding: var(--v-4) var(--s-7);
+  background: var(--c-surface);
+  border: 1px solid var(--c-gold-line);
+  border-radius: var(--r-4);
+  position: relative; overflow: hidden;
+}
+.ask-card::before {
+  content: ''; position: absolute; inset: 0 0 auto; height: 2px;
+  background: linear-gradient(90deg, transparent, var(--c-gold-400), transparent);
+}
+.ask-card h2 { font-size: var(--t-24); margin-bottom: var(--s-3); }
+.ask-card p { color: var(--c-text-2); font-size: var(--t-15); line-height: 1.75; max-width: 62ch; }
+@media (max-width: 760px) { .ask-card { grid-template-columns: 1fr; } }
+
+/* 平台卡不再有下載按鈕，底部留白收掉 */
+.dl-card { padding-bottom: var(--v-5); }
+
+/* ============================================================ 卡片紋理 ==== */
+/* 給方案卡用的底紋。透明度壓得很低，只是讓卡片不是一塊純色。 */
+.tex { position: relative; isolation: isolate; }
+.tex::after {
+  content: ''; position: absolute; inset: 0; z-index: -1;
+  background-image: var(--tex-img);
+  background-size: cover; background-position: center;
+  opacity: var(--tex-opacity, .07);
+  mix-blend-mode: soft-light;
+  pointer-events: none;
+}
+.tex-foil   { --tex-img: url('/assets/img/tex-foil.webp'); }
+.tex-carbon { --tex-img: url('/assets/img/tex-carbon.webp'); }
+
+/* 新的區塊背景 */
+.bg-vault    { --bg-img: url('/assets/img/bg-vault.webp'); }
+.bg-circuit  { --bg-img: url('/assets/img/bg-circuit.webp'); }
+.bg-terminal { --bg-img: url('/assets/img/bg-terminal.webp'); }
+.bg-mesh     { --bg-img: url('/assets/img/bg-mesh.webp'); }
+
+/* 內頁 hero 也可以吃背景。它比 .section 矮，遮罩要收窄一點才不會把圖蓋光。 */
+.page-hero.section--bg::after {
+  background:
+    linear-gradient(180deg, var(--bg-fade) 0%, transparent 30%, transparent 70%, var(--bg-fade) 100%),
+    radial-gradient(ellipse 58% 62% at 50% 50%, var(--bg-fade) 0%, transparent 78%);
+}
+.page-hero.section--bg { --bg-fade: var(--c-bg); }

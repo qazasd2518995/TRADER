@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="metal" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFF0BE"/><stop offset=".24" stop-color="#F0C65C"/>
+      <stop offset=".52" stop-color="#D4A017"/><stop offset=".78" stop-color="#A87C10"/>
+      <stop offset="1" stop-color="#F0C65C"/>
+    </linearGradient>
+    <radialGradient id="glow" cx=".5" cy="0" r=".85">
+      <stop offset="0" stop-color="#D4A017" stop-opacity=".26"/>
+      <stop offset=".45" stop-color="#D4A017" stop-opacity=".08"/>
+      <stop offset="1" stop-color="#D4A017" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="60" height="60" patternUnits="userSpaceOnUse">
+      <path d="M60 0H0v60" fill="none" stroke="#EDEDEF" stroke-opacity=".05" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="630" fill="#0A0A0B"/>
+  <rect width="1200" height="630" fill="url(#grid)"/>
+  <rect width="1200" height="630" fill="url(#glow)"/>
+
+  <!-- 金條標記 -->
+  <g transform="translate(80,74)">
+    <path d="M6 0h48l6 34H0z" fill="url(#metal)"/>
+    <path d="M6 0h48l1.6 5.4H4.4z" fill="#FFF6D8" opacity=".5"/>
+  </g>
+  <text x="158" y="100" font-family="Helvetica,Arial,sans-serif" font-size="27" font-weight="700" fill="#EDEDEF" letter-spacing="-.4">AI GOLD COPY TRADING</text>
+  <text x="158" y="126" font-family="Helvetica,Arial,sans-serif" font-size="15" fill="#82828C" letter-spacing="3.4">XAUUSD AUTO COPY SYSTEM</text>
+
+  <text x="80" y="330" font-family="Helvetica,Arial,sans-serif" font-size="88" font-weight="700" fill="#EDEDEF" letter-spacing="-2.5">Signals are signals.</text>
+  <text x="80" y="432" font-family="Helvetica,Arial,sans-serif" font-size="88" font-weight="700" fill="url(#metal)" letter-spacing="-2.5">Let it place the order.</text>
+
+  <text x="80" y="506" font-family="Helvetica,Arial,sans-serif" font-size="26" fill="#A0A0A8">Professional gold signals, executed on your own MT5 — hands-off.</text>
+
+  <!-- 馬丁階梯 -->
+  <g transform="translate(80,548)">
+    <rect x="0"   y="26" width="34" height="14" rx="3" fill="#D4A017" opacity=".3"/>
+    <rect x="42"  y="18" width="34" height="22" rx="3" fill="#D4A017" opacity=".48"/>
+    <rect x="84"  y="10" width="34" height="30" rx="3" fill="#D4A017" opacity=".68"/>
+    <rect x="126" y="2"  width="34" height="38" rx="3" fill="url(#metal)"/>
+  </g>
+
+  <rect x="0" y="626" width="1200" height="4" fill="url(#metal)"/>
+</svg>
