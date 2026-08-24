@@ -1081,7 +1081,17 @@ def main(default_role: Optional[str] = None) -> None:
 
     if _truthy(state.settings.get("auto_start")):
         logger.info("已設定自動開始，啟動服務中…")
-        state.start_service()
+        try:
+            state.start_service()
+        except PermissionError:
+            # 會員端沒登入就不給啟動 (start_service 會擋)。這裡一定要接住 ——
+            # 不接的話例外會往上冒、整支程式在 serve_forever() 之前就結束，
+            # 使用者連登入畫面都看不到, 只會覺得「程式打不開」。
+            logger.info("尚未登入，請在控制台登入後開始跟單")
+            state.status = "請先登入"
+        except Exception as exc:                     # noqa: BLE001
+            logger.exception("自動啟動失敗：%s", exc)
+            state.status = "啟動失敗"
 
     try:
         server.serve_forever()
