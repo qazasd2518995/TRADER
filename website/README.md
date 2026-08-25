@@ -148,6 +148,32 @@ Error: Command "uv pip install" exited with 1
 可以誤判。另外 `vercel.json` 把 `installCommand` 與 `buildCommand` 都設成
 **空字串** —— 設 `null` 是「用預設偵測」，不是「不執行」，這個差別會讓人踩坑。
 
+### git 的 user.email 必須是合法 email
+
+Vercel 會擋掉作者 email 不合法的 commit：
+
+```
+The deployment was blocked because the commit author email (qazasd2518995)
+is not valid. Ensure your git email matches your GitHub account.
+```
+
+這台機器上 `user.email` 曾被設成 `qazasd2518995` —— 那是**帳號名稱，不是
+email**（沒有 `@`）。換一台電腦 clone 下來很容易再踩一次，設定的時候檢查一下：
+
+```bash
+git config --global user.email          # 要看到 @
+```
+
+建議用 GitHub 的轉接位址，保證跟帳號連在一起，也不會把真實信箱曝在公開的
+commit 紀錄裡（`<ID>` 在 `gh api user --jq .id` 查得到）：
+
+```bash
+git config --global user.email "<ID>+<你的帳號>@users.noreply.github.com"
+```
+
+已經推上去的舊 commit 不用改 —— Vercel 只看要部署的那一筆，
+重寫歷史反而會讓其他機器的本地分支對不上。
+
 ### vercel.json 不能寫註解
 
 Vercel 的 schema 是 `additionalProperties: false`，多一個鍵就整份被拒：
