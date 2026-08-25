@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import platform
 import queue
 import re
@@ -1107,6 +1108,22 @@ def _find_running_instance(role: str, port_file: Path) -> Optional[str]:
     return None
 
 
+def _open_browser(url: str) -> None:
+    """開啟控制台。設了 COPY_TRADER_NO_BROWSER 就只記在 log 不彈視窗。
+
+    給兩種情境用：CI 上的打包冒煙測試（沒有桌面環境），以及把這支程式
+    掛在遠端主機當服務跑的時候。
+    """
+    if _truthy(os.environ.get("COPY_TRADER_NO_BROWSER")):
+        logger.info("已停用自動開啟瀏覽器（COPY_TRADER_NO_BROWSER）")
+        return
+    try:
+        webbrowser.open(url)
+    except Exception:
+        # 沒有預設瀏覽器不該讓整個服務起不來 —— 網址已經寫在 log 裡了
+        logger.debug("開啟瀏覽器失敗", exc_info=True)
+
+
 def main(default_role: Optional[str] = None) -> None:
     role = _infer_role(default_role)
     state = LauncherState(role)
@@ -1118,7 +1135,7 @@ def main(default_role: Optional[str] = None) -> None:
         existing = _find_running_instance(role, port_file)
         if existing:
             logger.info("%s 已在執行，開啟既有控制台：%s", state.title, existing)
-            webbrowser.open(existing)
+            _open_browser(existing)
             return
 
     logger.info("%s 已啟動", state.title)
@@ -1131,7 +1148,7 @@ def main(default_role: Optional[str] = None) -> None:
         port_file.write_text(str(server.server_address[1]), encoding="utf-8")
     except Exception:
         pass
-    webbrowser.open(url)
+    _open_browser(url)
     logger.info("控制台：%s", url)
 
     if _truthy(state.settings.get("auto_start")):

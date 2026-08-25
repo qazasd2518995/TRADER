@@ -1,0 +1,120 @@
+name: 建置安裝檔（Windows + macOS）
+
+# 用法
+#   手動：GitHub → Actions → 這個 workflow → Run workflow
+#   發版：推一個 v 開頭的 tag，會自動建置並建立 Release 把安裝檔掛上去
+#         git tag v1.0.1 && git push origin v1.0.1
+#
+# 為什麼一定要用 CI 建 Windows：PyInstaller 打包的是「執行它的那台機器上的
+# Python 直譯器 + 那個平台的原生模組」，沒有交叉編譯這回事。在 macOS 上
+# 生不出 .exe，所以 Windows 那份只能在 Windows runner 上建。
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本號（寫進安裝檔檔名）"
+        required: false
+        default: "1.0.0"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write        # 建立 Release 要寫入權限
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false   # Windows 掛掉不要連帶取消 macOS 那份
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows
+          - os: macos-latest
+            label: macOS
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.label }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 只裝建置真正需要的。requirements.txt 裡的 PySide6 / anthropic / groq
+      # 都在 spec 的 excludes 名單上，裝了也不會被打包進去，只是白等幾分鐘。
+      - name: 安裝建置相依
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "Pillow>=10.0" "pyinstaller>=6.0"
+
+      - name: 安裝 pywin32（Windows 專用）
+        if: runner.os == 'Windows'
+        run: python -m pip install "pywin32>=306"
+
+      - name: 安裝 Inno Setup（Windows 專用）
+        if: runner.os == 'Windows'
+        run: choco install innosetup --no-progress -y
+
+      - name: 建置
+        shell: bash
+        env:
+          # runner 上沒有桌面，不要讓程式在冒煙測試時想開瀏覽器
+          COPY_TRADER_NO_BROWSER: "1"
+          PYINSTALLER_CONFIG_DIR: ${{ runner.temp }}/pyi
+        run: python scripts/build-release.py
+
+      - name: 列出產出
+        shell: bash
+        run: ls -la dist/installers
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 安裝檔-${{ matrix.label }}
+          path: dist/installers/*
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    # 只有推 tag 才建 Release；手動觸發就只留 artifact
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: 攤平目錄
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.dmg' -o -name '*.exe' \) -exec cp {} release/ \;
+          ls -la release
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          draft: true          # 先建草稿，自己確認過再按發布
+          generate_release_notes: true
+          body: |
+            ## 安裝檔
+
+            | 平台 | 會員端 | 訊號中心 |
+            |---|---|---|
+            | Windows | `黃金跟單會員端_*_Windows.exe` | `黃金訊號中心_*_Windows.exe` |
+            | macOS | `黃金跟單會員端_*_macOS.dmg` | `黃金訊號中心_*_macOS.dmg` |
+
+            會員只需要**會員端**。訊號中心是給訊號發布者用的。
+
+            ### 安裝前請先看
+
+            這兩個平台的安裝檔都**未經數位簽章**（需要付費憑證），
+            第一次開啟時系統會出現警告，這是預期的，不是程式有問題：
+
+            - **Windows**：藍色的「已保護您的電腦」→ 按「其他資訊」→「仍要執行」
+            - **macOS**：「無法打開，因為無法驗證開發者」→ 在應用程式上**按右鍵→打開**
+
+            完整步驟與 MT5 EA 的安裝方式見 [安裝說明](docs/安裝說明.md)。

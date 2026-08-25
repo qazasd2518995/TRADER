@@ -1,45 +1,29 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""
-Build:
+"""會員端 · macOS
+
+建置：
   pyinstaller --noconfirm packaging/pyinstaller/client-macos.spec
+
+模組清單一律從 _common.py 拿——四份 spec 各自維護的下場是會漂移，
+先前 central-windows.spec 的 hiddenimports 就整個是空的。
 """
+import sys
 from pathlib import Path
 
 ROOT = Path(SPECPATH).parents[1]
+sys.path.insert(0, str(Path(SPECPATH)))
+from _common import hidden, datas, EXCLUDES          # noqa: E402
 
 a = Analysis(
     [str(ROOT / "copy_trader/central/client_agent_web.py")],
     pathex=[str(ROOT)],
     binaries=[],
-    datas=[
-        (str(ROOT / "mt5_ea/MT5_File_Bridge_Enhanced.mq5"), "mt5_ea"),
-    ],
-    hiddenimports=[
-        "copy_trader.central.mt5_client_agent",
-        "copy_trader.trade_manager.manager",
-        "copy_trader.signal_parser.regex_parser",
-        "copy_trader.platform.macos",
-        "PIL",
-        "PIL.Image",
-    ],
+    datas=datas(ROOT),
+    hiddenimports=hidden("client", "macos"),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[
-        "PySide6",
-        "numpy",
-        "scipy",
-        "matplotlib",
-        "pytest",
-        "rapidocr",
-        "onnxruntime",
-        "groq",
-        "anthropic",
-        "google.genai",
-        "cv2",
-        "pywt",
-        "PyWavelets",
-    ],
+    excludes=EXCLUDES,
     noarchive=False,
 )
 pyz = PYZ(a.pure)
@@ -70,6 +54,14 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name="黃金跟單會員端.app",
-    icon=None,
+    icon=str(ROOT / "src-tauri/icons/icon.icns"),
     bundle_identifier="com.goldtrader.member",
+    info_plist={
+        # 控制台是網頁介面，不需要 Dock 圖示以外的東西；
+        # 但要標明支援 Retina，不然文字在高解析螢幕上會糊。
+        "NSHighResolutionCapable": True,
+        "LSMinimumSystemVersion": "10.15",
+        "CFBundleShortVersionString": "1.0.0",
+        "CFBundleVersion": "1.0.0",
+    },
 )
