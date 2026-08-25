@@ -1,17 +1,5 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "//": [
-    "官網是純靜態，沒有任何建置步驟。",
-    "",
-    "repo 根目錄放的是跟單系統的原始碼，裡面有 requirements.txt / package.json /",
-    "Dockerfile / fly.toml，Vercel 的零設定偵測會把它當成 Python 或 Node 專案，",
-    "然後去裝相依 —— requirements.txt 裡的 pywin32 是 Windows 專用，在 Linux 上",
-    "根本裝不起來，建置就掛在這裡。",
-    "",
-    "所以三個都要明確關掉：installCommand 與 buildCommand 設成空字串（null 是",
-    "「用預設偵測」，不是「不執行」），framework 設 null。搭配 .vercelignore",
-    "把原始碼排除在上傳範圍外，偵測就沒有東西可以誤判。"
-  ],
   "framework": null,
   "installCommand": "",
   "buildCommand": "",
@@ -20,42 +8,24 @@
   "trailingSlash": true,
   "headers": [
     {
-      "//": "帶指紋的靜態資源可以長快取；HTML 不行，改了要馬上生效。",
       "source": "/assets/(.*)",
       "headers": [
-        {
-          "key": "Cache-Control",
-          "value": "public, max-age=31536000, immutable"
-        }
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
       ]
     },
     {
       "source": "/i18n/(.*)",
       "headers": [
-        {
-          "//": "語言檔會改，給短快取並要求重新驗證",
-          "key": "Cache-Control",
-          "value": "public, max-age=300, must-revalidate"
-        }
+        { "key": "Cache-Control", "value": "public, max-age=300, must-revalidate" }
       ]
     },
     {
       "source": "/(.*)",
       "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+        { "key": "X-Frame-Options", "value": "SAMEORIGIN" },
         {
-          "key": "X-Content-Type-Options",
-          "value": "nosniff"
-        },
-        {
-          "key": "Referrer-Policy",
-          "value": "strict-origin-when-cross-origin"
-        },
-        {
-          "key": "X-Frame-Options",
-          "value": "SAMEORIGIN"
-        },
-        {
-          "//": "只開實際會用到的來源：TradingView 的 widget 與行情、Google Fonts、Instagram 連結。",
           "key": "Content-Security-Policy",
           "value": "default-src 'self'; script-src 'self' https://s3.tradingview.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://s3.tradingview.com https://static.tradingview.com; frame-src https://www.tradingview-widget.com https://s.tradingview.com; connect-src 'self' https://*.tradingview.com; base-uri 'self'; form-action 'none'; frame-ancestors 'self'"
         }
