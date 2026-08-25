@@ -262,13 +262,18 @@ def _touch_account(mt5_dir: Path) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
-def make_handler(mt5_dir: Path, tier: str = "flagship"):
+def make_handler(mt5_dir: Path, tier: str = "flagship", role: str = "client"):
     from copy_trader.central import webui
     from copy_trader.central.membership import tier_entitlements
     from copy_trader.central.stats import build_stats
 
     settings = dict(SETTINGS, mt5_files_dir=str(mt5_dir))
-    page = webui.render(State())
+    st = State()
+    st.role = role
+    if role == "central":
+        st.title = "黃金訊號中心"
+        st.auth = None            # 訊號中心沒有會員登入
+    page = webui.render(st)
     tm = FakeTradeManager()
 
     class H(BaseHTTPRequestHandler):
@@ -286,7 +291,7 @@ def make_handler(mt5_dir: Path, tier: str = "flagship"):
         def do_GET(self):
             if self.path.startswith("/api/status"):
                 self._json({
-                    "ok": True, "role": "client", "title": State.title,
+                    "ok": True, "role": role, "title": State.title,
                     "settings": settings, "hub_configured": True,
                     "status": "運行中", "running": True,
                     "logs": [
@@ -296,8 +301,10 @@ def make_handler(mt5_dir: Path, tier: str = "flagship"):
                         "[19:07:55] 收到訊號 sig102（高頻訊號）→ 已送出 0.02 手",
                     ],
                     "lan_ip": "192.168.0.24", "cloudflare_url": "",
+                    # 訊號中心的面板要顯示監控中的視窗；會員端用不到
+                    "capture_windows": list(SOURCES.values()) if role == "central" else [],
                     "uptime_seconds": 27_540,
-                    "auth": {
+                    "auth": None if role == "central" else {
                         "logged_in": True, "username": "demo",
                         "tier": tier, "tier_label": tier_entitlements(tier).get("label", tier),
                         "expires_at": time.time() + 86_400 * 128,
@@ -329,6 +336,8 @@ def make_handler(mt5_dir: Path, tier: str = "flagship"):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8199)
+    ap.add_argument("--role", default="client", choices=["client", "central"],
+                    help="要預覽哪一端：會員端或訊號中心")
     ap.add_argument("--tier", default="flagship",
                     choices=["trial", "basic", "advanced", "flagship"],
                     help="要模擬的會員等級，用來驗證側欄的鎖定狀態")
@@ -339,9 +348,9 @@ def main():
     # journal_path() 找不到 DATA_DIR/trade_journal.txt 時會退回 ./trade_journal.txt
     os.chdir(tmp)
 
-    handler = make_handler(tmp, args.tier)
+    handler = make_handler(tmp, args.tier, args.role)
     print(f"資料目錄：{tmp}")
-    print(f"模擬等級：{args.tier}")
+    print(f"模擬角色：{args.role}　等級：{args.tier}")
     print(f"會員端介面：http://127.0.0.1:{args.port}/")
     HTTPServer(("127.0.0.1", args.port), handler).serve_forever()
 

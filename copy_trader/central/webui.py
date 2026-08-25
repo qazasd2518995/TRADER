@@ -250,7 +250,14 @@ h1, h2, h3, h4 {
 
 /* ------------------------------------------------------------------ side */
 /* 左側欄。訊號中心沒有等級制度，所以整條是 client-only。 */
-.shell { display: grid; grid-template-columns: 248px minmax(0, 1fr); gap: 26px; align-items: start; }
+/* 側欄不存在時整個 shell 要收成一欄。
+   display:none 的元素會被完全移出 grid，剩下的 .shell-main 就會遞補到
+   第一欄（248px），整頁內容被壓成一條直的 —— 訊號中心沒有側欄，
+   會員尚未登入時也沒有，兩種情況都會中。 */
+.shell { display: grid; grid-template-columns: minmax(0, 1fr); gap: 26px; align-items: start; }
+body[data-role="client"]:not(.auth-locked) .shell {
+  grid-template-columns: 248px minmax(0, 1fr);
+}
 .shell-main { min-width: 0; }   /* 沒有這行，裡面的寬表格會把整個 grid 撐爆 */
 
 /* 視窗窄的時候側欄收起來 —— 硬擠成兩欄會讓表格沒地方站 */
@@ -383,6 +390,7 @@ h1, h2, h3, h4 {
   font-variant-numeric: tabular-nums;
 }
 .dstat .sub { display: block; margin-top: 5px; font-size: 11.5px; color: var(--muted); min-height: 16px; }
+.dstat:not(:has(.spark)) { padding-bottom: 15px; }
 .dstat .spark { display: block; width: calc(100% + 34px); height: 42px; margin: 10px -17px 0; }
 
 /* 主網格 */
@@ -462,6 +470,21 @@ h1, h2, h3, h4 {
 
 /* 面板裡的長表格要自己捲，不然一個有幾十筆紀錄的表格會把整列撐到近千像素高，
    同列的其他面板被拉出一大片空白。 */
+/* 訊號中心的資訊列：左邊欄位名、右邊值，中間拉開 */
+.mock { display: flex; flex-direction: column; gap: 1px;
+        background: var(--hair); border: 1px solid var(--hair);
+        border-radius: 12px; overflow: hidden; }
+.mock-row { display: flex; align-items: center; gap: 14px;
+            padding: 13px 16px; background: var(--sunk); min-height: 46px; }
+.mock-row .k { color: var(--ink-2); font-size: 13px; flex: 0 0 auto; }
+.mock-row .v { margin-left: auto; text-align: right; color: var(--ink);
+               font-family: var(--mono); font-size: 13px; word-break: break-all; }
+.mock-row .dot { width: 7px; height: 7px; border-radius: 50%;
+                 background: var(--muted); flex: 0 0 auto; }
+.mock-row .v.up { color: var(--win); }
+.mock-row .v.down { color: var(--loss); }
+.mock-row .dot--on { background: var(--win);
+                     box-shadow: 0 0 0 3px color-mix(in srgb, var(--win) 22%, transparent); }
 .dash-grid--3 .table-scroll { max-height: 360px; overflow: auto; }
 .dash-grid--2 .table-scroll { max-height: 300px; overflow: auto; }
 .dash-grid .source-grid { max-height: 344px; overflow: auto; }
@@ -1085,6 +1108,47 @@ body.auth-locked > *:not(#authGate) { display: none; }
 .auth-msg.is-ok { background: var(--ok-wash); color: var(--ok); }
 .auth-msg.is-ok::before { content: "✓"; }
 
+/* ── 窄螢幕 ──────────────────────────────────────────────────
+   這個介面主要跑在會員自己的電腦上（旁邊開著 MT5），但手機看狀態
+   也要能用。原則：橫排的東西改成可橫捲，多欄網格降欄，不要撐破畫面。 */
+@media (max-width: 900px) {
+  /* 側欄的 248px 在手機上會把主內容擠到剩一百出頭，整頁跟著爆版。
+     這裡讓它退回文件流，堆在內容上方。 */
+  body[data-role="client"]:not(.auth-locked) .shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .side { position: static; top: auto; }
+  .side-nav { display: none; }   /* 單欄堆疊後，錨點導航沒有意義 */
+
+  .dash-grid--2, .dash-grid--3 { grid-template-columns: minmax(0, 1fr); }
+  .dash-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dash-grid--3 .table-scroll, .dash-grid--2 .table-scroll { max-height: 320px; }
+}
+
+@media (max-width: 640px) {
+  .wrap { padding-inline: 14px; }
+  .shell { gap: 18px; }
+  .dash-stats { grid-template-columns: minmax(0, 1fr); }
+
+  /* 這幾排本來會撐破畫面，改成橫捲；捲軸藏起來，靠慣性滑 */
+  /* min-width: 0 是關鍵 —— flex item 預設 min-width:auto 會被內容撐開，
+     那樣 overflow-x 根本不會觸發 */
+  .view-tabs, .pillset {
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
+    scrollbar-width: none; flex-wrap: nowrap;
+    min-width: 0; max-width: 100%;
+  }
+  .view-tabs::-webkit-scrollbar, .pillset::-webkit-scrollbar { display: none; }
+  .view-tab, .pill { flex: 0 0 auto; white-space: nowrap; }
+  .filters { align-items: stretch; }
+  .filters .count { margin-left: 0; text-align: left; }
+  .filters select, .daterange input { min-width: 0; }
+
+  .donut-wrap { justify-content: center; }
+  /* 底部狀態列在手機上會擋住內容，收掉 */
+  #statusBar { display: none; }
+}
+
 @media (max-width: 420px) {
   .auth-card { padding: 26px 20px 20px; border-radius: 12px; }
 }
@@ -1198,7 +1262,7 @@ body.auth-locked > *:not(#authGate) { display: none; }
     <span class="chip is-off" id="chipHub"><span class="dot"></span><span>Hub</span></span>
   </div>
   <div class="rail-actions">
-    <button class="btn btn-go" id="start">開始跟單</button>
+    <button class="btn btn-go" id="start"><span class="client-only">開始跟單</span><span class="central-only">開始發布</span></button>
     <button class="btn" id="stop">停止</button>
     __EXTRA_BUTTON__
     <button class="btn btn-quiet" id="themeToggle" title="切換日夜模式" aria-label="切換日夜模式">☾</button>
@@ -1256,6 +1320,43 @@ body.auth-locked > *:not(#authGate) { display: none; }
   </div>
 
 <div id="viewSignals">
+
+  <!-- 訊號中心專屬。它沒有 MT5、沒有持倉，需要看的是「訊號有沒有發出去、
+       會員連不連得到我」，所以放的是服務狀態與 Hub 位址。 -->
+  <div class="central-only">
+    <dl class="dash-stats" id="centralStats"></dl>
+
+    <div class="dash-grid dash-grid--2">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>發布目標</h2>
+          <p class="spacer">會員端要填的位址</p>
+        </div>
+        <div class="panel-body">
+          <div class="mock" style="box-shadow:none">
+            <div class="mock-row"><span class="k">模式</span><span class="v" id="cenMode">—</span></div>
+            <div class="mock-row"><span class="k">Hub 位址</span><span class="v" id="cenHub">—</span></div>
+            <div class="mock-row"><span class="k">本機 IP</span><span class="v" id="cenLan">—</span></div>
+          </div>
+          <p class="hint" id="hint" style="margin-top:14px"></p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>擷取來源</h2>
+          <p class="spacer">中央機監控中的視窗</p>
+        </div>
+        <div class="panel-body">
+          <div id="cenWindows" class="mock" style="box-shadow:none"></div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- 以下全是會員端專屬：持倉、成交、馬丁、績效都是 MT5 的概念，
+       訊號中心沒有 MT5 也沒有交易紀錄，顯示出來會是一堆永遠空的面板。 -->
+  <div class="client-only">
 
   <!-- ① 頂部統計卡列。內容由 renderDashStats() 依實際資料產生。 -->
   <dl class="dash-stats" id="dashStats"></dl>
@@ -1347,6 +1448,7 @@ body.auth-locked > *:not(#authGate) { display: none; }
           <div class="donut" id="donut"></div>
           <dl class="donut-legend" id="donutLegend"></dl>
         </div>
+        <div class="mock" id="donutExtra" style="margin-top:18px"></div>
       </div>
     </section>
 
@@ -1403,6 +1505,8 @@ body.auth-locked > *:not(#authGate) { display: none; }
         <span style="color:var(--muted)">數值見下方交易紀錄表</span>
       </div>
     </div>
+
+  </div><!-- /client-only -->
 
 </div><!-- /viewSignals -->
 
@@ -1543,10 +1647,9 @@ body.auth-locked > *:not(#authGate) { display: none; }
   <section class="card settings" id="settings" hidden style="margin-top:14px">
     <div class="section-head" style="margin:0 0 16px">
       <h2>設定</h2>
-      <p>改完按「儲存設定」，或直接按上方「開始跟單」一併套用</p>
+      <p>改完按「儲存設定」，或直接按上方的啟動鍵一併套用</p>
     </div>
     __FIELDS__
-    <p class="hint" id="hint"></p>
     <div class="settings-actions">
       <button class="btn btn-go" id="save">儲存設定</button>
       <button class="btn" id="closeSettings">收起</button>
@@ -1776,10 +1879,12 @@ function summarise(trades) {
   const losses = trades.filter((t) => !t.is_win);
   const gw = wins.reduce((a, t) => a + t.profit, 0);
   const gl = losses.reduce((a, t) => a + t.profit, 0);
-  let cum = 0, peak = 0, dd = 0, ls = 0, worst = 0;
+  let cum = 0, peak = 0, dd = 0;
+  let ls = 0, maxLs = 0, ws = 0, maxWs = 0;   // 連敗 / 連勝
   for (const t of trades) {
     cum += t.profit; peak = Math.max(peak, cum); dd = Math.max(dd, peak - cum);
-    if (t.is_win) ls = 0; else { ls += 1; worst = Math.max(worst, ls); }
+    if (t.is_win) { ls = 0; ws += 1; maxWs = Math.max(maxWs, ws); }
+    else          { ws = 0; ls += 1; maxLs = Math.max(maxLs, ls); }
   }
   return {
     total: trades.length, wins: wins.length, losses: losses.length,
@@ -1788,8 +1893,9 @@ function summarise(trades) {
     profit_factor: gl ? gw / Math.abs(gl) : null,
     avg_win: wins.length ? gw / wins.length : 0,
     avg_loss: losses.length ? gl / losses.length : 0,
-    best: trades.reduce((a, t) => Math.max(a, t.profit), 0),
-    max_dd: dd, max_loss_streak: worst,
+    best:  trades.length ? trades.reduce((a, t) => Math.max(a, t.profit), trades[0].profit) : 0,
+    worst: trades.length ? trades.reduce((a, t) => Math.min(a, t.profit), trades[0].profit) : 0,
+    max_dd: dd, max_loss_streak: maxLs, max_win_streak: maxWs,
     volume: trades.reduce((a, t) => a + t.volume, 0),
   };
 }
@@ -2664,6 +2770,24 @@ function renderDonut(sum) {
     <div><i style="background:var(--gold-lit)"></i><div>
       <dt>盈虧比</dt><dd>${sum.profit_factor == null ? "—" : sum.profit_factor.toFixed(2)}</dd>
     </div></div>`;
+
+  // 甜甜圈下方補幾個「績效分析」區塊沒列的極值，順便把這格的空白填掉
+  const extra = $("donutExtra");
+  if (extra) {
+    const money = (n) => (n == null || !isFinite(n)) ? "—"
+      : (n > 0 ? "+" : n < 0 ? "-" : "") + "$" + Math.abs(n).toFixed(2);
+    const rows = [
+      ["最佳單筆", money(sum.best), sum.best > 0 ? "up" : ""],
+      ["最差單筆", money(sum.worst), sum.worst < 0 ? "down" : ""],
+      ["最長連勝", (sum.max_win_streak || 0) + " 筆", ""],
+      ["最長連敗", (sum.max_loss_streak || 0) + " 筆", ""],
+    ];
+    extra.innerHTML = rows.map(([k, v, cls]) => `
+      <div class="mock-row">
+        <span class="k">${k}</span>
+        <span class="v ${cls}">${esc(v)}</span>
+      </div>`).join("");
+  }
 }
 
 /* 底部狀態列。全部是既有的狀態資料，只是搬到隨時看得到的位置。 */
@@ -2807,7 +2931,9 @@ function paintStatus() {
   if (!snap) return;
   const chip = $("chipService");
   chip.className = "chip " + (snap.running ? "is-live" : "is-off");
-  chip.lastElementChild.textContent = snap.running ? "跟單運轉中" : snap.status;
+  chip.lastElementChild.textContent = snap.running
+    ? (snap.role === "central" ? "訊號發布中" : "跟單運轉中")
+    : snap.status;
 
   const hub = $("chipHub");
   // 中央機顯示主機名（管理者要確認連對地方）；會員端只顯示連線與否 ——
@@ -2833,7 +2959,75 @@ function paintStatus() {
   if (ROLE === "central") paintCentralHint(snap);
 }
 
+/* 訊號中心的儀表板。它沒有 MT5、沒有成交紀錄，能講的是
+   「服務有沒有在跑、訊號發到哪、會員連不連得到我」。 */
+function paintCentralDash(snap) {
+  if (IS_CLIENT) return;
+  const settings = snap.settings || {};
+  const running = !!snap.running;
+
+  // 運行時間
+  const up = Number(snap.uptime_seconds || 0);
+  const upText = up
+    ? (up >= 86400 ? Math.floor(up / 86400) + " 天 " + Math.floor((up % 86400) / 3600) + " 小時"
+       : up >= 3600 ? Math.floor(up / 3600) + " 小時 " + Math.floor((up % 3600) / 60) + " 分"
+       : Math.floor(up / 60) + " 分")
+    : "—";
+
+  // 發布模式：填了雲端 Hub URL 就是雲端模式，否則是本機自架
+  const remoteHub = String(settings.hub_url || "").trim();
+  const mode = remoteHub ? "雲端 Hub" : "本機自架";
+  const port = settings.port || "8765";
+  const hubAddr = remoteHub || snap.cloudflare_url ||
+    ("http://" + (snap.lan_ip || "127.0.0.1") + ":" + port);
+
+  // 擷取視窗：後端從 config.json 讀出來放進 snapshot（不在 launcher 設定裡）
+  const windows = Array.isArray(snap.capture_windows) ? snap.capture_windows : [];
+
+  const cards = [
+    { k: "服務狀態", v: running ? "發布中" : "已停止",
+      sub: running ? "擷取器運行中" : "按上方「開始發布」啟動",
+      cls: running ? "up" : "", accent: running ? "win" : "violet" },
+    { k: "運行時間", v: upText, sub: running ? "自本次啟動起" : "尚未啟動", accent: "cyan" },
+    { k: "發布模式", v: mode,
+      sub: remoteHub ? "訊號送往雲端" : "會員直連這台", accent: "gold" },
+    { k: "擷取來源", v: String(windows.length || "—"),
+      sub: windows.length ? "個視窗監控中" : "尚未設定擷取視窗", accent: "violet" },
+    { k: "Hub 連線", v: snap.hub_configured || remoteHub ? "已設定" : "未設定",
+      sub: snap.cloudflare_url ? "Cloudflare Tunnel 已啟用" : "見下方發布目標",
+      cls: (snap.hub_configured || remoteHub) ? "up" : "down",
+      accent: (snap.hub_configured || remoteHub) ? "win" : "loss" },
+  ];
+
+  const host = $("centralStats");
+  if (host) {
+    host.innerHTML = cards.map((c) => `
+      <div class="dstat dstat--${c.accent}">
+        <dt>${esc(c.k)}</dt>
+        <dd class="${c.cls || ""}">${esc(c.v)}</dd>
+        <span class="sub">${esc(c.sub)}</span>
+      </div>`).join("");
+  }
+
+  const set = (id, text) => { const el = $(id); if (el) el.textContent = text; };
+  set("cenMode", mode);
+  set("cenHub", hubAddr);
+  set("cenLan", (snap.lan_ip || "—") + ":" + port);
+
+  const wrap = $("cenWindows");
+  if (wrap) {
+    wrap.innerHTML = windows.length
+      ? windows.map((w) => `
+          <div class="mock-row">
+            <span class="dot ${running ? "dot--on" : "dot--off"}"></span>
+            <span>${esc(w)}</span>
+          </div>`).join("")
+      : '<div class="mock-row"><span class="k">尚未設定擷取視窗，到「設定」填入要監控的 LINE 群組名稱</span></div>';
+  }
+}
+
 function paintCentralHint(snap) {
+  paintCentralDash(snap);
   const settings = snap.settings || {};
   const remoteHub = String(settings.hub_url || "").trim();
   const port = settings.port || "8765";

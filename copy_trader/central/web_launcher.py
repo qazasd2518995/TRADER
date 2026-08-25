@@ -25,7 +25,7 @@ import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from copy_trader.config import DATA_DIR, _instance_name, load_config
 from copy_trader.central.membership import MIN_PASSWORD_LENGTH
@@ -876,7 +876,26 @@ class LauncherState:
             "cloudflare_url": self.cloudflare_url,
             "uptime_seconds": int(time.time() - self.service_started_at) if self.service_started_at else 0,
             "auth": self._auth_snapshot(),
+            "capture_windows": self._capture_window_names(),
         }
+
+    def _capture_window_names(self) -> List[str]:
+        """中央機正在監控的視窗名稱。給訊號中心的面板顯示用。
+
+        擷取視窗設定在 config.json（不在 launcher 的設定檔裡），所以要另外讀。
+        讀失敗就回空陣列 —— 面板會顯示「尚未設定」，比整個掛掉好。
+        會員端不需要這個，直接回空。
+        """
+        if self.role != "central":
+            return []
+        try:
+            from copy_trader.config import load_config
+            cfg = load_config()
+            return [w.display_name or w.name or w.window_name
+                    for w in (cfg.capture_windows or [])]
+        except Exception:
+            logger.debug("讀不到 capture_windows", exc_info=True)
+            return []
 
     def _auth_snapshot(self) -> Optional[Dict[str, Any]]:
         """給前端的登入狀態。session_token 絕不外送到瀏覽器。"""
