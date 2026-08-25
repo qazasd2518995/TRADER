@@ -140,6 +140,11 @@ PAGE = r"""<!doctype html>
   --accent-violet: #A855F7;
   --accent-blue:   #3179F5;
 
+  /* 均線顏色。三條要一眼分得開，又不能跟漲跌的紅綠打架。 */
+  --ma-5:  #F0C65C;
+  --ma-20: #22B8CF;
+  --ma-60: #A855F7;
+
   --shadow:   0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
   /* 卡片的玻璃質感：頂部一層極淡的白，模擬光從上方打下來。
      沒有這層，深色卡片會扁成一塊色塊。 */
@@ -165,6 +170,7 @@ PAGE = r"""<!doctype html>
   --win:#089981; --loss:#D92C3C;
   --win-wash:rgba(8,153,129,.10); --loss-wash:rgba(217,44,60,.10);
   --ok:#068043; --ok-wash:rgba(6,128,67,.10);
+  --ma-5:#B07D0A; --ma-20:#0E8FA8; --ma-60:#7C3AED;
   --accent-cyan:#0E8FA8; --accent-violet:#7C3AED; --accent-blue:#1E53E5;
   --shadow: 0 1px 2px rgba(22,22,26,.05), 0 8px 24px -16px rgba(22,22,26,.28);
   --glass: linear-gradient(180deg, rgba(0,0,0,.02), rgba(0,0,0,0) 42%);
@@ -470,6 +476,117 @@ body[data-role="client"]:not(.auth-locked) .shell {
 
 /* 面板裡的長表格要自己捲，不然一個有幾十筆紀錄的表格會把整列撐到近千像素高，
    同列的其他面板被拉出一大片空白。 */
+/* 市場總覽（側欄）。價格用等寬字，跳動的時候數字不會左右晃。 */
+.wl { list-style: none; margin: 0; padding: 0; }
+.wl li {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 0; border-top: 1px solid var(--hair);
+}
+.wl li:first-child { border-top: 0; }
+.wl-sym { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.wl-sym b { font-size: 12.5px; font-weight: 600; }
+.wl-sym span { font-size: 10.5px; color: var(--muted); }
+.wl-px { margin-left: auto; display: flex; flex-direction: column;
+         align-items: flex-end; gap: 1px; }
+.wl-px b { font-family: var(--mono); font-size: 12.5px; font-weight: 600; }
+.wl-px span { font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+.wl-px span.up { color: var(--win); }
+.wl-px span.down { color: var(--loss); }
+.wl-foot { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--hair);
+           font-size: 10.5px; color: var(--muted); display: flex; }
+.wl-foot span { margin-left: auto; font-family: var(--mono); }
+
+/* ── K 線圖 ─────────────────────────────────────────────────────
+   自己用 SVG 畫的。不外掛圖表庫的理由：這個檔案是刻意單檔內嵌的
+   （PyInstaller 的 .spec 才不用跟著改），而且自己畫才能跟其他圖用
+   同一套色票，不會有一塊長得像別人的產品。 */
+.dash-grid--hero { grid-template-columns: minmax(0, 2.15fr) minmax(0, 1fr); }
+.dash-grid--hero .source-grid { max-height: 396px; overflow: auto; }
+
+.panel--chart { display: flex; flex-direction: column; overflow: hidden; }
+
+.chart-bar {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 12px 16px; border-bottom: 1px solid var(--hair);
+  background: linear-gradient(180deg, rgba(255,255,255,.028), transparent);
+}
+.chart-sym { display: flex; align-items: baseline; gap: 9px; min-width: 0; }
+.chart-sym b { font-size: 15px; font-weight: 700; letter-spacing: -.01em; }
+.chart-tf-cur { font-size: 12px; color: var(--ink-2); }
+.chart-feed {
+  font-size: 10.5px; letter-spacing: .04em; color: var(--muted);
+  padding: 2px 7px; border: 1px solid var(--hair); border-radius: 999px;
+}
+.chart-tfs { margin-left: auto; }
+.chart-tfs .pill { padding: 4px 10px; font-size: 12px; }
+.chart-toggles { display: flex; gap: 5px; flex-wrap: wrap; }
+.chip {
+  font: inherit; font-size: 11px; letter-spacing: .02em;
+  padding: 4px 9px; border-radius: 7px; cursor: pointer;
+  color: var(--muted); background: transparent;
+  border: 1px solid var(--hair); transition: color .18s, border-color .18s;
+}
+.chip:hover { color: var(--ink-2); border-color: var(--rule); }
+.chip.is-on { color: var(--ink); border-color: var(--rule); background: var(--sunk); }
+/* 開著的指標左邊點一個色點，顏色對應線的顏色 */
+.chip[data-ma].is-on::before {
+  content: ""; display: inline-block; width: 6px; height: 6px;
+  border-radius: 50%; margin-right: 6px; vertical-align: 1px;
+}
+.chip[data-ma="5"].is-on::before  { background: var(--ma-5); }
+.chip[data-ma="20"].is-on::before { background: var(--ma-20); }
+.chip[data-ma="60"].is-on::before { background: var(--ma-60); }
+
+/* OHLC 讀數列。滑鼠移到哪根就顯示哪根，沒移就顯示最新。 */
+.chart-read {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 9px 16px; font-family: var(--mono); font-size: 11.5px;
+  color: var(--ink-2); border-bottom: 1px solid var(--hair);
+  min-height: 34px;
+}
+.chart-read .ohlc { display: flex; gap: 10px; }
+.chart-read .ohlc span { color: var(--muted); }
+.chart-read .ohlc b { font-weight: 600; color: var(--ink); margin-left: 3px; }
+.chart-read .ohlc b.up { color: var(--win); }
+.chart-read .ohlc b.down { color: var(--loss); }
+.chart-read .mas { display: flex; gap: 12px; margin-left: auto; }
+.chart-read .mas i { font-style: normal; }
+
+/* K 線的 SVG 元素。用 viewBox 拉伸，所以線寬要用 vector-effect 固定住，
+   不然橫向拉開後蠟燭的邊會變成粗細不一。 */
+#klineChart .k-grid { stroke: var(--hair); stroke-width: 1; vector-effect: non-scaling-stroke; }
+#klineChart .k-axis { fill: var(--muted); font-size: 10px; font-family: var(--mono); }
+#klineChart .k-axis--x { text-anchor: middle; }
+#klineChart .k-wick { stroke-width: 1; vector-effect: non-scaling-stroke; }
+#klineChart .k-wick.up   { stroke: var(--win); }
+#klineChart .k-wick.down { stroke: var(--loss); }
+#klineChart .k-body.up   { fill: var(--win); }
+#klineChart .k-body.down { fill: var(--loss); }
+#klineChart .k-vol { opacity: .34; }
+#klineChart .k-vol.up   { fill: var(--win); }
+#klineChart .k-vol.down { fill: var(--loss); }
+#klineChart .k-ma { fill: none; stroke-width: 1.4; vector-effect: non-scaling-stroke;
+                    stroke-linejoin: round; stroke-linecap: round; }
+#klineChart .k-lastline { stroke-width: 1; stroke-dasharray: 3 3; opacity: .7;
+                          vector-effect: non-scaling-stroke; }
+#klineChart .k-lastline.up   { stroke: var(--win); }
+#klineChart .k-lastline.down { stroke: var(--loss); }
+#klineChart .k-lastbg.up   { fill: var(--win); }
+#klineChart .k-lastbg.down { fill: var(--loss); }
+#klineChart .k-lasttxt { fill: #fff; font-size: 10.5px; font-family: var(--mono); font-weight: 600; }
+#klineChart .k-cross { stroke: var(--rule); stroke-width: 1; stroke-dasharray: 3 3;
+                       vector-effect: non-scaling-stroke; pointer-events: none; }
+
+.kline-wrap { position: relative; flex: 0 0 auto; height: 372px; }
+.kline-wrap svg { display: block; width: 100%; height: 100%; }
+.kline-empty {
+  position: absolute; inset: 0; display: none;
+  align-items: center; justify-content: center;
+  font-size: 13px; color: var(--muted);
+}
+.kline-wrap.is-empty .kline-empty { display: flex; }
+.kline-wrap.is-empty svg { opacity: 0; }
+
 /* 訊號中心的資訊列：左邊欄位名、右邊值，中間拉開 */
 .mock { display: flex; flex-direction: column; gap: 1px;
         background: var(--hair); border: 1px solid var(--hair);
@@ -1294,10 +1411,19 @@ body.auth-locked > *:not(#authGate) { display: none; }
       <a href="#secPositions">目前持倉</a>
       <a href="#secPerf">績效分析</a>
       <a href="#secCurve">累計損益曲線</a>
-      <a href="#secSources">各來源績效</a>
+      <a href="#secChart">價格走勢</a>
+      <a href="#secSources">跟單策略</a>
       <a href="#secTrades">交易紀錄</a>
       <a href="#secLogs">狀態紀錄</a>
     </nav>
+
+    <!-- 市場總覽。資料來自 EA 的 watchlist.json；舊版 EA 沒寫這個檔，
+         renderWatchlist() 會整塊 hidden 起來，不會留一個空殼在那。 -->
+    <div class="side-feats" id="secWatch" hidden>
+      <p class="side-head">市場總覽</p>
+      <ul class="wl" id="watchlist"></ul>
+      <p class="wl-foot">更新時間<span id="watchTime">—</span></p>
+    </div>
 
     <div class="side-feats">
       <p class="side-head">方案功能</p>
@@ -1383,31 +1509,58 @@ body.auth-locked > *:not(#authGate) { display: none; }
       <span class="count" id="filterCount"></span>
     </div>
 
-  <!-- ③ 主網格。設計圖這個位置原本是 K 線圖，但會員端沒有價格歷史資料，
-       畫出來會是假的；改放會員自己的損益曲線，對跟單者也更有意義。 -->
-  <div class="dash-grid dash-grid--2">
+  <!-- ③ 主視覺：K 線圖 + 跟單策略。
+       K 線的資料是會員自己那台 MT5 的券商報價（EA 寫出 rates_*.json），
+       不是外部行情源 —— 圖上看到的價格就是他實際成交的價格。 -->
+  <div class="dash-grid dash-grid--hero">
+    <section class="panel panel--chart" id="secChart">
+      <div class="chart-bar">
+        <div class="chart-sym">
+          <b id="kSymbol">XAUUSD</b>
+          <span class="chart-tf-cur" id="kTfLabel">15 分鐘</span>
+          <span class="chart-feed" id="kFeed">券商即時報價</span>
+        </div>
+        <div class="pillset chart-tfs" id="kTfs"></div>
+        <div class="chart-toggles">
+          <button type="button" class="chip is-on" data-ma="5">MA5</button>
+          <button type="button" class="chip is-on" data-ma="20">MA20</button>
+          <button type="button" class="chip is-on" data-ma="60">MA60</button>
+          <button type="button" class="chip is-on" data-vol="1">成交量</button>
+        </div>
+      </div>
+      <div class="chart-read" id="kRead"></div>
+      <div class="kline-wrap" id="klineWrap">
+        <svg id="klineChart" role="img" aria-label="價格走勢 K 線圖"></svg>
+        <div class="tip" id="klineTip"></div>
+        <div class="kline-empty" id="klineEmpty">等待 MT5 行情資料</div>
+      </div>
+    </section>
+
+    <section class="panel" id="secSources">
+      <div class="panel-head">
+        <h2>跟單策略</h2>
+        <p class="spacer">點卡片可篩選</p>
+      </div>
+      <div class="panel-body panel-body--tight">
+        <div class="source-grid" id="sourcePerf"></div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ④ 損益曲線。整列寬，這是會員最常盯的一張圖。 -->
+  <div class="dash-grid">
     <section class="panel" id="secCurve">
       <div class="panel-head">
         <h2>累計損益曲線</h2>
         <p>每一筆平倉後的累積結果，單位 <span id="curCode">USD</span></p>
       </div>
       <div class="panel-body">
-    <div class="card">
-      <div class="chart-wrap" id="equityWrap">
-        <svg id="equityChart" role="img" aria-label="累計損益曲線"></svg>
-        <div class="tip" id="equityTip"></div>
-      </div>
-    </div>
-      </div>
-    </section>
-
-    <section class="panel" id="secSources">
-      <div class="panel-head">
-        <h2>各來源績效</h2>
-        <p class="spacer">點卡片可篩選</p>
-      </div>
-      <div class="panel-body panel-body--tight">
-    <div class="source-grid" id="sourcePerf"></div>
+        <div class="card">
+          <div class="chart-wrap" id="equityWrap">
+            <svg id="equityChart" role="img" aria-label="累計損益曲線"></svg>
+            <div class="tip" id="equityTip"></div>
+          </div>
+        </div>
       </div>
     </section>
   </div>
@@ -2790,6 +2943,396 @@ function renderDonut(sum) {
   }
 }
 
+/* ================================================================== kline
+   K 線圖。資料來自會員自己那台 MT5（EA 寫的 rates_*.json），經 /api/market
+   進來。自己畫的原因見 CSS 那段註解。
+
+   佈局：上面 72% 畫價格，下面 22% 畫成交量，中間留 6% 當間隙。
+   ================================================================== */
+const K = {
+  tf: "M15",
+  data: null,          // { bars, digits, symbol, available, source }
+  ma: { 5: true, 20: true, 60: true },
+  vol: true,
+  hover: null,         // 滑鼠停在第幾根
+  loading: false,
+};
+
+const TF_LABEL = { M1: "1 分鐘", M5: "5 分鐘", M15: "15 分鐘",
+                   H1: "1 小時", H4: "4 小時", D1: "日線" };
+
+/* 移動平均。前 n-1 根沒有值，回 null 讓線段斷開，不要硬畫成 0。 */
+function movingAvg(bars, n) {
+  const out = new Array(bars.length).fill(null);
+  let sum = 0;
+  for (let i = 0; i < bars.length; i++) {
+    sum += bars[i].c;
+    if (i >= n) sum -= bars[i - n].c;
+    if (i >= n - 1) out[i] = sum / n;
+  }
+  return out;
+}
+
+/* 價格軸的刻度：抓一個「好看的」間隔（1/2/2.5/5 × 10^n），
+   不然會出現 2337.183 這種刻度。 */
+function niceTicks(lo, hi, target) {
+  const span = hi - lo;
+  if (!(span > 0)) return [lo];
+  const raw = span / Math.max(2, target);
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / mag;
+  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10) * mag;
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + step * 1e-9; v += step) out.push(v);
+  return out;
+}
+
+function fmtBarTime(t, tf) {
+  const d = new Date(t * 1000);
+  const p2 = (n) => String(n).padStart(2, "0");
+  if (tf === "D1") return d.getFullYear() + "/" + p2(d.getMonth() + 1) + "/" + p2(d.getDate());
+  if (tf === "H4" || tf === "H1")
+    return p2(d.getMonth() + 1) + "/" + p2(d.getDate()) + " " + p2(d.getHours()) + ":" + p2(d.getMinutes());
+  return p2(d.getHours()) + ":" + p2(d.getMinutes());
+}
+
+function renderKline() {
+  const wrap = $("klineWrap"), svg = $("klineChart");
+  if (!wrap || !svg) return;
+
+  const d = K.data;
+  let bars = (d && d.bars) || [];
+  wrap.classList.toggle("is-empty", bars.length < 2);
+  if (bars.length < 2) { svg.innerHTML = ""; renderKlineRead(); return; }
+
+  const box = wrap.getBoundingClientRect();
+  const W = Math.max(320, Math.round(box.width));
+  const H = Math.max(300, Math.round(box.height));
+  const padR = 62, padL = 8, padT = 10, padB = 22;
+  const plotW = W - padL - padR;
+
+  const showVol = K.vol;
+  const volH = showVol ? Math.round((H - padT - padB) * 0.22) : 0;
+  const gap = showVol ? Math.round((H - padT - padB) * 0.06) : 0;
+  const priceH = H - padT - padB - volH - gap;
+
+  // 價格範圍要把畫出來的 MA 也包進去，不然線會跑到框外
+  let lo = Infinity, hi = -Infinity;
+  for (const b of bars) { if (b.l < lo) lo = b.l; if (b.h > hi) hi = b.h; }
+  const mas = {};
+  for (const n of [5, 20, 60]) {
+    if (!K.ma[n] || bars.length < n) continue;
+    mas[n] = movingAvg(bars, n);
+    for (const v of mas[n]) { if (v == null) continue; if (v < lo) lo = v; if (v > hi) hi = v; }
+  }
+  if (!(hi > lo)) { hi = lo + 1; lo -= 1; }
+  const padPx = (hi - lo) * 0.06;
+  lo -= padPx; hi += padPx;
+
+  // 只畫塞得下的最後幾根。每根低於 ~4px 就糊成一片色塊，不如少畫一點。
+  const fit = Math.max(30, Math.min(bars.length, Math.floor(plotW / 7)));
+  bars = bars.slice(-fit);
+
+  const n = bars.length;
+  const slot = plotW / n;                     // 每根佔的寬度（含間隙）
+  const bw = Math.max(1, Math.min(14, slot * 0.68));
+  const X = (i) => padL + slot * (i + 0.5);
+  const Y = (v) => padT + priceH - ((v - lo) / (hi - lo)) * priceH;
+
+  let volMax = 0;
+  if (showVol) for (const b of bars) if (b.v > volMax) volMax = b.v;
+  const volTop = padT + priceH + gap;
+  const VY = (v) => volTop + volH - (volMax > 0 ? (v / volMax) * volH : 0);
+
+  const dg = (d && d.digits) || 2;
+  const fx = (v) => v.toFixed(dg);
+  const parts = [];
+
+  // ── 格線與價格刻度 ──
+  for (const v of niceTicks(lo, hi, 5)) {
+    const y = Y(v);
+    if (y < padT - 1 || y > padT + priceH + 1) continue;
+    parts.push(`<line x1="${padL}" y1="${y.toFixed(1)}" x2="${padL + plotW}" y2="${y.toFixed(1)}" class="k-grid"/>`);
+    parts.push(`<text x="${W - padR + 7}" y="${(y + 3.5).toFixed(1)}" class="k-axis">${fx(v)}</text>`);
+  }
+
+  // ── 成交量 ──
+  if (showVol) {
+    for (let i = 0; i < n; i++) {
+      const b = bars[i];
+      const up = b.c >= b.o;
+      const y = VY(b.v), h = Math.max(0.6, volTop + volH - y);
+      parts.push(`<rect x="${(X(i) - bw / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" class="k-vol ${up ? "up" : "down"}"/>`);
+    }
+  }
+
+  // ── 蠟燭 ──
+  for (let i = 0; i < n; i++) {
+    const b = bars[i];
+    const up = b.c >= b.o;
+    const x = X(i);
+    const yo = Y(b.o), yc = Y(b.c);
+    const top = Math.min(yo, yc);
+    const bh = Math.max(1, Math.abs(yc - yo));   // 十字線也要看得見，至少 1px
+    parts.push(`<line x1="${x.toFixed(1)}" y1="${Y(b.h).toFixed(1)}" x2="${x.toFixed(1)}" y2="${Y(b.l).toFixed(1)}" class="k-wick ${up ? "up" : "down"}"/>`);
+    parts.push(`<rect x="${(x - bw / 2).toFixed(1)}" y="${top.toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" class="k-body ${up ? "up" : "down"}"/>`);
+  }
+
+  // ── 均線 ──
+  for (const nn of [5, 20, 60]) {
+    const series = mas[nn];
+    if (!series) continue;
+    let dpath = "", pen = false;
+    for (let i = 0; i < n; i++) {
+      const v = series[i];
+      if (v == null) { pen = false; continue; }
+      dpath += (pen ? "L" : "M") + X(i).toFixed(1) + " " + Y(v).toFixed(1) + " ";
+      pen = true;
+    }
+    if (dpath) parts.push(`<path d="${dpath.trim()}" class="k-ma" style="stroke:var(--ma-${nn})"/>`);
+  }
+
+  // ── 最新價：右側標籤 + 貫穿虛線 ──
+  const last = bars[n - 1];
+  const ly = Y(last.c);
+  const lastUp = last.c >= last.o;
+  parts.push(`<line x1="${padL}" y1="${ly.toFixed(1)}" x2="${padL + plotW}" y2="${ly.toFixed(1)}" class="k-lastline ${lastUp ? "up" : "down"}"/>`);
+  parts.push(`<rect x="${(W - padR + 2).toFixed(1)}" y="${(ly - 9).toFixed(1)}" width="${(padR - 4).toFixed(1)}" height="18" rx="3" class="k-lastbg ${lastUp ? "up" : "down"}"/>`);
+  parts.push(`<text x="${W - padR + 7}" y="${(ly + 3.5).toFixed(1)}" class="k-lasttxt">${fx(last.c)}</text>`);
+
+  // ── 時間軸 ──
+  const every = Math.max(1, Math.round(n / Math.max(3, Math.floor(plotW / 92))));
+  for (let i = n - 1; i >= 0; i -= every) {
+    const x = X(i);
+    if (x < padL + 18 || x > padL + plotW - 18) continue;
+    parts.push(`<text x="${x.toFixed(1)}" y="${H - 6}" class="k-axis k-axis--x">${esc(fmtBarTime(bars[i].t, K.tf))}</text>`);
+  }
+
+  // ── 十字準星（滑鼠移到才顯示）──
+  parts.push(`<line id="kCrossV" class="k-cross" x1="0" y1="${padT}" x2="0" y2="${padT + priceH + gap + volH}" opacity="0"/>`);
+
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.innerHTML = parts.join("");
+
+  // 命中測試用的幾何資料，交給滑鼠事件
+  K.geom = { X, Y, padL, plotW, slot, n, W, H };
+  K.view = bars;   // 實際畫出來的那幾根，讀數列與 hover 都對這份
+  renderKlineRead();
+}
+
+/* OHLC 讀數列。停在哪根顯示哪根，沒停就顯示最新那根。 */
+function renderKlineRead() {
+  const host = $("kRead");
+  if (!host) return;
+  const d = K.data, bars = K.view || (d && d.bars) || [];
+  if (!bars.length) { host.innerHTML = ""; return; }
+
+  const i = (K.hover != null && bars[K.hover]) ? K.hover : bars.length - 1;
+  const b = bars[i];
+  const prev = bars[i - 1];
+  const dg = (d && d.digits) || 2;
+  const fx = (v) => v.toFixed(dg);
+
+  const base = prev ? prev.c : b.o;
+  const diff = b.c - base;
+  const pct = base ? (diff / base) * 100 : 0;
+  const cls = diff > 0 ? "up" : diff < 0 ? "down" : "";
+  const sign = diff > 0 ? "+" : "";
+
+  let maHtml = "";
+  for (const nn of [5, 20, 60]) {
+    if (!K.ma[nn] || bars.length < nn) continue;
+    const v = movingAvg(bars, nn)[i];
+    maHtml += `<i style="color:var(--ma-${nn})">MA${nn} ${v == null ? "—" : fx(v)}</i>`;
+  }
+
+  host.innerHTML =
+    `<div class="ohlc">` +
+      `<span>開<b>${fx(b.o)}</b></span>` +
+      `<span>高<b>${fx(b.h)}</b></span>` +
+      `<span>低<b>${fx(b.l)}</b></span>` +
+      `<span>收<b class="${cls}">${fx(b.c)}</b></span>` +
+      `<span><b class="${cls}">${sign}${fx(diff)} (${sign}${pct.toFixed(2)}%)</b></span>` +
+    `</div>` +
+    (maHtml ? `<div class="mas">${maHtml}</div>` : "");
+}
+
+/* 滑鼠互動：十字準星 + 浮動提示 */
+function bindKline() {
+  const wrap = $("klineWrap");
+  if (!wrap || wrap.dataset.bound) return;
+  wrap.dataset.bound = "1";
+
+  const tip = $("klineTip");
+  wrap.addEventListener("pointermove", (e) => {
+    const g = K.geom, bars = K.view || [];
+    if (!g || !bars.length) return;
+    const box = wrap.getBoundingClientRect();
+    const px = ((e.clientX - box.left) / box.width) * g.W;
+    let i = Math.round((px - g.padL) / g.slot - 0.5);
+    i = Math.max(0, Math.min(bars.length - 1, i));
+    if (i === K.hover) return;
+    K.hover = i;
+
+    const line = $("kCrossV");
+    if (line) { line.setAttribute("x1", g.X(i)); line.setAttribute("x2", g.X(i)); line.setAttribute("opacity", 1); }
+    renderKlineRead();
+
+    if (tip) {
+      const b = bars[i];
+      const dg = (K.data && K.data.digits) || 2;
+      tip.innerHTML =
+        `<div class="tip-h">${esc(fmtBarTime(b.t, K.tf))}</div>` +
+        `<div class="tip-row"><span>開</span><b>${b.o.toFixed(dg)}</b></div>` +
+        `<div class="tip-row"><span>高</span><b>${b.h.toFixed(dg)}</b></div>` +
+        `<div class="tip-row"><span>低</span><b>${b.l.toFixed(dg)}</b></div>` +
+        `<div class="tip-row"><span>收</span><b class="${b.c >= b.o ? "up" : "down"}">${b.c.toFixed(dg)}</b></div>` +
+        `<div class="tip-row"><span>量</span><b>${b.v}</b></div>`;
+      tip.style.opacity = 1;
+      const left = Math.min(Math.max(0, (g.X(i) / g.W) * box.width - 68), box.width - 150);
+      tip.style.left = left + "px";
+      tip.style.top = "12px";
+    }
+  });
+
+  wrap.addEventListener("pointerleave", () => {
+    K.hover = null;
+    const line = $("kCrossV");
+    if (line) line.setAttribute("opacity", 0);
+    if (tip) tip.style.opacity = 0;
+    renderKlineRead();
+  });
+}
+
+/* 週期切換鈕。只列後端說「有足夠根數」的那些。 */
+function renderTfPills() {
+  const host = $("kTfs");
+  if (!host) return;
+  const avail = (K.data && K.data.available) || ["M1", "M5", "M15", "H1", "H4", "D1"];
+  host.innerHTML = avail.map((tf) =>
+    `<button type="button" class="pill ${tf === K.tf ? "is-on" : ""}" data-tf="${tf}">${tf}</button>`
+  ).join("");
+  const label = $("kTfLabel");
+  if (label) label.textContent = TF_LABEL[K.tf] || K.tf;
+}
+
+/* 即時報價灌進「形成中的那根」。
+
+   K 線的骨架 5 秒才重抓一次，但 /api/status 每秒都在跑而且順便帶了 bid。
+   真實交易軟體上，最後一根會隨著每個 tick 動——這裡做的就是這件事：
+   把最新價當成那根的收盤，順便把高低推開。下一次 /api/market 回來時，
+   券商算的真實數字會直接覆蓋掉這個推估值。 */
+function applyTick(tick) {
+  if (!tick || !K.data || !K.data.bars || !K.data.bars.length) return;
+  const px = Number(tick.bid);
+  if (!isFinite(px) || px <= 0) return;
+
+  const bars = K.data.bars;
+  const last = bars[bars.length - 1];
+  if (last.c === px) return;             // 沒動就不重畫
+
+  last.c = px;
+  if (px > last.h) last.h = px;
+  if (px < last.l) last.l = px;
+
+  // 報價徽章一起更新，讓人看得出來畫面是活的
+  const feed = $("kFeed");
+  if (feed && tick.stale) feed.textContent = "報價已停止更新";
+
+  renderKline();
+}
+
+async function refreshMarket() {
+  if (K.loading) return;
+  K.loading = true;
+  try {
+    const r = await fetch("/api/market?tf=" + encodeURIComponent(K.tf), { cache: "no-store" });
+    const j = await r.json();
+    if (!j.ok || !j.market) return;
+    K.data = j.market;
+
+    const sym = $("kSymbol");
+    if (sym) sym.textContent = j.market.symbol || "XAUUSD";
+    const feed = $("kFeed");
+    if (feed) {
+      // 聚合出來的要講清楚，不要讓人以為是券商原生週期
+      feed.textContent = j.market.source === "aggregated"
+        ? "由 M1 合成" : "券商即時報價";
+    }
+    renderTfPills();
+    renderKline();
+    renderWatchlist();
+  } catch (e) {
+    /* 網路斷了就維持上一次的畫面，下一輪再試 */
+  } finally {
+    K.loading = false;
+  }
+}
+
+/* 側欄的市場總覽 */
+function renderWatchlist() {
+  const host = $("watchlist");
+  if (!host) return;
+  const rows = (K.data && K.data.watchlist) || [];
+  const card = $("secWatch");
+  if (card) card.hidden = rows.length === 0;
+  if (!rows.length) { host.innerHTML = ""; return; }
+
+  host.innerHTML = rows.map((w) => {
+    const up = w.change_pct > 0, down = w.change_pct < 0;
+    const cls = up ? "up" : down ? "down" : "";
+    const sign = up ? "+" : "";
+    return `<li>
+      <div class="wl-sym">
+        <b>${esc(w.symbol)}</b>
+        <span>${esc(SYM_NAME[w.symbol] || "")}</span>
+      </div>
+      <div class="wl-px">
+        <b>${w.bid.toLocaleString("en-US", { minimumFractionDigits: w.digits, maximumFractionDigits: w.digits })}</b>
+        <span class="${cls}">${sign}${w.change_pct.toFixed(2)}%</span>
+      </div>
+    </li>`;
+  }).join("");
+
+  const t = $("watchTime");
+  if (t) {
+    const d = new Date();
+    const p2 = (x) => String(x).padStart(2, "0");
+    t.textContent = p2(d.getHours()) + ":" + p2(d.getMinutes()) + ":" + p2(d.getSeconds());
+  }
+}
+
+const SYM_NAME = {
+  XAUUSD: "黃金/美元", XAGUSD: "白銀/美元", USOIL: "原油",
+  BTCUSD: "比特幣/美元", ETHUSD: "以太幣/美元",
+  EURUSD: "歐元/美元", GBPUSD: "英鎊/美元", USDJPY: "美元/日圓",
+};
+
+/* 週期鈕與指標開關 */
+document.addEventListener("click", (e) => {
+  const tfBtn = e.target.closest("#kTfs .pill");
+  if (tfBtn) {
+    K.tf = tfBtn.dataset.tf;
+    K.hover = null;
+    renderTfPills();
+    refreshMarket();
+    return;
+  }
+  const chip = e.target.closest(".chart-toggles .chip");
+  if (chip) {
+    if (chip.dataset.ma) {
+      const n = Number(chip.dataset.ma);
+      K.ma[n] = !K.ma[n];
+      chip.classList.toggle("is-on", K.ma[n]);
+    } else {
+      K.vol = !K.vol;
+      chip.classList.toggle("is-on", K.vol);
+    }
+    renderKline();
+  }
+});
+
 /* 底部狀態列。全部是既有的狀態資料，只是搬到隨時看得到的位置。 */
 function renderStatusBar(stats, sum) {
   const bar = $("statusBar");
@@ -3288,6 +3831,7 @@ async function refreshStatus() {
     if (!S.filled) { fill(snap.settings); S.filled = true; }
     paintAuth(snap);
     paintStatus();
+    applyTick(snap.tick);      // 每秒把最新價灌進形成中的那根
   } catch (e) { /* 網頁還開著、服務暫時沒回應時不要洗版 */ }
 }
 async function refreshStats() {
@@ -3632,13 +4176,16 @@ if ($("openHub")) {
 let resizeTimer = null;
 addEventListener("resize", () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => { if (S.stats) paintStats(); }, 140);
+  resizeTimer = setTimeout(() => { if (S.stats) paintStats(); renderKline(); }, 140);
 });
 
 refreshStatus();
 refreshStats();
+bindKline();
+refreshMarket();
 setInterval(refreshStatus, 1000);
 setInterval(refreshStats, 3000);
+setInterval(refreshMarket, 5000);
 setInterval(tickCountdowns, 1000);
 </script>
 </body>

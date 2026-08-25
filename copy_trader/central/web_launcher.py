@@ -877,7 +877,21 @@ class LauncherState:
             "uptime_seconds": int(time.time() - self.service_started_at) if self.service_started_at else 0,
             "auth": self._auth_snapshot(),
             "capture_windows": self._capture_window_names(),
+            "tick": self._live_tick(),
         }
+
+    def _live_tick(self) -> Optional[Dict[str, Any]]:
+        """主商品的即時 bid/ask。EA 每秒寫一次，這裡搭 /api/status 的順風車
+        —— 前端本來就每秒打這支，不用為了報價多開一條輪詢。
+        訊號中心沒有 MT5，直接回 None。"""
+        if self.role != "client":
+            return None
+        try:
+            from copy_trader.central.market import live_tick
+            return live_tick(self.settings)
+        except Exception:
+            logger.debug("讀不到即時報價", exc_info=True)
+            return None
 
     def _capture_window_names(self) -> List[str]:
         """中央機正在監控的視窗名稱。給訊號中心的面板顯示用。
@@ -979,6 +993,19 @@ def make_handler(state: LauncherState):
                     _json_response(self, 200, {"ok": True, "stats": stats})
                 except Exception as exc:
                     logger.exception("stats failed: %s", exc)
+                    _json_response(self, 500, {"ok": False, "error": str(exc)})
+                return
+            if parsed.path == "/api/market":
+                # 圖表資料。跟 /api/stats 一樣，MT5 沒開就回空的，不讓整頁掛掉
+                try:
+                    from copy_trader.central.market import build_market
+
+                    q = urllib.parse.parse_qs(parsed.query)
+                    tf = (q.get("tf") or ["M15"])[0]
+                    _json_response(self, 200,
+                                   {"ok": True, "market": build_market(state.settings, tf)})
+                except Exception as exc:
+                    logger.exception("market failed: %s", exc)
                     _json_response(self, 500, {"ok": False, "error": str(exc)})
                 return
             _json_response(self, 404, {"ok": False, "error": "not_found"})

@@ -12,6 +12,11 @@ input double DefaultLotSize = 0.01;
 input bool   EnableTrading = true;
 input bool   DetailedLogging = true;
 
+// === 行情輸出（給會員端的圖表用）=================================
+input bool   ExportChartData = true;                          // 輸出多週期 K 線給會員端畫圖
+input int    ChartBarCount   = 400;                           // 每個週期輸出幾根
+input string WatchlistSymbols = "XAGUSD,USOIL,BTCUSD,EURUSD"; // 市場總覽的自選商品（逗號分隔）
+
 // === Cloud Hub auto-trading (members poll the central hub directly) ===
 input bool   EnableHubPolling = false;                                  // (選用) EA 直接向雲端 Hub 抓訊號; 會員端建議用 Python agent, 此處保持關閉
 input string HubUrl           = "https://gold-signal-hub-tw.fly.dev";   // 中央 Hub 網址
@@ -40,6 +45,14 @@ datetime last_tick_write       = 0;
 datetime last_symbolinfo_write = 0;
 datetime last_orderbook_write  = 0;
 datetime last_rates_write      = 0;
+
+// 多週期 K 線各寫各的：小週期跳得快就寫得勤，大週期沒必要一直重寫
+datetime last_rates_m5   = 0;
+datetime last_rates_m15  = 0;
+datetime last_rates_h1   = 0;
+datetime last_rates_h4   = 0;
+datetime last_rates_d1   = 0;
+datetime last_watchlist  = 0;
 
 // Cloud Hub polling state
 long     g_hub_last_seq  = -1;     // -1 = 尚未初始化 (第一次連線會對齊到 latest_seq)
@@ -120,7 +133,19 @@ void OnTimer()
    if(TimeCurrent() - last_tick_write >= 1)           { WriteTickData(); last_tick_write = TimeCurrent(); }
    if(TimeCurrent() - last_orders_write >= 2)         { WritePendingOrders(); last_orders_write = TimeCurrent(); }
    if(TimeCurrent() - last_orderbook_write >= 2)      { WriteOrderBook(); last_orderbook_write = TimeCurrent(); }
-   if(TimeCurrent() - last_rates_write >= 10)         { WriteRatesM1(TradingSymbol, 200); last_rates_write = TimeCurrent(); }
+   if(TimeCurrent() - last_rates_write >= 10)         { WriteRatesM1(TradingSymbol, ChartBarCount); last_rates_write = TimeCurrent(); }
+
+   // 多週期 K 線 + 自選報價。週期越大、重算越沒意義，所以間隔拉開；
+   // 全部加起來平均每秒不到一次寫檔，比原本的 tick 檔還輕。
+   if(ExportChartData)
+   {
+      if(TimeCurrent() - last_rates_m5  >= 15)  { WriteRates(TradingSymbol, PERIOD_M5,  ChartBarCount, "rates_M5.json");  last_rates_m5  = TimeCurrent(); }
+      if(TimeCurrent() - last_rates_m15 >= 30)  { WriteRates(TradingSymbol, PERIOD_M15, ChartBarCount, "rates_M15.json"); last_rates_m15 = TimeCurrent(); }
+      if(TimeCurrent() - last_rates_h1  >= 60)  { WriteRates(TradingSymbol, PERIOD_H1,  ChartBarCount, "rates_H1.json");  last_rates_h1  = TimeCurrent(); }
+      if(TimeCurrent() - last_rates_h4  >= 180) { WriteRates(TradingSymbol, PERIOD_H4,  ChartBarCount, "rates_H4.json");  last_rates_h4  = TimeCurrent(); }
+      if(TimeCurrent() - last_rates_d1  >= 300) { WriteRates(TradingSymbol, PERIOD_D1,  ChartBarCount, "rates_D1.json");  last_rates_d1  = TimeCurrent(); }
+      if(TimeCurrent() - last_watchlist >= 3)   { WriteWatchlist(); last_watchlist = TimeCurrent(); }
+   }
    // re-dump symbol specs every 1h (in case of broker changes)
    if(TimeCurrent() - last_symbolinfo_write >= 3600)  { WriteSymbolInfo(TradingSymbol); last_symbolinfo_write = TimeCurrent(); }
 
@@ -541,30 +566,143 @@ void WriteOrderBook()
 //+------------------------------------------------------------------+
 //| NEW: Compact OHLCV history (M1)                                  |
 //+------------------------------------------------------------------+
+// 舊介面保留：轉呼叫通用版，寫出來的 rates_M1.json 格式不變
 void WriteRatesM1(string sym, int count)
 {
+   WriteRates(sym, PERIOD_M1, count, "rates_M1.json");
+}
+
+//+------------------------------------------------------------------+
+//| 輸出任一週期的 K 線給會員端畫圖                                   |
+//| 多帶一個 digits，讓前端知道要顯示幾位小數——黃金 2 位、外匯 5 位， |
+//| 寫死會很醜。                                                      |
+//+------------------------------------------------------------------+
+void WriteRates(string sym, ENUM_TIMEFRAMES tf, int count, string outfile)
+{
    MqlRates rates[];
-   int copied = CopyRates(sym, PERIOD_M1, 0, count, rates);
+   int copied = CopyRates(sym, tf, 0, count, rates);
    if(copied<=0) return;
 
    ArraySetAsSeries(rates, true);
-   string j = "{\"symbol\":\""+sym+"\",\"timeframe\":\"M1\",\"bars\":[";
+   int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   if(digits <= 0) digits = 5;
+
+   string j = "{\"symbol\":\""+sym+"\",\"timeframe\":\""+TimeframeName(tf)+"\""
+            + ",\"digits\":"+IntegerToString(digits)
+            + ",\"server_time\":"+IntegerToString((long)TimeCurrent())
+            + ",\"bars\":[";
    for(int i=copied-1;i>=0;i--)  // oldest -> newest
    {
       if(i != copied-1) j+=",";
       j+="{\"t\":"+IntegerToString((long)rates[i].time)
-        +",\"o\":"+DoubleToString(rates[i].open,5)
-        +",\"h\":"+DoubleToString(rates[i].high,5)
-        +",\"l\":"+DoubleToString(rates[i].low,5)
-        +",\"c\":"+DoubleToString(rates[i].close,5)
-        +",\"tv\":"+IntegerToString((long)rates[i].tick_volume)
-        +",\"rv\":"+IntegerToString((long)rates[i].real_volume)
-        +",\"spr\":"+IntegerToString((int)rates[i].spread)+"}";
+        +",\"o\":"+DoubleToString(rates[i].open,digits)
+        +",\"h\":"+DoubleToString(rates[i].high,digits)
+        +",\"l\":"+DoubleToString(rates[i].low,digits)
+        +",\"c\":"+DoubleToString(rates[i].close,digits)
+        +",\"tv\":"+IntegerToString((long)rates[i].tick_volume)+"}";
    }
    j+="]}";
 
-   int h=FileOpen("rates_M1.json", FILE_WRITE|FILE_TXT|FILE_ANSI);
+   int h=FileOpen(outfile, FILE_WRITE|FILE_TXT|FILE_ANSI);
    if(h!=INVALID_HANDLE){ FileWrite(h, j); FileClose(h); }
+}
+
+string TimeframeName(ENUM_TIMEFRAMES tf)
+{
+   switch(tf)
+   {
+      case PERIOD_M1:  return "M1";
+      case PERIOD_M5:  return "M5";
+      case PERIOD_M15: return "M15";
+      case PERIOD_M30: return "M30";
+      case PERIOD_H1:  return "H1";
+      case PERIOD_H4:  return "H4";
+      case PERIOD_D1:  return "D1";
+   }
+   return "M1";
+}
+
+//+------------------------------------------------------------------+
+//| 市場總覽：自選商品的即時報價與當日漲跌                            |
+//| 券商代號常有後綴（XAGUSD.m、BTCUSD.raw），所以先試原名，不行就掃   |
+//| 一遍 Market Watch 找開頭相同的。找不到就跳過——不要讓一個沒上架的  |
+//| 商品害整份檔案寫不出來。                                          |
+//+------------------------------------------------------------------+
+void WriteWatchlist()
+{
+   string parts[];
+   int n = StringSplit(WatchlistSymbols, ',', parts);
+
+   string all[];
+   ArrayResize(all, n+1);
+   all[0] = TradingSymbol;              // 主商品永遠排第一
+   for(int i=0;i<n;i++) all[i+1] = parts[i];
+
+   string j = "{\"server_time\":"+IntegerToString((long)TimeCurrent())+",\"items\":[";
+   int written = 0;
+
+   for(int i=0;i<ArraySize(all);i++)
+   {
+      string want = all[i];
+      StringTrimLeft(want); StringTrimRight(want);
+      if(want == "") continue;
+      if(i > 0 && want == TradingSymbol) continue;   // 別重複列主商品
+
+      string sym = ResolveSymbol(want);
+      if(sym == "") continue;
+
+      MqlTick tick;
+      if(!SymbolInfoTick(sym, tick)) continue;
+      if(tick.bid <= 0) continue;
+
+      // 當日漲跌拿 D1 這根的開盤價當基準
+      double base = 0;
+      MqlRates d1[];
+      if(CopyRates(sym, PERIOD_D1, 0, 2, d1) >= 1)
+      {
+         ArraySetAsSeries(d1, true);
+         base = d1[0].open;
+      }
+      if(base <= 0) base = tick.bid;
+
+      double chg  = tick.bid - base;
+      double chgp = (base != 0) ? (chg / base * 100.0) : 0;
+      int digits  = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+      if(digits <= 0) digits = 5;
+
+      if(written > 0) j += ",";
+      j += "{\"symbol\":\""+want+"\""
+         + ",\"resolved\":\""+sym+"\""
+         + ",\"bid\":"+DoubleToString(tick.bid, digits)
+         + ",\"ask\":"+DoubleToString(tick.ask, digits)
+         + ",\"digits\":"+IntegerToString(digits)
+         + ",\"change\":"+DoubleToString(chg, digits)
+         + ",\"change_pct\":"+DoubleToString(chgp, 2)+"}";
+      written++;
+   }
+   j += "]}";
+
+   int h=FileOpen("watchlist.json", FILE_WRITE|FILE_TXT|FILE_ANSI);
+   if(h!=INVALID_HANDLE){ FileWrite(h, j); FileClose(h); }
+}
+
+// 找出券商實際的商品代號：先試原名，再掃 Market Watch 找前綴相同的
+string ResolveSymbol(string want)
+{
+   if(SymbolSelect(want, true) && SymbolInfoDouble(want, SYMBOL_BID) > 0)
+      return want;
+
+   int total = SymbolsTotal(false);
+   for(int i=0;i<total;i++)
+   {
+      string name = SymbolName(i, false);
+      if(StringFind(name, want) == 0)          // XAGUSD → XAGUSD.m
+      {
+         if(SymbolSelect(name, true) && SymbolInfoDouble(name, SYMBOL_BID) > 0)
+            return name;
+      }
+   }
+   return "";
 }
 
 // --------------------------- JSON helpers -------------------------

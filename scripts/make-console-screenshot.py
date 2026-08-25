@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import math
 import random
 import sys
 import tempfile
@@ -28,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 SEED = 20260824
 SYMBOL = "XAUUSD"
+TARGET_PRICE = 2335.45   # 各週期最後一根都收在這，跟自選清單對齊
 COPY_MAGIC = "990001"          # 本系統的魔術編號
 EA_MAGIC = "20260503"          # 另一顆 EA（趨勢線策略）
 
@@ -249,6 +251,71 @@ class State:
     auth = {"username": "demo"}
 
 
+def build_fake_rates(root: Path) -> None:
+    """造出 EA v4.2 會寫的行情檔：多週期 K 線 + 市場總覽。
+
+    走隨機漫步，但帶一點趨勢和日內波動，讓圖看起來像真的黃金而不是雜訊。
+    種子固定，所以每次預覽長得一樣，改版面時比較好比對。
+    """
+    rnd = random.Random(SEED + 7)
+    now = int(time.time())
+
+    for tf, secs, count in (("M1", 60, 400), ("M5", 300, 400), ("M15", 900, 400),
+                            ("H1", 3600, 400), ("H4", 14400, 300), ("D1", 86400, 250)):
+        # 大週期波動大一點，不然 D1 會是一條直線
+        vol = 0.45 * (secs / 900) ** 0.5
+        price = 2335.0
+        drift = 0.00004
+        bars = []
+        start = now - (now % secs) - secs * (count - 1)
+        for i in range(count):
+            o = price
+            # 一根裡面走幾步，收盤才不會總是貼在開盤價上
+            c = o
+            hi = lo = o
+            for _ in range(4):
+                c += rnd.gauss(drift * o / 4, vol)
+                hi = max(hi, c)
+                lo = min(lo, c)
+            hi = max(hi, o, c) + abs(rnd.gauss(0, vol * 0.35))
+            lo = min(lo, o, c) - abs(rnd.gauss(0, vol * 0.35))
+            bars.append({
+                "t": start + i * secs,
+                "o": round(o, 2), "h": round(hi, 2),
+                "l": round(lo, 2), "c": round(c, 2),
+                "tv": int(abs(rnd.gauss(900, 380)) + 60),
+            })
+            price = c
+        # 各週期最後一根的收盤必須是同一個價 —— 同一個時刻的現價不會因為
+        # 你切了週期就變。生成完統一平移到目標價，形狀不變。
+        shift = TARGET_PRICE - bars[-1]["c"]
+        for b in bars:
+            for k in ("o", "h", "l", "c"):
+                b[k] = round(b[k] + shift, 2)
+        (root / f"rates_{tf}.json").write_text(json.dumps(
+            {"symbol": SYMBOL, "timeframe": tf, "digits": 2,
+             "server_time": now, "bars": bars}, ensure_ascii=False), encoding="utf-8")
+
+    last = bars[-1]["c"]
+    (root / f"{SYMBOL}_price.json").write_text(json.dumps(
+        {"symbol": SYMBOL, "bid": round(last, 2), "ask": round(last + 0.28, 2),
+         "timestamp": now}, ensure_ascii=False), encoding="utf-8")
+
+    items = [
+        {"symbol": SYMBOL,   "bid": round(last, 2),  "digits": 2, "change_pct": 0.63},
+        {"symbol": "XAGUSD", "bid": 28.58,           "digits": 3, "change_pct": 0.48},
+        {"symbol": "USOIL",  "bid": 78.26,           "digits": 2, "change_pct": -0.21},
+        {"symbol": "BTCUSD", "bid": 67890.12,        "digits": 2, "change_pct": 1.32},
+        {"symbol": "EURUSD", "bid": 1.08943,         "digits": 5, "change_pct": -0.15},
+    ]
+    for it in items:
+        it["ask"] = it["bid"]
+        it["change"] = 0.0
+        it["resolved"] = it["symbol"]
+    (root / "watchlist.json").write_text(json.dumps(
+        {"server_time": now, "items": items}, ensure_ascii=False), encoding="utf-8")
+
+
 def _touch_account(mt5_dir: Path) -> None:
     """把 account_info.json 的時間戳更新成現在，模擬 EA 持續回報。"""
     path = mt5_dir / "account_info.json"
@@ -303,6 +370,13 @@ def make_handler(mt5_dir: Path, tier: str = "flagship", role: str = "client"):
                     "lan_ip": "192.168.0.24", "cloudflare_url": "",
                     # 訊號中心的面板要顯示監控中的視窗；會員端用不到
                     "capture_windows": list(SOURCES.values()) if role == "central" else [],
+                    # 即時報價：讓最後一根會跳。用時間當種子，每秒都不一樣。
+                    "tick": None if role == "central" else {
+                        "symbol": SYMBOL, "stale": False,
+                        "bid": round(TARGET_PRICE + math.sin(time.time() / 5) * 0.9, 2),
+                        "ask": round(TARGET_PRICE + math.sin(time.time() / 5) * 0.9 + 0.28, 2),
+                        "timestamp": int(time.time()),
+                    },
                     "uptime_seconds": 27_540,
                     "auth": None if role == "central" else {
                         "logged_in": True, "username": "demo",
@@ -313,6 +387,15 @@ def make_handler(mt5_dir: Path, tier: str = "flagship", role: str = "client"):
                         "error": "",
                     },
                 })
+                return
+            if self.path.startswith("/api/market"):
+                from urllib.parse import urlparse, parse_qs
+                from copy_trader.central.market import build_market
+
+                tf = (parse_qs(urlparse(self.path).query).get("tf") or ["M15"])[0]
+                # 每次都重畫最後一根，模擬價格在跳
+                build_fake_rates(mt5_dir)
+                self._json({"ok": True, "market": build_market(settings, tf)})
                 return
             if self.path.startswith("/api/stats"):
                 # EA 平常每幾秒就會覆寫一次這個檔；這裡模擬那個行為，
@@ -345,6 +428,7 @@ def main():
 
     tmp = Path(tempfile.mkdtemp(prefix="console-shot-"))
     build_fake_mt5_dir(tmp)
+    build_fake_rates(tmp)
     # journal_path() 找不到 DATA_DIR/trade_journal.txt 時會退回 ./trade_journal.txt
     os.chdir(tmp)
 
