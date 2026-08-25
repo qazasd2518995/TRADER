@@ -203,7 +203,7 @@ h1, h2, h3, h4 {
   backdrop-filter: saturate(1.4) blur(12px);
   border-bottom: 1px solid var(--hair);
 }
-.rail-id { display: flex; align-items: center; gap: 12px; margin-right: auto; }
+.rail-id { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
 .rail-id h1 { font-size: 17px; font-weight: 800; }
 .rail-sub { margin: 0; font-size: 12px; color: var(--muted); letter-spacing: .06em; }
 
@@ -418,7 +418,9 @@ body[data-role="client"]:not(.auth-locked) .shell {
   padding: 14px 18px;
   border-bottom: 1px solid var(--hair);
 }
-.panel-head h2 { font-size: 14.5px; font-weight: 700; }
+/* 標題不參與壓縮 —— 右邊的說明文字跟時區標註會把它擠成兩行 */
+.panel-head h2 { font-size: 14.5px; font-weight: 700; white-space: nowrap; flex: 0 0 auto; }
+.panel-head .spacer, .panel-head .tz-note { min-width: 0; }
 .panel-head p { margin: 0; font-size: 12px; color: var(--muted); }
 .panel-head .spacer { margin-left: auto; text-align: right; }
 .panel-body { padding: 16px 18px; flex: 1; min-height: 0; }
@@ -476,6 +478,78 @@ body[data-role="client"]:not(.auth-locked) .shell {
 
 /* 面板裡的長表格要自己捲，不然一個有幾十筆紀錄的表格會把整列撐到近千像素高，
    同列的其他面板被拉出一大片空白。 */
+/* 升級卡。金色描邊是全站唯一一處用滿版金的地方，用來標示這是行動點。 */
+.side-up {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--gold-lit) 12%, transparent), transparent 62%),
+    var(--card);
+  border-color: color-mix(in srgb, var(--gold-lit) 34%, var(--hair));
+}
+.side-up-h { margin: 0 0 6px; font-size: 13px; font-weight: 700; color: var(--gold-lit); }
+.side-up-b { margin: 0 0 11px; font-size: 11.5px; line-height: 1.55; color: var(--ink-2); }
+.side-up-ig {
+  margin: 0; display: flex; align-items: center; gap: 7px;
+  font-size: 11px; color: var(--muted);
+}
+.side-up-ig b { font-family: var(--mono); font-size: 12px; color: var(--ink); }
+
+/* 策略卡片的運行狀態與管理鍵 */
+.sc-run {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; color: var(--muted); white-space: nowrap;
+}
+.sc-run .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+.sc-run.on { color: var(--win); }
+.sc-run.on .dot {
+  background: var(--win);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--win) 20%, transparent);
+}
+.sc-foot {
+  display: flex; align-items: center; gap: 10px;
+  margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--hair);
+}
+.sc-meta { font-size: 11px; color: var(--muted); }
+.sc-manage { margin-left: auto; padding: 5px 13px; font-size: 12px; }
+/* 卡片本體從 button 換成 div，游標與鍵盤焦點要自己補回來 */
+.source-card { cursor: pointer; }
+.source-card:focus-visible { outline: 2px solid var(--gold-lit); outline-offset: 2px; }
+
+/* 頂部主導覽。每一項都對到頁面上真的存在的區塊——沒有點了不會動的裝飾項。 */
+/* flex: 1 1 auto + min-width: 0 讓導覽在空間不夠時自己壓縮橫捲，
+   而不是把右邊那排按鈕擠到第二行去。 */
+.rail-nav {
+  display: flex; align-items: center; gap: 2px; margin-left: 8px;
+  flex: 1 1 auto; min-width: 0;
+  overflow-x: auto; scrollbar-width: none;
+}
+.rail-nav::-webkit-scrollbar { display: none; }
+/* 桌面寬度不讓頂欄換行 —— 換行會多吃一整排的高度。導覽是唯一可壓縮的
+   區塊（其他都是按鈕和狀態，壓了會看不懂），塞不下就讓它橫捲。
+   窄螢幕維持 wrap，因為那時導覽本來就藏起來了。 */
+@media (min-width: 1181px) {
+  .rail { flex-wrap: nowrap; }
+  .rail-state, .rail-actions { flex: 0 0 auto; }
+}
+/* 導覽藏起來時，改由 rail-id 把右邊那組推到底 */
+@media (max-width: 1180px) {
+  .rail-id { margin-right: auto; }
+}
+.rail-nav a {
+  position: relative; text-decoration: none; white-space: nowrap;
+  padding: 7px 11px; border-radius: 8px; flex: 0 0 auto;
+  font-size: 12.5px; color: var(--ink-2);
+  transition: color .18s, background .18s;
+}
+.rail-nav a:hover { color: var(--ink); background: var(--sunk); }
+.rail-nav a.is-on { color: var(--ink); background: var(--sunk); }
+/* 目前所在的區塊底下畫一道金線，跟分頁列的作法一致 */
+.rail-nav a.is-on::after {
+  content: ""; position: absolute; left: 13px; right: 13px; bottom: 3px;
+  height: 2px; border-radius: 2px; background: var(--gold-lit);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--gold-lit) 55%, transparent);
+}
+@media (max-width: 1180px) { .rail-nav { display: none; } }
+
 /* 市場總覽（側欄）。價格用等寬字，跳動的時候數字不會左右晃。 */
 .wl { list-style: none; margin: 0; padding: 0; }
 .wl li {
@@ -520,22 +594,22 @@ body[data-role="client"]:not(.auth-locked) .shell {
 .chart-tfs { margin-left: auto; }
 .chart-tfs .pill { padding: 4px 10px; font-size: 12px; }
 .chart-toggles { display: flex; gap: 5px; flex-wrap: wrap; }
-.chip {
+.ind {
   font: inherit; font-size: 11px; letter-spacing: .02em;
   padding: 4px 9px; border-radius: 7px; cursor: pointer;
   color: var(--muted); background: transparent;
   border: 1px solid var(--hair); transition: color .18s, border-color .18s;
 }
-.chip:hover { color: var(--ink-2); border-color: var(--rule); }
-.chip.is-on { color: var(--ink); border-color: var(--rule); background: var(--sunk); }
+.ind:hover { color: var(--ink-2); border-color: var(--rule); }
+.ind.is-on { color: var(--ink); border-color: var(--rule); background: var(--sunk); }
 /* 開著的指標左邊點一個色點，顏色對應線的顏色 */
-.chip[data-ma].is-on::before {
+.ind[data-ma].is-on::before {
   content: ""; display: inline-block; width: 6px; height: 6px;
   border-radius: 50%; margin-right: 6px; vertical-align: 1px;
 }
-.chip[data-ma="5"].is-on::before  { background: var(--ma-5); }
-.chip[data-ma="20"].is-on::before { background: var(--ma-20); }
-.chip[data-ma="60"].is-on::before { background: var(--ma-60); }
+.ind[data-ma="5"].is-on::before  { background: var(--ma-5); }
+.ind[data-ma="20"].is-on::before { background: var(--ma-20); }
+.ind[data-ma="60"].is-on::before { background: var(--ma-60); }
 
 /* OHLC 讀數列。滑鼠移到哪根就顯示哪根，沒移就顯示最新。 */
 .chart-read {
@@ -1366,6 +1440,14 @@ body.auth-locked > *:not(#authGate) { display: none; }
       <p class="rail-sub">__SUBTITLE__</p>
     </div>
   </div>
+  <nav class="rail-nav client-only" id="railNav" aria-label="主導覽">
+    <a href="#top"         data-nav="top">總覽</a>
+    <a href="#secSources"  data-nav="secSources">策略跟單</a>
+    <a href="#secChart"    data-nav="secChart">圖表分析</a>
+    <a href="#secPerf"     data-nav="secPerf">報表中心</a>
+    <a href="#secTrades"   data-nav="secTrades">歷史訂單</a>
+    <a href="#secEnt"      data-nav="secEnt">會員權益</a>
+  </nav>
   <div class="rail-state">
     <span class="auth-badge client-only" id="authBadge" hidden>
       <b id="authBadgeUser"></b>
@@ -1404,18 +1486,14 @@ body.auth-locked > *:not(#authGate) { display: none; }
       <p class="side-left" id="sideLeft"></p>
     </div>
 
-    <nav class="side-nav" aria-label="區塊導覽">
-      <p class="side-head">快速前往</p>
-      <a href="#secLadder">馬丁階梯</a>
-      <a href="#secPending">待成交掛單</a>
-      <a href="#secPositions">目前持倉</a>
-      <a href="#secPerf">績效分析</a>
-      <a href="#secCurve">累計損益曲線</a>
-      <a href="#secChart">價格走勢</a>
-      <a href="#secSources">跟單策略</a>
-      <a href="#secTrades">交易紀錄</a>
-      <a href="#secLogs">狀態紀錄</a>
-    </nav>
+
+    <!-- 升級入口。方案異動一律私訊處理（跟官網的作法一致），所以這裡
+         只給聯絡方式，不做線上結帳。已經是最高等級就整塊收起來。 -->
+    <div class="side-card side-up" id="secUpgrade" hidden>
+      <p class="side-up-h">升級方案</p>
+      <p class="side-up-b" id="upgradeBody">解鎖更多訊號來源與策略設定</p>
+      <p class="side-up-ig">IG<b>@goldyoung0927</b></p>
+    </div>
 
     <!-- 市場總覽。資料來自 EA 的 watchlist.json；舊版 EA 沒寫這個檔，
          renderWatchlist() 會整塊 hidden 起來，不會留一個空殼在那。 -->
@@ -1425,7 +1503,7 @@ body.auth-locked > *:not(#authGate) { display: none; }
       <p class="wl-foot">更新時間<span id="watchTime">—</span></p>
     </div>
 
-    <div class="side-feats">
+    <div class="side-feats" id="secEnt">
       <p class="side-head">方案功能</p>
       <ul id="sideEnt"></ul>
       <p class="side-legend">
@@ -1522,10 +1600,10 @@ body.auth-locked > *:not(#authGate) { display: none; }
         </div>
         <div class="pillset chart-tfs" id="kTfs"></div>
         <div class="chart-toggles">
-          <button type="button" class="chip is-on" data-ma="5">MA5</button>
-          <button type="button" class="chip is-on" data-ma="20">MA20</button>
-          <button type="button" class="chip is-on" data-ma="60">MA60</button>
-          <button type="button" class="chip is-on" data-vol="1">成交量</button>
+          <button type="button" class="ind is-on" data-ma="5">MA5</button>
+          <button type="button" class="ind is-on" data-ma="20">MA20</button>
+          <button type="button" class="ind is-on" data-ma="60">MA60</button>
+          <button type="button" class="ind is-on" data-vol="1">成交量</button>
         </div>
       </div>
       <div class="chart-read" id="kRead"></div>
@@ -2355,22 +2433,36 @@ function renderSourcePerformance(trades, sourceRows) {
       // 徽章改看交易本身的 mode——同一個來源的交易 mode 一定一致
       const isEaNative = !cfg.mode && list[0] && list[0].mode === "ea_native";
       const badge = cfg.mode === "flat" ? "均注" : cfg.mode === "martingale" ? "馬丁" : (isEaNative ? "EA 自動" : "");
-      return '<button type="button" class="source-card' + (S.source === name ? " is-on" : "") +
-          '" data-pick-source="' + esc(name) + '">' +
+      // 報酬率用帳戶餘額當分母。沒有「每個來源分配多少資金」這種設定，
+      // 硬掰一個數字出來會比不顯示更糟。
+      const bal = Number((S.stats && S.stats.account && S.stats.account.balance) || 0);
+      const roi = bal > 0 ? (sum.net / bal) * 100 : null;
+      const running = cfg.enabled !== false && cfg.configured;
+
+      return '<div class="source-card' + (S.source === name ? " is-on" : "") +
+          '" role="button" tabindex="0" data-pick-source="' + esc(name) + '">' +
         '<div class="sc-head"><span class="sc-name">' + esc(srcName(name)) + "</span>" +
-          (badge ? '<span class="tag tag-lv">' + badge + (cfg.enabled === false ? " · 停用" : "") + "</span>" : "") +
+          (badge ? '<span class="tag tag-lv">' + badge + "</span>" : "") +
+          '<span class="sc-run ' + (running ? "on" : "off") + '">' +
+            '<i class="dot"></i>' + (running ? "運行中" : "已停止") + "</span>" +
         "</div>" +
         '<div class="sc-net ' + toneClass(sum.net) + '">' +
           (list.length ? money(sum.net, { signed: true, compact: true }) : "—") + "</div>" +
         '<div class="sc-chart">' +
           (list.length ? miniCurve(list, 260, 54) : '<div class="sc-blank">此區間無成交</div>') + "</div>" +
         '<dl class="sc-stats">' +
-          "<div><dt>筆數</dt><dd>" + sum.total + "</dd></div>" +
           "<div><dt>勝率</dt><dd>" + (list.length ? pct(sum.win_rate) : "—") + "</dd></div>" +
+          '<div><dt>報酬率</dt><dd class="' + toneClass(sum.net) + '">' +
+            (roi == null || !list.length ? "—"
+              : (roi > 0 ? "+" : "") + roi.toFixed(2) + "%") + "</dd></div>" +
+          "<div><dt>基準手數</dt><dd>" + (cfg.base_lot ? lots(cfg.base_lot) : "—") + "</dd></div>" +
           '<div><dt>贏 / 輸</dt><dd><span class="up">' + sum.wins + '</span> / <span class="down">' + sum.losses + "</span></dd></div>" +
-          "<div><dt>最大連敗</dt><dd>" + sum.max_loss_streak + "</dd></div>" +
         "</dl>" +
-      "</button>";
+        '<div class="sc-foot">' +
+          '<span class="sc-meta">' + sum.total + " 筆 · 最大連敗 " + sum.max_loss_streak + "</span>" +
+          '<button type="button" class="btn sc-manage" data-manage="' + esc(name) + '">管理</button>' +
+        "</div>" +
+      "</div>";
     }).join("");
 }
 
@@ -3217,6 +3309,58 @@ function renderTfPills() {
   if (label) label.textContent = TF_LABEL[K.tf] || K.tf;
 }
 
+/* 頂部導覽：點了平滑捲動，捲動時高亮目前所在的區塊。
+
+   用 scroll 事件而不是 IntersectionObserver——區塊高矮差很多，
+   observer 的門檻值很難調到每個區塊都合理，直接比座標反而穩。 */
+function bindRailNav() {
+  const nav = $("railNav");
+  if (!nav || nav.dataset.bound) return;
+  nav.dataset.bound = "1";
+
+  const links = [...nav.querySelectorAll("a")];
+
+  nav.addEventListener("click", (e) => {
+    const a = e.target.closest("a");
+    if (!a) return;
+    e.preventDefault();
+    const id = a.dataset.nav;
+    if (id === "top") {
+      scrollTo({ top: 0, behavior: REDUCED ? "auto" : "smooth" });
+      return;
+    }
+    const el = $(id);
+    if (!el) return;
+    // 頂欄是固定的，捲到定位要扣掉它的高度，不然標題會被蓋住
+    const rail = document.querySelector(".rail");
+    const offset = (rail ? rail.getBoundingClientRect().height : 0) + 16;
+    scrollTo({ top: el.getBoundingClientRect().top + scrollY - offset,
+               behavior: REDUCED ? "auto" : "smooth" });
+  });
+
+  let ticking = false;
+  const mark = () => {
+    ticking = false;
+    const line = innerHeight * 0.3;      // 視窗上緣往下三成當判定線
+    let active = "top";
+    for (const a of links) {
+      const id = a.dataset.nav;
+      if (id === "top") continue;
+      const el = $(id);
+      if (!el || el.hidden) continue;
+      if (el.getBoundingClientRect().top <= line) active = id;
+    }
+    if (scrollY < 40) active = "top";
+    for (const a of links) a.classList.toggle("is-on", a.dataset.nav === active);
+  };
+  addEventListener("scroll", () => {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(mark);
+  }, { passive: true });
+  mark();
+}
+
 /* 即時報價灌進「形成中的那根」。
 
    K 線的骨架 5 秒才重抓一次，但 /api/status 每秒都在跑而且順便帶了 bid。
@@ -3319,7 +3463,7 @@ document.addEventListener("click", (e) => {
     refreshMarket();
     return;
   }
-  const chip = e.target.closest(".chart-toggles .chip");
+  const chip = e.target.closest(".chart-toggles .ind");
   if (chip) {
     if (chip.dataset.ma) {
       const n = Number(chip.dataset.ma);
@@ -3610,6 +3754,23 @@ function paintSide(a) {
   bar.hidden = false;
 
   $("sideTier").textContent = a.tier_label || a.tier || "—";
+
+  // 升級卡：已經是旗艦版就不用勸他升級了；快到期的話改成續期文案
+  const up = $("secUpgrade");
+  if (up) {
+    const tier = String(a.tier || "").toLowerCase();
+    const top = tier === "flagship";
+    const days = a.expires_at ? Math.floor((a.expires_at * 1000 - Date.now()) / 86400000) : null;
+    const soon = days != null && days <= 14;
+    up.hidden = top && !soon;
+    const body = $("upgradeBody");
+    if (body) {
+      body.textContent = soon
+        ? (days >= 0 ? `方案剩 ${days} 天，私訊即可續期` : "方案已到期，私訊即可續期")
+        : "解鎖更多訊號來源與策略設定";
+    }
+    up.querySelector(".side-up-h").textContent = soon ? "續期" : "升級方案";
+  }
 
   const exp = Number(a.expires_at || 0);
   const wrap = $("sideMeterWrap");
@@ -3906,6 +4067,16 @@ for (const id of ["eaDateFrom", "eaDateTo"]) {
 $("filterSource").addEventListener("change", (evt) => { S.source = evt.target.value; paintStats(); });
 /* 點來源卡片 = 把下方全部圖表與表格篩選到那個來源；再點一次取消 */
 $("sourcePerf").addEventListener("click", (evt) => {
+  // 「管理」直接開設定面板。它在卡片裡面，要先攔下來不然會連帶觸發篩選。
+  const manage = evt.target.closest("[data-manage]");
+  if (manage) {
+    evt.stopPropagation();
+    const panel = $("toggleSettings");
+    if (panel) panel.click();
+    const sec = $("settings") || $("settingsPanel");
+    if (sec) sec.scrollIntoView({ behavior: REDUCED ? "auto" : "smooth", block: "start" });
+    return;
+  }
   const card = evt.target.closest("[data-pick-source]");
   if (!card) return;
   const name = card.dataset.pickSource;
@@ -3913,6 +4084,14 @@ $("sourcePerf").addEventListener("click", (evt) => {
   const select = $("filterSource");
   if ([...select.options].some((o) => o.value === S.source)) select.value = S.source;
   paintStats();
+});
+// 卡片從 button 改成 div 後，Enter / Space 要自己接回來
+$("sourcePerf").addEventListener("keydown", (evt) => {
+  if (evt.key !== "Enter" && evt.key !== " ") return;
+  const card = evt.target.closest("[data-pick-source]");
+  if (!card || evt.target.closest("[data-manage]")) return;
+  evt.preventDefault();
+  card.click();
 });
 $("ladderTabs").addEventListener("click", (evt) => {
   const btn = evt.target.closest("[data-src]");
@@ -4182,6 +4361,7 @@ addEventListener("resize", () => {
 refreshStatus();
 refreshStats();
 bindKline();
+bindRailNav();
 refreshMarket();
 setInterval(refreshStatus, 1000);
 setInterval(refreshStats, 3000);
