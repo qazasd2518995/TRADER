@@ -7,7 +7,7 @@
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url('../fonts/chiron-hei-hk-400.592aa1a0.woff2') format('woff2');
+  src: url('../fonts/chiron-hei-hk-400.6daa74a6.woff2') format('woff2');
 }
 
 @font-face {
@@ -15,7 +15,7 @@
   font-style: normal;
   font-weight: 500;
   font-display: swap;
-  src: url('../fonts/chiron-hei-hk-500.fa6021f8.woff2') format('woff2');
+  src: url('../fonts/chiron-hei-hk-500.f33c4c71.woff2') format('woff2');
 }
 
 @font-face {
@@ -23,7 +23,7 @@
   font-style: normal;
   font-weight: 700;
   font-display: swap;
-  src: url('../fonts/chiron-hei-hk-700.28e2ec4c.woff2') format('woff2');
+  src: url('../fonts/chiron-hei-hk-700.23d7106a.woff2') format('woff2');
 }
 
 @font-face {
@@ -31,5 +31,5 @@
   font-style: normal;
   font-weight: 900;
   font-display: swap;
-  src: url('../fonts/chiron-hei-hk-900.9993e7ef.woff2') format('woff2');
+  src: url('../fonts/chiron-hei-hk-900.b166cc14.woff2') format('woff2');
 }
