@@ -40,7 +40,11 @@ h4 { font-size: var(--t-20);      line-height: 1.35; letter-spacing: -.01em; }
 
 /* 中文是方塊字，負字距一大就糊成一團。西文字母之間本來就有視覺空隙，
    收緊才好看；中文沒有，所以要分開處理。 */
-:lang(zh-Hant) h1 { letter-spacing: -.012em; }
+/* 中文標題吃 900 這個真的存在的字重。
+   先前 h1 設 800 但只載到 700，瀏覽器只好合成假粗體 —— CJK 筆劃密，
+   合成出來會把字腔糊掉，比拉丁字明顯得多。 */
+:lang(zh-Hant) h1 { letter-spacing: -.012em; font-weight: 900; }
+:lang(zh-Hant) h2 { font-weight: 900; }
 :lang(zh-Hant) h2 { letter-spacing: -.008em; line-height: 1.12; }
 :lang(zh-Hant) h3 { letter-spacing: 0; }
 

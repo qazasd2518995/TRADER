@@ -10,20 +10,21 @@
   color-scheme: dark;
 
   /* ---- 中性 ------------------------------------------------------------ */
-  --c-bg:          #0A0A0B;   /* 頁面底 */
-  --c-bg-2:        #0F0F11;   /* 交錯區塊底 */
-  --c-surface:     #141416;   /* 卡片 */
-  --c-surface-2:   #1E1E21;   /* 卡片內凹 / hover */
-  --c-surface-3:   #2A2A2E;   /* 再上一層 / 分隔塊 */
-  --c-line:        #26262A;   /* 細線 */
-  --c-line-strong: #3A3A40;   /* hover 邊框 */
+  --c-bg:          #0B0A08;   /* 頁面底 */
+  --c-bg-2:        #100F0C;   /* 交錯區塊底 */
+  --c-surface:     #151411;   /* 卡片 */
+  --c-surface-2:   #201E1A;   /* 卡片內凹 / hover */
+  --c-surface-3:   #2C2A25;   /* 再上一層 / 分隔塊 */
+  --c-line:        #282621;   /* 細線 */
+  --c-line-strong: #3D3A34;   /* hover 邊框 */
 
   /* 文字。對 --c-surface 的實測對比：
      text 15.74:1、text-2 7.09:1、text-3 4.84:1 —— 全數通過 WCAG AA。
-     text-3 原訂 #6E6E76 只有 3.64:1，達不到 AA，已上調。 */
-  --c-text:        #EDEDEF;
-  --c-text-2:      #A0A0A8;
-  --c-text-3:      #82828C;
+     text-3 原訂 #6E6E76 只有 3.64:1，達不到 AA，已上調。
+     2026-08-25 中性色加了金色色偏（亮度以二分法配平，比值不變）。 */
+  --c-text:        #EEEDEC;
+  --c-text-2:      #A3A09A;
+  --c-text-3:      #878378;
 
   /* ---- 品牌金 ---------------------------------------------------------- */
   --c-gold-300:    #FFE08A;
@@ -59,7 +60,11 @@
   --c-plan-premium: #F0C65C;
 
   /* ---- 字型 ------------------------------------------------------------ */
-  --f-display: 'Manrope', 'Noto Sans TC', system-ui, sans-serif;
+  /* Archivo 取代 Manrope：Manrope 是幾何調皮的，跟 Noto Sans TC 的方正中性
+     對不上（長闊比、灰度、轉角特徵都不同），而且它跟 Inter / Space Grotesk
+     同屬 AI landing page 的預設選擇。Archivo 是方正的 grotesque，比例接近
+     Noto，數字也好看 —— 那是交易網站最常被盯著看的東西。 */
+  --f-display: 'Archivo', 'Noto Sans TC', system-ui, sans-serif;
   --f-sans:    'Noto Sans TC', -apple-system, BlinkMacSystemFont, 'Segoe UI',
                'Helvetica Neue', Arial, sans-serif;
   --f-mono:    'JetBrains Mono', ui-monospace, SFMono-Regular, 'SF Mono',
