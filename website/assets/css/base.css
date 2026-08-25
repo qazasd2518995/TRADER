@@ -33,7 +33,7 @@ h1, h2, h3, h4 {
   line-height: 1.02;
   letter-spacing: -.03em;
 }
-h1 { font-size: var(--t-hero);    font-weight: 800; letter-spacing: -.035em; }
+h1 { font-size: var(--t-hero);    font-weight: 900; letter-spacing: -.035em; }
 h2 { font-size: var(--t-section); }
 h3 { font-size: var(--t-feature); line-height: 1.2;  letter-spacing: -.02em; }
 h4 { font-size: var(--t-20);      line-height: 1.35; letter-spacing: -.01em; }

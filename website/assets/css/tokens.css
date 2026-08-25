@@ -64,9 +64,12 @@
      對不上（長闊比、灰度、轉角特徵都不同），而且它跟 Inter / Space Grotesk
      同屬 AI landing page 的預設選擇。Archivo 是方正的 grotesque，比例接近
      Noto，數字也好看 —— 那是交易網站最常被盯著看的東西。 */
-  --f-display: 'Archivo', 'Noto Sans TC', system-ui, sans-serif;
-  --f-sans:    'Noto Sans TC', -apple-system, BlinkMacSystemFont, 'Segoe UI',
-               'Helvetica Neue', Arial, sans-serif;
+  --f-display: 'Archivo', 'Chiron Hei HK', 'PingFang TC', system-ui, sans-serif;
+  /* 昭源黑體：基於思源黑體改良，字形更貼近繁中印刷慣例。
+     自架子集（scripts/build-webfont.py），只含站上用得到的字。
+     後面接系統字型 —— 子集萬一漏字，會落到平台字型而不是豆腐格。 */
+  --f-sans:    'Chiron Hei HK', -apple-system, BlinkMacSystemFont,
+               'PingFang TC', 'Microsoft JhengHei', 'Noto Sans TC', sans-serif;
   --f-mono:    'JetBrains Mono', ui-monospace, SFMono-Regular, 'SF Mono',
                Menlo, Consolas, monospace;
 

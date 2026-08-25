@@ -64,3 +64,9 @@ receiver_config.sh
 # 本機備份與執行期 log (可能含 Hub token / 個人擷取視窗名稱)
 config.json.bak*
 copy_trader_log.txt
+
+# 字型原檔 48 MB，不進版控。要重建子集時自己抓：
+#   curl -sL -o vendor/ChironHeiHKVF.ttf \
+#     https://raw.githubusercontent.com/chiron-fonts/chiron-hei-hk/master/VAR_TTF/ChironHeiHKVF.ttf
+# 產出的子集（website/assets/fonts/*.woff2）才是要提交的東西。
+vendor/*.ttf

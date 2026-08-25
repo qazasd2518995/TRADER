@@ -1,0 +1,35 @@
+/* 昭源黑體 · 由 scripts/build-webfont.py 產生，不要手改 */
+/* 來源 https://github.com/chiron-fonts/chiron-hei-hk （SIL OFL 1.1） */
+/* 只含官網用得到的字。改過文案要重跑腳本，否則新字會變豆腐格。 */
+
+@font-face {
+  font-family: 'Chiron Hei HK';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../fonts/chiron-hei-hk-400.592aa1a0.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Chiron Hei HK';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('../fonts/chiron-hei-hk-500.fa6021f8.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Chiron Hei HK';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('../fonts/chiron-hei-hk-700.28e2ec4c.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Chiron Hei HK';
+  font-style: normal;
+  font-weight: 900;
+  font-display: swap;
+  src: url('../fonts/chiron-hei-hk-900.9993e7ef.woff2') format('woff2');
+}
