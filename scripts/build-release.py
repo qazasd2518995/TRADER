@@ -27,6 +27,15 @@ import sys
 import time
 from pathlib import Path
 
+# Windows 的主控台預設編碼是 cp1252，印中文會直接 UnicodeEncodeError 收攤。
+# 在腳本裡處理而不是靠呼叫端設 PYTHONIOENCODING —— 這支腳本會被 CI、被人手動、
+# 被別的程式呼叫，不能假設每個呼叫端都記得設環境變數。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass   # 被重導向到不支援 reconfigure 的物件時就算了，不值得為此中斷
+
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
 OUT = DIST / "installers"
@@ -42,8 +51,15 @@ def log(msg: str) -> None:
     print(f"  {msg}", flush=True)
 
 
+# 舊版 Windows 主控台不吃 ANSI escape，會把 [1m 當成字面印出來。
+# 只在支援的環境上色，其餘場合純文字一樣讀得懂。
+_ANSI = (sys.platform != "win32") or bool(os.environ.get("WT_SESSION")) \
+        or os.environ.get("TERM_PROGRAM") == "vscode" \
+        or os.environ.get("GITHUB_ACTIONS") == "true"
+
+
 def head(msg: str) -> None:
-    print(f"\n\033[1m{msg}\033[0m", flush=True)
+    print(f"\n\033[1m{msg}\033[0m" if _ANSI else f"\n== {msg} ==", flush=True)
 
 
 def run(cmd: list, **kw) -> subprocess.CompletedProcess:
@@ -336,7 +352,8 @@ def main() -> int:
         print(f"  {label:6} → {rel}  ({dir_size_mb(path):.0f} MB)")
 
     if failed:
-        print(f"\n\033[31m  冒煙測試沒過：{'、'.join(failed)}\033[0m")
+        note = f"  冒煙測試沒過：{'、'.join(failed)}"
+        print(f"\n\033[31m{note}\033[0m" if _ANSI else f"\n{note}")
         print("  安裝檔還是產出來了，但先別發出去。")
         return 1
 
