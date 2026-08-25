@@ -61,7 +61,7 @@ app = BUNDLE(
         # 但要標明支援 Retina，不然文字在高解析螢幕上會糊。
         "NSHighResolutionCapable": True,
         "LSMinimumSystemVersion": "10.15",
-        "CFBundleShortVersionString": "1.0.0",
-        "CFBundleVersion": "1.0.0",
+        "CFBundleShortVersionString": "1.0.1",
+        "CFBundleVersion": "1.0.1",
     },
 )

@@ -7,8 +7,8 @@
   python3 scripts/build-release.py --skip-installer   # 只要 .app / 資料夾
 
 產出：
-  macOS    dist/installers/黃金跟單會員端_1.0.0_macOS.dmg
-  Windows  dist/installers/黃金跟單會員端_安裝檔.exe
+  macOS    dist/installers/黃金跟單會員端_<版本>_macOS.dmg
+  Windows  dist/installers/黃金跟單會員端_<版本>_Windows.exe
 
 跨平台編譯是做不到的：PyInstaller 打包的是「這台機器上的 Python 直譯器 +
 這個平台的原生模組」，在 macOS 上生不出 Windows 的 .exe。Windows 那份要嘛
@@ -30,7 +30,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
 OUT = DIST / "installers"
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 ROLES = {
     "client":  {"name": "黃金跟單會員端", "label": "會員端"},
