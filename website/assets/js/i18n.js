@@ -38,7 +38,14 @@
     return null;
   }
 
-  /* 決定順序：?lang= → localStorage → 瀏覽器語言 → 預設 */
+  /* 決定順序：?lang= → 使用者上次的選擇 → 繁中。
+     
+     刻意不看 navigator.language。這個站的客群在台灣，而台灣不少人的
+     系統與瀏覽器是設英文的 —— 跟著瀏覽器語言走的話，這些人第一次進來
+     會看到英文版，那是錯的對象看到錯的語言。
+     
+     英文版留給主動切換的人，切了會記在 localStorage，下次直接是英文。
+     分享連結時想指定語言就加 ?lang=en。 */
   function detect() {
     var q = new URLSearchParams(location.search).get('lang');
     var fromQuery = normalize(q);
@@ -49,11 +56,6 @@
       if (SUPPORTED.indexOf(saved) !== -1) return saved;
     } catch (e) { /* 無痕模式會擋 localStorage，忽略 */ }
 
-    var langs = navigator.languages || [navigator.language];
-    for (var i = 0; i < langs.length; i++) {
-      var n = normalize(langs[i]);
-      if (n) return n;
-    }
     return DEFAULT;
   }
 
