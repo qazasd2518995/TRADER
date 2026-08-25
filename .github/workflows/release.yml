@@ -104,10 +104,13 @@ jobs:
 
             | 平台 | 會員端 | 訊號中心 |
             |---|---|---|
-            | Windows | `黃金跟單會員端_*_Windows.exe` | `黃金訊號中心_*_Windows.exe` |
-            | macOS | `黃金跟單會員端_*_macOS.dmg` | `黃金訊號中心_*_macOS.dmg` |
+            | Windows | `GoldCopyTrader-Member-*-Windows.exe` | `GoldCopyTrader-Signal-*-Windows.exe` |
+            | macOS | `GoldCopyTrader-Member-*-macOS.dmg` | `GoldCopyTrader-Signal-*-macOS.dmg` |
 
-            會員只需要**會員端**。訊號中心是給訊號發布者用的。
+            **會員只需要 Member 那個檔案。** Signal 是給訊號發布者用的。
+
+            檔名是英文（GitHub 會把中文從下載檔名剝掉，剝完兩個檔案會撞名），
+            但裝起來之後在開始功能表／應用程式裡顯示的還是中文名稱。
 
             ### 安裝前請先看
 

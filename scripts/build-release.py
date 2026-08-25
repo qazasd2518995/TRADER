@@ -7,8 +7,8 @@
   python3 scripts/build-release.py --skip-installer   # 只要 .app / 資料夾
 
 產出：
-  macOS    dist/installers/黃金跟單會員端_<版本>_macOS.dmg
-  Windows  dist/installers/黃金跟單會員端_<版本>_Windows.exe
+  macOS    dist/installers/GoldCopyTrader-Member-<版本>-macOS.dmg
+  Windows  dist/installers/GoldCopyTrader-Member-<版本>-Windows.exe
 
 跨平台編譯是做不到的：PyInstaller 打包的是「這台機器上的 Python 直譯器 +
 這個平台的原生模組」，在 macOS 上生不出 Windows 的 .exe。Windows 那份要嘛
@@ -41,9 +41,13 @@ DIST = ROOT / "dist"
 OUT = DIST / "installers"
 VERSION = "1.0.1"
 
+# slug 只用在發布檔名上。GitHub Release 會把非 ASCII 從資產名稱剝掉，
+# 「黃金跟單會員端_1.0.1_Windows.exe」和「黃金訊號中心_1.0.1_Windows.exe」
+# 都會變成「_1.0.1_Windows.exe」——直接撞名，四個檔案只會剩兩個。
+# 程式安裝後的名稱維持中文，那才是使用者在開始功能表／應用程式裡看到的。
 ROLES = {
-    "client":  {"name": "黃金跟單會員端", "label": "會員端"},
-    "central": {"name": "黃金訊號中心",   "label": "訊號中心"},
+    "client":  {"name": "黃金跟單會員端", "label": "會員端",   "slug": "GoldCopyTrader-Member"},
+    "central": {"name": "黃金訊號中心",   "label": "訊號中心", "slug": "GoldCopyTrader-Signal"},
 }
 
 
@@ -157,7 +161,7 @@ def make_dmg(app: Path, role: str) -> Path:
     info = ROLES[role]
     head(f"包成 DMG：{info['label']}")
     OUT.mkdir(parents=True, exist_ok=True)
-    dmg = OUT / f"{info['name']}_{VERSION}_macOS.dmg"
+    dmg = OUT / f"{info['slug']}-{VERSION}-macOS.dmg"
     if dmg.exists():
         dmg.unlink()
 
@@ -199,7 +203,7 @@ def make_installer(role: str) -> Path | None:
         return None
 
     run([iscc, f"/DMyAppVersion={VERSION}", str(iss)], cwd=iss.parent)
-    made = sorted(OUT.glob(f"*{info['name']}*.exe"))
+    made = sorted(OUT.glob(f"{info['slug']}*.exe"))
     if made:
         log(f"{made[-1].name}（{dir_size_mb(made[-1]):.0f} MB）")
         return made[-1]
