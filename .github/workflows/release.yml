@@ -1,4 +1,4 @@
-name: 建置安裝檔（Windows + macOS）
+name: 建置會員端安裝檔（Windows + macOS）
 
 # 用法
 #   手動：GitHub → Actions → 這個 workflow → Run workflow
@@ -59,7 +59,10 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install innosetup --no-progress -y
 
-      - name: 建置
+      # 只建會員端。訊號中心跑在自己的中央機上，不發給會員 ——
+      # 混進 Release 只會讓人拿錯檔案。要更新中央機就在那台跑
+      # python scripts/build-release.py --central
+      - name: 建置會員端
         shell: bash
         env:
           # runner 上沒有桌面，不要讓程式在冒煙測試時想開瀏覽器
@@ -102,15 +105,12 @@ jobs:
           body: |
             ## 安裝檔
 
-            | 平台 | 會員端 | 訊號中心 |
-            |---|---|---|
-            | Windows | `GoldCopyTrader-Member-*-Windows.exe` | `GoldCopyTrader-Signal-*-Windows.exe` |
-            | macOS | `GoldCopyTrader-Member-*-macOS.dmg` | `GoldCopyTrader-Signal-*-macOS.dmg` |
+            | 平台 | 檔案 |
+            |---|---|
+            | Windows | `GoldCopyTrader-Member-*-Windows.exe` |
+            | macOS | `GoldCopyTrader-Member-*-macOS.dmg` |
 
-            **會員只需要 Member 那個檔案。** Signal 是給訊號發布者用的。
-
-            檔名是英文（GitHub 會把中文從下載檔名剝掉，剝完兩個檔案會撞名），
-            但裝起來之後在開始功能表／應用程式裡顯示的還是中文名稱。
+            檔名是英文，裝起來之後在開始功能表／應用程式裡顯示的是「黃金跟單會員端」。
 
             ### 安裝前請先看
 

@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """一鍵建出可以直接發給會員的安裝檔。
 
-  python3 scripts/build-release.py              # 建這個平台的兩個角色
-  python3 scripts/build-release.py --client     # 只建會員端
-  python3 scripts/build-release.py --central    # 只建訊號中心
+  python3 scripts/build-release.py              # 會員端（要發出去的就這個）
+  python3 scripts/build-release.py --central    # 訊號中心（自己那台中央機更新時才用）
+  python3 scripts/build-release.py --all        # 兩個都建
   python3 scripts/build-release.py --skip-installer   # 只要 .app / 資料夾
 
 產出：
   macOS    dist/installers/GoldCopyTrader-Member-<版本>-macOS.dmg
   Windows  dist/installers/GoldCopyTrader-Member-<版本>-Windows.exe
+
+只有會員端會發出去。訊號中心跑在自己的中央機上，要更新時加 --central 另外建。
 
 跨平台編譯是做不到的：PyInstaller 打包的是「這台機器上的 Python 直譯器 +
 這個平台的原生模組」，在 macOS 上生不出 Windows 的 .exe。Windows 那份要嘛
@@ -315,20 +317,27 @@ def smoke_test(target: Path, role: str, plat: str) -> bool:
 # ---------------------------------------------------------------- main
 def main() -> int:
     ap = argparse.ArgumentParser(description="建出可以發給會員的安裝檔")
-    ap.add_argument("--client", action="store_true", help="只建會員端")
-    ap.add_argument("--central", action="store_true", help="只建訊號中心")
+    ap.add_argument("--client", action="store_true",
+                    help="只建會員端（預設就是這個）")
+    ap.add_argument("--central", action="store_true",
+                    help="只建訊號中心。這是自己那台中央機在跑的，不發給會員")
+    ap.add_argument("--all", action="store_true", help="兩個角色都建")
     ap.add_argument("--skip-installer", action="store_true",
                     help="只建執行檔，不包 DMG / 安裝檔")
     ap.add_argument("--skip-smoke", action="store_true", help="跳過冒煙測試")
     args = ap.parse_args()
 
-    roles = []
-    if args.client:
-        roles.append("client")
-    if args.central:
-        roles.append("central")
-    if not roles:
+    if args.all:
         roles = ["client", "central"]
+    else:
+        roles = []
+        if args.client:
+            roles.append("client")
+        if args.central:
+            roles.append("central")
+        # 沒指定就只建會員端 —— 要發出去的只有這個
+        if not roles:
+            roles = ["client"]
 
     plat = plat_key()
     preflight(plat)
