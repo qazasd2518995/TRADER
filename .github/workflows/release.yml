@@ -37,9 +37,9 @@ jobs:
     name: ${{ matrix.label }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -74,7 +74,7 @@ jobs:
         shell: bash
         run: ls -la dist/installers
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: 安裝檔-${{ matrix.label }}
           path: dist/installers/*
@@ -87,7 +87,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
 
@@ -97,7 +97,7 @@ jobs:
           find artifacts -type f \( -name '*.dmg' -o -name '*.exe' \) -exec cp {} release/ \;
           ls -la release
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: release/*
           draft: true          # 先建草稿，自己確認過再按發布
