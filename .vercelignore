@@ -1,0 +1,12 @@
+# Vercel 只需要 website/ 這個資料夾。
+#
+# repo 根目錄是跟單系統的原始碼（Python + Rust + MQL5），跟網站無關。
+# 不排除的話，Vercel 會把整包上傳、看到 requirements.txt 就當成 Python 專案，
+# 然後去裝 pywin32 —— 那是 Windows 專用套件，在 Linux 建置機上必定失敗。
+#
+# 語法同 .gitignore：先排除所有頂層項目，再把要的加回來。
+
+/*
+
+!/website
+!/vercel.json

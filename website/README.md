@@ -131,6 +131,23 @@ vercel --prod     # 部署到正式環境
 Vercel 專案 → Settings → Domains → 加網域，照它給的 DNS 設定改。
 網域生效後記得回來做「上線前必做」那份清單的第 2、3 項。
 
+### 為什麼要 `.vercelignore`
+
+repo 根目錄放的是跟單系統的原始碼，裡面有 `requirements.txt`、`package.json`、
+`Dockerfile`、`fly.toml`。Vercel 的零設定偵測看到這些會把整包當成 Python 或
+Node 專案，然後去裝相依 —— 而 `requirements.txt` 裡的 `pywin32` 是 Windows
+專用套件，在 Linux 建置機上必定失敗：
+
+```
+× No solution found when resolving dependencies:
+  pywin32 has no wheels with a matching platform tag (manylinux_2_34_x86_64)
+Error: Command "uv pip install" exited with 1
+```
+
+`.vercelignore` 只讓 `website/` 與 `vercel.json` 進到部署範圍，偵測就沒有東西
+可以誤判。另外 `vercel.json` 把 `installCommand` 與 `buildCommand` 都設成
+**空字串** —— 設 `null` 是「用預設偵測」，不是「不執行」，這個差別會讓人踩坑。
+
 ### vercel.json 裡設定了什麼
 
 | 設定 | 為什麼 |
