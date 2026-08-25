@@ -1,0 +1,325 @@
+<!doctype html>
+<!-- 導覽與 Footer 跟 index.html 是同一份 markup。
+     改完 index.html 後跑 `python3 ../scripts/sync-website-partials.py` 同步。 -->
+<html lang="zh-Hant" data-root="/"
+      data-meta-title="faqp.metaTitle" data-meta-desc="faqp.metaDesc">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<title>常見問題與支援 — AI 黃金自動跟單系統</title>
+<meta name="description" content="跟單運作、風險、方案計費、安裝設定的常見問題，以及聯絡方式。">
+<link rel="canonical" href="/faq/">
+<link rel="alternate" hreflang="zh-Hant" href="/faq/?lang=zh-Hant">
+<link rel="alternate" hreflang="en" href="/faq/?lang=en">
+<link rel="alternate" hreflang="x-default" href="/faq/">
+
+<meta property="og:type" content="website">
+<meta property="og:title" content="常見問題與支援 — AI 黃金自動跟單系統">
+<meta property="og:description" content="跟單運作、風險、方案計費、安裝設定的常見問題，以及聯絡方式。">
+<meta property="og:image" content="/assets/img/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#0A0A0B">
+
+<link rel="icon" href="/assets/img/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@600;700;800&family=Noto+Sans+TC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/css/tokens.css">
+<link rel="stylesheet" href="/assets/css/base.css">
+<link rel="stylesheet" href="/assets/css/site.css">
+</head>
+
+<body>
+
+<!-- ================================================================ 導覽 -->
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="/">
+      <span class="bullion" aria-hidden="true"></span>
+      <span>
+        <span class="brand-name" data-i18n="brand.name">黃金自動跟單系統</span>
+        <span class="brand-sub" data-i18n="brand.sub">AI GOLD COPY TRADING</span>
+      </span>
+    </a>
+
+    <nav class="nav-links" aria-label="主選單">
+      <a href="/features/" data-i18n="nav.features">功能</a>
+      <a href="/pricing/"  data-i18n="nav.pricing">方案</a>
+      <a href="/download/" data-i18n="nav.download">開始使用</a>
+      <a href="/faq/"      data-i18n="nav.faq">支援</a>
+    </nav>
+
+    <div class="nav-actions">
+      <div class="lang">
+        <button class="lang-btn" type="button" aria-expanded="false" aria-haspopup="true"
+                aria-label="語言" data-i18n-attr="aria-label:nav.lang">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+            <circle cx="10" cy="10" r="7.5"/><path d="M2.5 10h15M10 2.5c4 4.5 4 10.5 0 15-4-4.5-4-10.5 0-15z"/>
+          </svg>
+          <span class="lang-current">繁中</span>
+          <svg class="lang-caret" viewBox="0 0 10 6" fill="none" stroke="currentColor" stroke-width="1.5" width="10" height="6" aria-hidden="true"><path d="M1 1l4 4 4-4"/></svg>
+        </button>
+        <div class="lang-menu" role="menu">
+          <button type="button" role="menuitem" data-lang="zh-Hant" aria-selected="true"  data-i18n="nav.langZh">繁體中文</button>
+          <button type="button" role="menuitem" data-lang="en"      aria-selected="false" data-i18n="nav.langEn">English</button>
+        </div>
+      </div>
+
+      <a class="btn btn--primary btn--sm" href="/download/" data-i18n="nav.cta">免費開始使用</a>
+
+      <button class="nav-burger" type="button" aria-expanded="false"
+              aria-label="選單" data-i18n-attr="aria-label:nav.menu">
+        <span></span><span></span><span></span>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<!-- ============================================================ 頁面 Hero -->
+<section class="page-hero section--bg bg-mesh" style="--bg-opacity:.55">
+  <div class="wrap measure--narrow" style="margin-inline:auto">
+    <h1 style="font-size:var(--t-section)" data-i18n="faqp.title">問清楚　再開始</h1>
+    <p class="lede" data-i18n="faqp.lede">把會被問到的都寫在這裡。還有不清楚的，直接私訊。</p>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap measure" style="margin-inline:auto">
+    <section class="faq-cat" data-reveal="0">
+      <h2 data-i18n="faqp.cat1">運作方式</h2>
+      <div class="faq" style="margin-inline:0;max-width:none">
+        <div class="faq-item">
+          <button class="faq-q" type="button" aria-expanded="false">
+            <span data-i18n="faq.q3">訊號會不會漏掉或重複下單？</span><span class="plus" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div><p data-i18n="faq.a3">系統有三道防護：訊號去重會跨程式重啟持續生效；時效鎖讓過期的訊號不會被補下；程式重啟後會自動認領 MT5 裡已存在的部位，不會重複開倉。同一個來源短時間改單時，只會跟最新那一筆。</p></div></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" type="button" aria-expanded="false">
+            <span data-i18n="faqp.q6">訊號是誰發的？</span><span class="plus" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div><p data-i18n="faqp.a6">訊號來自獨立的第三方專業提供者，在他們自己的群組裡發布黃金的進出場點位。我們負責把訊號擷取、解析成結構化的下單指令，再送到你的 MT5 執行。我們不產生訊號，也不對訊號內容的正確性負責。</p></div></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" type="button" aria-expanded="false">
+            <span data-i18n="faqp.q7">從訊號發布到成交要多久？</span><span class="plus" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div><p data-i18n="faqp.a7">中央訊號機擷取並解析後立刻推上雲端 Hub，會員端每秒輪詢一次。整體延遲通常在數秒內，實際成交時間還取決於你的網路、券商伺服器與當下的流動性。</p></div></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" type="button" aria-expanded="false">
+            <span data-i18n="faqp.q8">可以只跟某一個訊號來源嗎？</span><span class="plus" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div><p data-i18n="faqp.a8">可以。每個來源都是獨立的一組設定，你可以個別決定跟或不跟、用馬丁還是均注、手數多少。停用的來源不會出現在版面上，統計也不會算它。</p></div></div>
+        </div>
+      </div>
+    </section>
+    <section class="faq-cat" data-reveal="0">
+      <h2 data-i18n="faqp.cat2">風險與資金</h2>
+      <div class="faq" style="margin-inline:0;max-width:none">
+        <div class="faq-item">
+          <button class="faq-q" type="button" aria-expanded="false">
+            <span data-i18n="faq.q4">馬丁格爾的風險是什麼？</span><span class="plus" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div><p data-i18n="faq.a4">馬丁格爾在連續虧損時會逐關加碼，理論上能靠一次獲利回收前面的虧損，但如果行情持續往反方向走，虧損會被大幅放大。系統讓你設定最大層數、每層手數與每日最大虧損上限，觸線就自動停手。這是風險控制工具，不是保證。請只投入你能承受全部損失的資金。</p></div></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" type="button" aria-expanded="false">
+            <span data-i18n="faqp.q9">你們會碰到我的錢嗎？</span><span class="plus" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div><p data-i18n="faqp.a9">不會。所有下單指令都在你自己的電腦上產生，寫進你本機 MT5 的檔案橋接目錄，由掛在圖表上的 EA 執行。資金全程留在你與券商之間的帳戶關係裡，我們不經手、不保管、也無法轉移。</p></div></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" type="button" aria-expanded="false">
+            <span data-i18n="faqp.q10">最多會虧多少？</span><span class="plus" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div><p data-i18n="faqp.a10">沒有上限保證。你可以設定每日最大虧損金額或比例，觸線系統會自動停手，但那是軟性控制，不是對虧損的保證 —— 跳空、滑價、極端行情都可能讓實際虧損超過設定值。保證金交易可能損失全部本金。請只投入你能承受全部損失的資金。</p></div></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" type="button" aria-expanded="false">
+            <span data-i18n="faqp.q11">我可以隨時停掉嗎？</span><span class="plus" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div><p data-i18n="faqp.a11">可以。按「停止」就不再接收新訊號。已經在市場上的部位不會被自動平掉，你可以自己在 MT5 決定要留還是要平。</p></div></div>
+        </div>
+      </div>
+    </section>
+    <section class="faq-cat" data-reveal="0">
+      <h2 data-i18n="faqp.cat3">方案與計費</h2>
+      <div class="faq" style="margin-inline:0;max-width:none">
+        <div class="faq-item">
+          <button class="faq-q" type="button" aria-expanded="false">
+            <span data-i18n="faq.q5">方案時間怎麼計算？</span><span class="plus" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div><p data-i18n="faq.a5">買的是「可使用時間額度」而不是日曆天。系統沒有運行的時候不扣時間，非開盤時段也會自動暫停。一次購買一年份會多送 2 個月的時間額度。</p></div></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" type="button" aria-expanded="false">
+            <span data-i18n="faqp.q12">怎麼付款？</span><span class="plus" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div><p data-i18n="faqp.a12">請直接透過 Instagram 私訊聯繫我們安排。開通後會給你一組會員帳號，在會員端登入即可。</p></div></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" type="button" aria-expanded="false">
+            <span data-i18n="faqp.q13">可以換方案嗎？</span><span class="plus" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div><p data-i18n="faqp.a13">可以。升級或降級請聯繫我們調整，等級變更會立即對你目前登入的裝置生效，不需要重新安裝。</p></div></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" type="button" aria-expanded="false">
+            <span data-i18n="faqp.q14">一個帳號可以裝幾台電腦？</span><span class="plus" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div><p data-i18n="faqp.a14">一組帳號同時只能有一台裝置在線。在新的裝置登入會把舊的踢下線，避免同一組訊號被重複下單。</p></div></div>
+        </div>
+      </div>
+    </section>
+    <section class="faq-cat" data-reveal="0">
+      <h2 data-i18n="faqp.cat4">安裝與設定</h2>
+      <div class="faq" style="margin-inline:0;max-width:none">
+        <div class="faq-item">
+          <button class="faq-q" type="button" aria-expanded="false">
+            <span data-i18n="faq.q1">我需要一直開著電腦嗎？</span><span class="plus" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div><p data-i18n="faq.a1">需要。會員端要在你的電腦上運行、MT5 也要保持登入，訊號來的時候才有東西幫你下單。好消息是方案時間只在系統實際運行時才扣，非開盤時段會自動暫停計時。</p></div></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" type="button" aria-expanded="false">
+            <span data-i18n="faq.q2">支援哪些券商？</span><span class="plus" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div><p data-i18n="faq.a2">任何提供 MetaTrader 5 的券商都可以。系統是把下單指令寫進你本機 MT5 的檔案橋接目錄，由掛在圖表上的 EA 執行，不經過任何第三方帳戶，你的資金始終在自己的券商帳戶裡。</p></div></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" type="button" aria-expanded="false">
+            <span data-i18n="faqp.q15">支援 MT4 嗎？</span><span class="plus" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div><p data-i18n="faqp.a15">目前只支援 MetaTrader 5。系統靠 MT5 的檔案橋接與 EA 執行下單，MT4 沒有對應的實作。</p></div></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" type="button" aria-expanded="false">
+            <span data-i18n="faqp.q16">為什麼 MT5 顯示「未連線」？</span><span class="plus" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div><p data-i18n="faqp.a16">最常見的原因有三個：MT5 沒開或沒登入、EA 沒有掛到圖表上、或是「允許演算法交易」沒有勾選。會員端的狀態紀錄會顯示它讀不到哪個檔案，照著看通常就找得到問題。</p></div></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" type="button" aria-expanded="false">
+            <span data-i18n="faqp.q17">可以同一台電腦跑兩個跟單帳號嗎？</span><span class="plus" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div><p data-i18n="faqp.a17">可以，用 --instance 參數啟動第二份即可，兩份設定與紀錄完全分開。但每個 MT5 帳戶仍然只能對應一份會員端。</p></div></div>
+        </div>
+      </div>
+    </section>
+  </div>
+</section>
+
+<section class="section section--alt section--bg bg-aurora" id="contact" style="--bg-opacity:.5">
+  <div class="wrap measure" style="margin-inline:auto">
+    <div class="contact-card" data-reveal="0">
+      <div>
+        <h2 data-i18n="faqp.contactTitle">還是沒解決？</h2>
+        <p data-i18n="faqp.contactBody">直接私訊，附上你看到的畫面。有錯誤訊息的話一起截給我們，會快很多。</p>
+        <p class="hours" data-i18n="faqp.contactHours">回覆時間依訊息量而定，通常一個工作天內</p>
+      </div>
+      <a class="btn btn--primary btn--lg" href="https://instagram.com/goldyoung0927" target="_blank" rel="noopener noreferrer">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+          <rect x="2.6" y="2.6" width="18.8" height="18.8" rx="5.4"/><circle cx="12" cy="12" r="4.3"/>
+          <circle cx="17.4" cy="6.6" r="1.15" fill="currentColor" stroke="none"/>
+        </svg>
+        <span data-i18n="faqp.contactIg">Instagram 私訊</span>
+      </a>
+    </div>
+
+    <div class="terms-note" id="terms" data-reveal="0">
+      <h2 data-i18n="faqp.termsTitle">服務條款與隱私政策</h2>
+      <p data-i18n="faqp.termsBody">完整的服務條款與隱私政策正在整理中，上線前會補上。目前的風險揭露與免責聲明請見本頁最下方，那是具有約束力的內容，使用本服務即表示您已閱讀並同意。</p>
+    </div>
+    <span id="privacy" aria-hidden="true"></span>
+  </div>
+</section>
+
+</main>
+
+<!-- ============================================================== Footer -->
+<footer class="foot">
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <a class="brand" href="/">
+          <span class="bullion bullion--sm" aria-hidden="true"></span>
+          <span>
+            <span class="brand-name" data-i18n="brand.name">黃金自動跟單系統</span>
+            <span class="brand-sub" data-i18n="brand.sub">AI GOLD COPY TRADING</span>
+          </span>
+        </a>
+        <p class="lede" data-i18n="foot.tagline">XAUUSD 黃金訊號自動跟單系統。訊號解析、風險控管與訂單執行，一套做完。</p>
+
+        <div class="social">
+          <a class="ig" href="https://instagram.com/goldyoung0927" target="_blank" rel="noopener noreferrer">
+            <!-- Instagram 字符標記。這是通用相機外框造型，不是 Meta 的官方彩色 logo 檔。 -->
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <rect x="2.6" y="2.6" width="18.8" height="18.8" rx="5.4"/>
+              <circle cx="12" cy="12" r="4.3"/>
+              <circle cx="17.4" cy="6.6" r="1.15" fill="currentColor" stroke="none"/>
+            </svg>
+            <span>@goldyoung0927</span>
+          </a>
+        </div>
+      </div>
+
+      <div>
+        <h3 data-i18n="foot.product">產品</h3>
+        <ul>
+          <li><a href="/features/" data-i18n="foot.features">功能總覽</a></li>
+          <li><a href="/pricing/"  data-i18n="foot.pricing">方案與定價</a></li>
+          <li><a href="/download/" data-i18n="foot.download">開始使用</a></li>
+        </ul>
+      </div>
+
+      <div>
+        <h3 data-i18n="foot.resources">資源</h3>
+        <ul>
+          <li><a href="/faq/" data-i18n="foot.faq">常見問題</a></li>
+          <li><a href="/download/#guide" data-i18n="foot.guide">安裝教學</a></li>
+        </ul>
+      </div>
+
+      <div>
+        <h3 data-i18n="foot.contact">聯絡</h3>
+        <ul>
+          <li><a href="https://instagram.com/goldyoung0927" target="_blank" rel="noopener noreferrer">Instagram</a></li>
+          <li><a href="/faq/#terms"   data-i18n="foot.terms">服務條款</a></li>
+          <li><a href="/faq/#privacy" data-i18n="foot.privacy">隱私政策</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- ===================================================== 免責聲明 -->
+    <section class="legal" aria-labelledby="legal-title">
+      <h3 id="legal-title" data-i18n="legal.title">免責聲明</h3>
+      <ol>
+        <li><b data-i18n="legal.1.h">非投資建議。</b><span data-i18n="legal.1.b">本網站與本系統所提供之一切內容，純屬技術研究與資訊分享，不構成任何投資建議、財務建議、招攬或買賣要約。本公司並非證券投資顧問事業、期貨顧問事業或任何形式之受監理金融機構，不提供個別化投資推薦，亦不代客操作或代為管理資金。</span></li>
+        <li><b data-i18n="legal.2.h">交易風險。</b><span data-i18n="legal.2.b">外匯及貴金屬保證金交易屬高槓桿商品，具有高度風險，可能導致您損失全部本金甚至超過本金，並不適合所有投資人。在決定參與交易前，請確實評估自身投資目的、經驗程度與風險承受能力，必要時應諮詢獨立且合格的專業顧問。</span></li>
+        <li><b data-i18n="legal.3.h">馬丁格爾策略之特殊風險。</b><span data-i18n="legal.3.b">本系統支援之馬丁格爾（Martingale）加碼策略，在連續虧損時會逐關放大部位，於行情單邊延伸時可能在極短時間內造成重大虧損，或因保證金不足而遭強制平倉。系統提供之最大層數、每層手數與每日虧損上限僅為風險控制工具，並非任何形式之損失保證。</span></li>
+        <li><b data-i18n="legal.4.h">過往績效不代表未來表現。</b><span data-i18n="legal.4.b">本網站所展示之任何績效數據、勝率、報酬率、回撤或交易紀錄，均可能為示範資料、歷史回測或特定期間之結果，不保證未來可重現，亦不代表個別使用者之實際結果。</span></li>
+        <li><b data-i18n="legal.5.h">訊號來源為獨立第三方。</b><span data-i18n="legal.5.b">本系統負責訊號之擷取、解析與訂單執行，對訊號內容本身之正確性、及時性、完整性或獲利能力，不作任何明示或默示之保證，亦不對依該訊號所生之任何損益負責。</span></li>
+        <li><b data-i18n="legal.6.h">本系統為訂單執行工具。</b><span data-i18n="legal.6.b">所有下單指令均在使用者自己的電腦上產生，並送往使用者自行開立之券商 MetaTrader 5 帳戶執行。本公司不經手、不保管、不轉移使用者之任何資金，資金全程存放於使用者與券商之間的帳戶關係中。</span></li>
+        <li><b data-i18n="legal.7.h">技術性中斷風險。</b><span data-i18n="legal.7.b">網路連線中斷、電力中斷、作業系統或 MetaTrader 5 異常、券商伺服器延遲、報價跳空、流動性不足或滑價等因素，均可能導致訂單延遲、未成交、部分成交，或以非預期價格成交。本公司對此類情形所生之損失不負賠償責任。</span></li>
+        <li><b data-i18n="legal.8.h">使用者責任。</b><span data-i18n="legal.8.b">所有交易決策、參數設定、資金配置與風險承擔，均由使用者自行判斷並自負盈虧。使用本系統即表示您已充分理解上述風險，並同意自行承擔一切交易結果。</span></li>
+        <li><b data-i18n="legal.9.h">法規遵循。</b><span data-i18n="legal.9.b">各國（地區）對於保證金交易、跟單交易與自動化交易之法令規範不同。使用者應自行確認在其所在司法管轄區內使用本系統及進行相關交易之合法性，並自行負擔一切稅務申報義務。</span></li>
+        <li><b data-i18n="legal.10.h">資料來源與異動。</b><span data-i18n="legal.10.b">本網站所引用之市場報價與圖表技術由 TradingView 提供，僅供參考，不作為交易依據。本公司保留隨時修改本聲明、服務內容與方案價格之權利，恕不另行個別通知。</span></li>
+      </ol>
+    </section>
+
+    <div class="foot-base">
+      <span class="foot-copy" data-i18n="foot.copy">© 2026 AI 黃金自動跟單系統</span>
+      <span data-i18n="foot.chartCredit">圖表技術由 TradingView Lightweight Charts 提供</span>
+    </div>
+  </div>
+</footer>
+
+<script src="/assets/js/site-config.js"></script>
+<script src="/assets/js/i18n.js"></script>
+<script src="/assets/js/site.js"></script>
+</body>
+</html>

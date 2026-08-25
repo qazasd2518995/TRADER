@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+
+# 網域確定後把下面這行的網址換掉（見 README「上線前必做」）
+Sitemap: https://REPLACE-WITH-YOUR-DOMAIN/sitemap.xml

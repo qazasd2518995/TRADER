@@ -1,0 +1,165 @@
+/* ============================================================================
+   base — reset、排版基礎、共用工具類別
+   ========================================================================== */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+  scroll-padding-top: calc(var(--nav-h) + 16px);
+}
+
+body {
+  margin: 0;
+  background: var(--c-bg);
+  color: var(--c-text);
+  font-family: var(--f-sans);
+  font-size: var(--t-16);
+  line-height: 1.6;
+  letter-spacing: .005em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+/* 大標的 line-height 就是 1.0 —— TradingView 的 title 是
+   font-size: 100px / line-height: 100px。行高一放鬆，標題就散掉，
+   那種「壓得很緊、很有份量」的感覺全來自這一點。 */
+h1, h2, h3, h4 {
+  margin: 0;
+  font-family: var(--f-display);
+  font-weight: 700;
+  line-height: 1.02;
+  letter-spacing: -.03em;
+}
+h1 { font-size: var(--t-hero);    font-weight: 800; letter-spacing: -.035em; }
+h2 { font-size: var(--t-section); }
+h3 { font-size: var(--t-feature); line-height: 1.2;  letter-spacing: -.02em; }
+h4 { font-size: var(--t-20);      line-height: 1.35; letter-spacing: -.01em; }
+
+/* 中文是方塊字，負字距一大就糊成一團。西文字母之間本來就有視覺空隙，
+   收緊才好看；中文沒有，所以要分開處理。 */
+:lang(zh-Hant) h1 { letter-spacing: -.012em; }
+:lang(zh-Hant) h2 { letter-spacing: -.008em; line-height: 1.12; }
+:lang(zh-Hant) h3 { letter-spacing: 0; }
+
+p { margin: 0; }
+ul, ol { margin: 0; padding: 0; list-style: none; }
+img, svg, video { display: block; max-width: 100%; }
+/* height:auto 不能少。img 上的 width/height 屬性是給瀏覽器算長寬比、保留版位用的，
+   但只要 CSS 動了 width 而沒有一併把 height 交還給瀏覽器，那個 height 屬性就會
+   變成固定高度，圖片直接被拉變形。 */
+img { height: auto; }
+
+a {
+  color: inherit;
+  text-decoration: none;
+  transition: color var(--d-base) var(--e-out);
+}
+
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+
+:focus-visible {
+  outline: 2px solid var(--c-gold-400);
+  outline-offset: 3px;
+  border-radius: var(--r-1);
+}
+
+::selection { background: var(--c-gold-wash); color: var(--c-gold-300); }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--c-bg); }
+::-webkit-scrollbar-thumb {
+  background: var(--c-surface-3);
+  border: 2px solid var(--c-bg);
+  border-radius: var(--r-full);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--c-line-strong); }
+
+/* ---------------------------------------------------------------- 版面工具 */
+.wrap {
+  width: 100%;
+  max-width: var(--w-max);
+  margin-inline: auto;
+  padding-inline: var(--pad-x);
+}
+
+/* --v-1 在他們的系統裡是「兩個段落之間」的距離，不是單邊留白。
+   我一開始上下各給一個 --v-1，等於把間距做成兩倍，畫面上就出現整片空白。
+   除以 2 之後，相鄰段落加起來剛好是 --v-1。 */
+.section { padding-block: calc(var(--v-1) / 2); position: relative; }
+.section--tight { padding-block: calc(var(--v-2) / 2); }
+.section--alt { background: var(--c-bg-2); }
+
+/* 標題與說明不跟著 1480px 拉滿 —— 一行超過 40 幾個字就讀不下去了。
+   只限寬、不置中，這樣靠左的標題會跟下方網格的左緣切齊。 */
+.measure { max-width: var(--w-text); }
+.measure--narrow { max-width: var(--w-narrow); }
+
+
+.lede {
+  font-size: var(--t-lede);
+  color: var(--c-text-2);
+  line-height: 1.5;
+  max-width: 46ch;
+}
+:lang(zh-Hant) .lede { line-height: 1.75; max-width: 34em; }
+
+.section-head { margin-bottom: var(--v-4); }
+.section-head .lede { margin-top: var(--s-4); }
+.section-head--center { text-align: center; margin-inline: auto; }
+.section-head--center .lede { margin-inline: auto; }
+
+/* 數字一律等寬對齊，否則跳動的即時報價會左右抖 */
+.num { font-family: var(--f-mono); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.up   { color: var(--c-up-2); }
+.down { color: var(--c-down-2); }
+
+/* 金屬字。background-clip 在所有現代瀏覽器都支援；
+   不支援時會落回 color 的實心金，仍然可讀。 */
+.metal {
+  color: var(--c-gold-400);
+  background: var(--g-metal);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px;
+  margin: -1px; padding: 0; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- 捲動進場 */
+/* JS 加上 .reveal 後由 IntersectionObserver 切換 .is-in。
+   沒有 JS 時 .reveal 這個 class 根本不會被加上，內容直接是可見的。 */
+.reveal {
+  opacity: 0;
+  transform: translateY(18px);
+  transition: opacity .5s var(--e-out), transform .5s var(--e-out);
+}
+.reveal.is-in { opacity: 1; transform: none; }
+
+
+/* 列印。捲動進場的元素在列印時不會被 IntersectionObserver 觸發，
+   不強制顯示的話整份會印成空白頁。順便把深色底換掉，免得吃掉一整匣碳粉。 */
+@media print {
+  .reveal { opacity: 1 !important; transform: none !important; }
+  .nav, .tape, .hero-atmos, .grain { display: none !important; }
+  body { background: #fff; color: #000; }
+  .section { padding-block: 24px; }
+  a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 10px; color: #555; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .reveal { opacity: 1; transform: none; transition: none; }
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  網域確定後，把所有 REPLACE-WITH-YOUR-DOMAIN 換成實際網域。一次全換：
+    cd website && grep -rl REPLACE-WITH-YOUR-DOMAIN . | xargs sed -i '' 's|REPLACE-WITH-YOUR-DOMAIN|你的網域|g'
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:xhtml="http://www.w3.org/1999/xhtml">
+
+  <url>
+    <loc>https://REPLACE-WITH-YOUR-DOMAIN/</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://REPLACE-WITH-YOUR-DOMAIN/"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://REPLACE-WITH-YOUR-DOMAIN/?lang=en"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://REPLACE-WITH-YOUR-DOMAIN/"/>
+    <changefreq>weekly</changefreq><priority>1.0</priority>
+  </url>
+
+  <url>
+    <loc>https://REPLACE-WITH-YOUR-DOMAIN/pricing/</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://REPLACE-WITH-YOUR-DOMAIN/pricing/"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://REPLACE-WITH-YOUR-DOMAIN/pricing/?lang=en"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://REPLACE-WITH-YOUR-DOMAIN/pricing/"/>
+    <changefreq>monthly</changefreq><priority>0.9</priority>
+  </url>
+
+  <url>
+    <loc>https://REPLACE-WITH-YOUR-DOMAIN/download/</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://REPLACE-WITH-YOUR-DOMAIN/download/"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://REPLACE-WITH-YOUR-DOMAIN/download/?lang=en"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://REPLACE-WITH-YOUR-DOMAIN/download/"/>
+    <changefreq>weekly</changefreq><priority>0.9</priority>
+  </url>
+
+  <url>
+    <loc>https://REPLACE-WITH-YOUR-DOMAIN/features/</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://REPLACE-WITH-YOUR-DOMAIN/features/"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://REPLACE-WITH-YOUR-DOMAIN/features/?lang=en"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://REPLACE-WITH-YOUR-DOMAIN/features/"/>
+    <changefreq>monthly</changefreq><priority>0.8</priority>
+  </url>
+
+  <url>
+    <loc>https://REPLACE-WITH-YOUR-DOMAIN/faq/</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://REPLACE-WITH-YOUR-DOMAIN/faq/"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://REPLACE-WITH-YOUR-DOMAIN/faq/?lang=en"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://REPLACE-WITH-YOUR-DOMAIN/faq/"/>
+    <changefreq>monthly</changefreq><priority>0.6</priority>
+  </url>
+</urlset>
