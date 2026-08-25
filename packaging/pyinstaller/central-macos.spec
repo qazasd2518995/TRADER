@@ -12,18 +12,22 @@ from pathlib import Path
 
 ROOT = Path(SPECPATH).parents[1]
 sys.path.insert(0, str(Path(SPECPATH)))
-from _common import hidden, datas, EXCLUDES          # noqa: E402
+from _common import hidden, datas, excludes, collect_ocr   # noqa: E402
+
+# 同 central-windows.spec：OCR 模型與原生函式庫要 collect_all 整包抓，
+# 靜態分析看不到它們。
+_ocr_datas, _ocr_bins, _ocr_hidden = collect_ocr()
 
 a = Analysis(
     [str(ROOT / "copy_trader/central/central_signal_center_web.py")],
     pathex=[str(ROOT)],
-    binaries=[],
-    datas=datas(ROOT),
-    hiddenimports=hidden("central", "macos"),
+    binaries=_ocr_bins,
+    datas=datas(ROOT) + _ocr_datas,
+    hiddenimports=hidden("central", "macos") + _ocr_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=EXCLUDES,
+    excludes=excludes("central"),
     noarchive=False,
 )
 pyz = PYZ(a.pure)

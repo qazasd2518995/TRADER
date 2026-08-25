@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(SPECPATH).parents[1]
 sys.path.insert(0, str(Path(SPECPATH)))
-from _common import hidden, datas, EXCLUDES          # noqa: E402
+from _common import hidden, datas, excludes          # noqa: E402
 
 a = Analysis(
     [str(ROOT / "copy_trader/central/client_agent_web.py")],
@@ -23,7 +23,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=EXCLUDES,
+    excludes=excludes("client"),
     noarchive=False,
 )
 pyz = PYZ(a.pure)
