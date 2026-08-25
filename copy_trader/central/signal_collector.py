@@ -78,6 +78,31 @@ def _signal_key(signal: ParsedSignal, source: str) -> Tuple:
     )
 
 
+def _signal_key_from_record(record: Dict) -> Optional[Tuple]:
+    """把 Hub 上的一筆發布紀錄，算成跟 _signal_key() 一模一樣的鍵。
+
+    兩邊的欄位順序、取整位數、型別都必須完全一致，否則比對不到就等於沒去重。
+    有測試釘住這件事 (test_hub_dedup)。
+    """
+    sig = record.get("signal") or {}
+    source = str(record.get("source") or record.get("source_name") or "")
+    if not source or not sig.get("direction"):
+        return None
+    try:
+        tps = tuple(round(float(tp), 2)
+                    for tp in (sig.get("take_profit") or []) if tp is not None)
+        return (
+            source,
+            sig.get("direction"),
+            round(float(sig.get("entry_price") or 0), 2),
+            bool(sig.get("is_market_order")),
+            round(float(sig.get("stop_loss") or 0), 2),
+            tps,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
 def _merge_signal(base: ParsedSignal, new: ParsedSignal) -> ParsedSignal:
     if not base.direction and new.direction:
         base.direction = new.direction
@@ -169,6 +194,28 @@ class HubPublisher:
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
+    def _get(self, path: str, timeout: Optional[float] = None) -> Dict:
+        req = urllib.request.Request(f"{self.hub_url}{path}", method="GET")
+        if self.token:
+            req.add_header("Authorization", f"Bearer {self.token}")
+        with urllib.request.urlopen(req, timeout=timeout or self.timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def recent(self, limit: int = 200, timeout: float = 15.0) -> List[Dict]:
+        """把 Hub 上最近已發布的訊號抓回來。
+
+        Hub 的 /signals 是「拿 seq 大於 after 的」，要取最後 N 筆得先問
+        /health 拿 latest_seq 再往回推。
+        """
+        limit = max(1, int(limit))
+        health = self._get("/health", timeout=timeout)
+        latest = int(health.get("latest_seq") or 0)
+        if latest <= 0:
+            return []
+        after = max(0, latest - limit)
+        data = self._get(f"/signals?after={after}&limit={limit}", timeout=timeout)
+        return list(data.get("signals") or [])
+
 
 class CentralSignalCollector:
     def __init__(
@@ -185,6 +232,15 @@ class CentralSignalCollector:
         self._capture_fail: Dict[str, Dict] = {}
         self._processed: Dict[Tuple, float] = {}
         self._processed_ttl = max(60, int(config.signal_dedup_minutes or 10) * 60)
+        # 這層去重原本只活在記憶體, 重啟就歸零 —— 而重啟間隔通常遠超過 TTL,
+        # 等於失效。失效之後只剩擷取端那層(拿 OCR 文字當鍵)獨撐, 但文字每次
+        # 不保證一模一樣(多一個空格、廣告遮到一個字就是不同的鍵), 一旦漏掉
+        # 就會重複發布、會員重複下單。
+        #
+        # Hub 上的紀錄才是「我們真的發出去過什麼」的唯一事實, 跟 OCR 怎麼讀
+        # 無關也不會因為重啟消失。啟動時把它抓回來重建這層。
+        self._seeded_from_hub = False
+        self._hub_seed_limit = 200
         # 訊號時效鎖: 訊息時間超過這麼久就不發布 (擋歷史洪水/延遲/過期)。0=不限。
         self.max_signal_age_sec = max(0, int(getattr(config, "signal_max_age_minutes", 10) or 0) * 60)
         # 是否跟群組的「取消/撤」訊息。預設關 — 撤單統一交給會員端的逾時刪單。
@@ -287,7 +343,47 @@ class CentralSignalCollector:
                 source, (time.time() - state["since"]) / 60.0, state["count"], state["error"],
             )
 
+    def _seed_processed_from_hub(self) -> int:
+        """啟動時用 Hub 上已發布的紀錄重建發布層去重。回傳載入筆數。
+
+        刻意做成「第一輪才做、失敗下一輪再試」而不是在 __init__ 裡做：
+        訊號中心常常比網路早就緒，在建構子裡失敗就永遠沒有第二次機會，
+        而那正是最需要這層保護的時刻（剛重啟）。
+        """
+        try:
+            records = self.publisher.recent(self._hub_seed_limit)
+        except Exception as e:                       # noqa: BLE001
+            logger.warning("讀不到 Hub 已發布紀錄，發布層去重這輪先空著（下一輪重試）：%s", e)
+            return 0
+
+        now = time.time()
+        loaded = 0
+        for rec in records:
+            if rec.get("type") not in (None, "trade_signal"):
+                continue
+            published_at = float(rec.get("published_at") or 0)
+            if not published_at or now - published_at > self._processed_ttl:
+                continue    # 超過 TTL 的不載入，否則等於把去重期限無限延長
+            key = _signal_key_from_record(rec)
+            if key is None:
+                continue
+            # 同一組數值可能發布過多次，留最新那次的時間戳
+            if published_at > self._processed.get(key, 0):
+                self._processed[key] = published_at
+                loaded += 1
+        self._seeded_from_hub = True
+        if loaded:
+            logger.info(
+                "發布層去重：從 Hub 載回 %d 筆 %.0f 小時內已發布的訊號"
+                "（重啟後不會重複發布）", loaded, self._processed_ttl / 3600.0)
+        else:
+            logger.info("發布層去重：Hub 上沒有 %.0f 小時內的已發布訊號",
+                        self._processed_ttl / 3600.0)
+        return loaded
+
     def run_cycle(self) -> int:
+        if not self._seeded_from_hub:
+            self._seed_processed_from_hub()
         self._cleanup()
         published = 0
         for cap in self.clipboard.capture_all():
@@ -299,9 +395,13 @@ class CentralSignalCollector:
             for msg in cap.new_messages:
                 should_mark_seen = False
                 abort_source = False
+                did_publish = False
                 try:
                     count = self._process_message(msg, cap.source_name, cap.display_name)
                     published += count
+                    # count > 0 = 這則真的被發布到 Hub 了。採集層要記下這個
+                    # 時刻，之後去重擋掉重複訊號時才講得出「我們何時發過」。
+                    did_publish = count > 0
                     should_mark_seen = True
                 except (urllib.error.URLError, TimeoutError, RuntimeError) as e:
                     logger.warning("message publish failed, will retry source=%s: %s", cap.display_name, e)
@@ -315,7 +415,8 @@ class CentralSignalCollector:
                     should_mark_seen = True
                 finally:
                     if should_mark_seen:
-                        self.clipboard.mark_seen(cap.source_name, [msg])
+                        self.clipboard.mark_seen(cap.source_name, [msg],
+                                                 published=did_publish)
                 if abort_source:
                     break
         return published

@@ -238,7 +238,13 @@ class Config:
     # Safety Settings
     min_confidence: float = 0.9
     max_price_deviation: float = 0.01
-    signal_dedup_minutes: int = 10
+    # 發布層去重的有效期。啟動時會用 Hub 上這段時間內的已發布紀錄重建
+    # (見 signal_collector._seed_processed_from_hub)。
+    #
+    # 6 小時是權衡出來的：10 分鐘接不住重啟(重啟間隔通常更久)，但拉到超過
+    # 一天會把「隔天回到同一價位的真新單」當成舊單吃掉 —— 乘的
+    # Buy 4050/4040/4065 就跨了 7/31 和 8/03 兩天。
+    signal_dedup_minutes: int = 360
     signal_max_age_minutes: int = 10   # 訊號時效: 訊息時間超過這麼久(分)就不發布/不下單; 0=不限
     max_daily_loss: float = 500.0
 
