@@ -148,6 +148,27 @@ Error: Command "uv pip install" exited with 1
 可以誤判。另外 `vercel.json` 把 `installCommand` 與 `buildCommand` 都設成
 **空字串** —— 設 `null` 是「用預設偵測」，不是「不執行」，這個差別會讓人踩坑。
 
+### vercel.json 不能寫註解
+
+Vercel 的 schema 是 `additionalProperties: false`，多一個鍵就整份被拒：
+
+```
+The vercel.json schema validation failed with the following message:
+should NOT have additional property `//`
+```
+
+JSON 沒有註解語法，常見土法是加一個 `"//"` 鍵 —— 在這裡行不通。
+**說明一律寫在這份 README，不要放進 vercel.json。**
+
+改完設定先驗一次再推：
+
+```bash
+python3 ../scripts/check-vercel-config.py
+```
+
+它會抓假註解鍵，並用 Vercel 官方 schema 做遞迴驗證
+（裝了 `jsonschema` 才有完整驗證，沒裝也會做基本檢查）。
+
 ### vercel.json 裡設定了什麼
 
 | 設定 | 為什麼 |
