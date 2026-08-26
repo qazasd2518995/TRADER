@@ -55,6 +55,12 @@ receiver_config.sh
 config.json.bak*
 copy_trader_log.txt
 
+# 訊號中心的執行期狀態檔（本機各自的游標/去重紀錄，不該進版控）。
+# central_ocr_seen.json 是舊 OCR 版的遺留，LINE DB 版已不用。
+central_ocr_seen.json
+line_db_cursor.json
+line_message_ledger.sqlite3
+
 # 字型原檔 48 MB，不進版控。要重建子集時自己抓：
 #   curl -sL -o vendor/ChironHeiHKVF.ttf \
 #     https://raw.githubusercontent.com/chiron-fonts/chiron-hei-hk/master/VAR_TTF/ChironHeiHKVF.ttf

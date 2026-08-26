@@ -23,10 +23,12 @@ _CLIENT = [
 _CENTRAL = [
     "copy_trader.central.signal_collector",
     "copy_trader.signal_parser.regex_parser",
+    "copy_trader.signal_parser.strict_parser",   # signal_collector 在頂部就 import
     "copy_trader.line_db.discovery",
     "copy_trader.line_db.factory",
     "copy_trader.line_db.identity",
     "copy_trader.line_db.keys",
+    "copy_trader.line_db.ledger",                 # collector 用它記帳(收回/撤單對帳)
     "copy_trader.line_db.models",
     "copy_trader.line_db.source",
     "copy_trader.line_db.sqlite_provider",
