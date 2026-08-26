@@ -6,20 +6,72 @@ import json
 from pathlib import Path
 from typing import Any
 
+from copy_trader.central.membership import HIGH_FREQ, MID_FREQ
+
 from .keys import default_key_provider
 from .models import LineChatTarget
 from .source import LineDatabaseSource
 from .sqlite_provider import SQLiteLineDatabaseProvider
 
 
+LEGACY_SINGLE_CHAT_DEFAULT = {
+    "name": "gold_signal_1",
+    "chat_name": "（乘）黃金報單🈲言群",
+    "display_name": MID_FREQ,
+    "trusted_senders": ["乘", "James"],
+}
+
+MID_FREQUENCY_DEFAULT = {
+    **LEGACY_SINGLE_CHAT_DEFAULT,
+    "parser_profile": "mid_frequency_v1",
+    "max_trade_age_seconds": 300,
+}
+
+LEGACY_YUYU_HIGH_FREQUENCY_DEFAULT = {
+    "name": "high_freq_yuyu",
+    "chat_name": "🈲禁言群🈲 Focus forex 焦點利潤",
+    # This is the stable product source key used by membership entitlements,
+    # per-source trade settings and the web console's "高頻交易" alias.
+    "display_name": HIGH_FREQ,
+    "trusted_senders": ["yuyu（yu__o822"],
+}
+
+YUYU_HIGH_FREQUENCY_DEFAULT = {
+    **LEGACY_YUYU_HIGH_FREQUENCY_DEFAULT,
+    "parser_profile": "yuyu_range_v1",
+    "max_trade_age_seconds": 180,
+}
+
 DEFAULT_LINE_CHATS = [
-    {
-        "name": "gold_signal_1",
-        "chat_name": "（乘）黃金報單🈲言群",
-        "display_name": "黃金報單🈲言群",
-        "trusted_senders": ["乘", "James"],
-    }
+    MID_FREQUENCY_DEFAULT,
+    YUYU_HIGH_FREQUENCY_DEFAULT,
 ]
+
+
+def migrate_legacy_default_line_chats(value: Any) -> tuple[Any, bool]:
+    """Upgrade only exact historical defaults to the current strict profiles.
+
+    Explicitly customized chat lists are user configuration and must not be
+    expanded silently. The returned value preserves the caller's string/list
+    representation so launcher settings remain backward compatible.
+    """
+    parsed = value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return value, False
+    legacy_defaults = (
+        [LEGACY_SINGLE_CHAT_DEFAULT],
+        [LEGACY_SINGLE_CHAT_DEFAULT, LEGACY_YUYU_HIGH_FREQUENCY_DEFAULT],
+    )
+    if parsed not in legacy_defaults:
+        return value, False
+
+    migrated = [dict(item) for item in DEFAULT_LINE_CHATS]
+    if isinstance(value, str):
+        return json.dumps(migrated, ensure_ascii=False, indent=2), True
+    return migrated, True
 
 
 def parse_line_chat_targets(value: str | list[dict[str, Any]] | None) -> list[LineChatTarget]:

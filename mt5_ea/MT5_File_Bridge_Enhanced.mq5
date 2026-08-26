@@ -1086,7 +1086,7 @@ void LogTradeAction(string action, bool result, TradeCommand &cmd, long retcode,
    {
       FileSeek(handle, 0, SEEK_END);
       string msg = TimeToString(TimeCurrent()) + " | " + action + " | " + (result ? "SUCCESS" : "FAIL") + " | ";
-      if(action == "modify" || action == "close") msg += "ticket:" + IntegerToString(cmd.ticket) + " | ";
+      if(action == "modify" || action == "close" || action == "delete") msg += "ticket:" + IntegerToString(cmd.ticket) + " | ";
       else msg += DoubleToString(cmd.lot_size, 2) + " | ";
       msg += cmd.symbol + " | " + cmd.trade_id + " | retcode:" + IntegerToString((int)retcode);
       if(detail != "") msg += " | " + detail;

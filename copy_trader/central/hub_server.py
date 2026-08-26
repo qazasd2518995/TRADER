@@ -246,6 +246,10 @@ class HubRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(200, {
                     "ok": True,
                     "latest_seq": self.store.latest_seq,
+                    "cursor": max(
+                        [int(record.get("seq") or 0) for record in records],
+                        default=after,
+                    ),
                     "signals": records,
                 })
                 return

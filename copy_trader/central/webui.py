@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 
-from copy_trader.central.membership import MIN_PASSWORD_LENGTH
+from copy_trader.central.membership import HIGH_FREQ, MID_FREQ, MIN_PASSWORD_LENGTH
 from typing import Any
 
 CLIENT_FIELDS = """
@@ -28,6 +28,7 @@ CLIENT_FIELDS = """
         <div class="field-grid">
           <label>MT5 Files 路徑<input id="mt5_files_dir" placeholder="可留空自動偵測" /></label>
           <label>輪詢秒數<input id="interval" placeholder="1.0" /></label>
+          <label class="switch">Shadow mode（只解析、不發布）<input id="shadow_mode" type="checkbox" /></label>
           <label class="switch">開啟程式後自動開始<input id="auto_start" type="checkbox" /></label>
         </div>
       </div>
@@ -63,7 +64,7 @@ CENTRAL_FIELDS = """
         <div class="field-grid">
           <label>加密資料庫路徑<input id="line_database_path" placeholder="可留空自動尋找；多個候選時請明確選擇" /></label>
           <label>安全金鑰名稱<input id="line_keychain_service" placeholder="line-db-research" /></label>
-          <label class="field-wide">聊天室設定（JSON）<textarea id="line_chats" spellcheck="false" placeholder='[{"name":"gold_signal_1","chat_name":"（乘）黃金報單🈲言群","display_name":"黃金報單🈲言群","trusted_senders":["乘","James"]}]'></textarea></label>
+          <label class="field-wide">聊天室設定（JSON）<textarea id="line_chats" spellcheck="false" placeholder='[{"name":"gold_signal_1","chat_name":"（乘）黃金報單🈲言群","display_name":"黃金報單🈲言群","trusted_senders":["乘","James"],"parser_profile":"mid_frequency_v1","max_trade_age_seconds":300},{"name":"high_freq_yuyu","chat_name":"🈲禁言群🈲 Focus forex 焦點利潤","display_name":"焦點利潤(yuyu)","trusted_senders":["yuyu（yu__o822"],"parser_profile":"yuyu_range_v1","max_trade_age_seconds":180}]'></textarea></label>
         </div>
         <div class="inline-actions">
           <button class="btn" id="findLineDatabase" type="button">自動尋找資料庫</button>
@@ -1928,8 +1929,8 @@ const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) => (
    對應表只影響「顯示」——篩選、設定、統計仍然用原始 source 字串當 key，
    所以改這裡不會動到任何資料或比對邏輯。找不到對應就原樣顯示。 */
 const SOURCE_ALIAS = {
-  "焦點利潤(yuyu)": "高頻交易",
-  "黃金報單🈲言群": "中頻交易",
+  __HIGH_FREQ_SOURCE_JSON__: "高頻交易",
+  __MID_FREQ_SOURCE_JSON__: "中頻交易",
 };
 const srcName = (s) => SOURCE_ALIAS[s] || (s || "未標記來源");
 
@@ -1941,7 +1942,7 @@ const MID_SOURCE  = Object.keys(SOURCE_ALIAS).find((k) => SOURCE_ALIAS[k] === "�
 
 function ids() {
   return ROLE === "central"
-    ? ["line_database_path", "line_keychain_service", "line_chats", "hub_url", "host", "port", "token", "interval", "cloudflare_tunnel", "cloudflared_path", "auto_start"]
+    ? ["line_database_path", "line_keychain_service", "line_chats", "hub_url", "host", "port", "token", "interval", "shadow_mode", "cloudflare_tunnel", "cloudflared_path", "auto_start"]
     // 會員端刻意不含 hub_url / token：那兩個不該讓會員看到，也不該由前端回送
     // （token 是管理權限的通行證，送到瀏覽器等於直接把付費牆拆了）
     : ["mt5_files_dir", "interval", "auto_start", "default_lot_size", "use_martingale",
@@ -2597,6 +2598,13 @@ function durationText(seconds) {
   if (m) return m + " 分 " + String(sec).padStart(2, "0") + " 秒";
   return sec + " 秒";
 }
+function cancelStateTag(p) {
+  const state = String(p.cancel_state || "none");
+  if (state === "requested") return '<span class="tag tag-warn">等待單號</span>';
+  if (state === "command_sent") return '<span class="tag tag-warn">撤單確認中</span>';
+  if (state === "failed_retry") return '<span class="tag tag-warn">撤單重試中</span>';
+  return '<span class="muted">—</span>';
+}
 function renderPending(pending, running) {
   const box = $("pending");
   $("pendingSummary").textContent = pending.length
@@ -2621,6 +2629,7 @@ function renderPending(pending, running) {
       '<td class="num mono">' + (p.tp ? n2.format(p.tp) : "—") + "</td>" +
       '<td class="mono">' + (p.elapsed_seconds == null ? esc(p.setup_time || "—") : durationText(p.elapsed_seconds)) + "</td>" +
       "<td>" + tracking + "</td>" +
+      "<td>" + cancelStateTag(p) + "</td>" +
       "<td>" + esc(p.source ? srcName(p.source) : "—") + "</td>" +
       '<td class="mono">' + esc(p.ticket == null ? "尚未取得" : p.ticket) + "</td>" +
     "</tr>";
@@ -2629,7 +2638,7 @@ function renderPending(pending, running) {
   box.innerHTML =
     '<div class="table-scroll"><table><thead><tr>' +
       "<th>方向</th><th>商品</th><th class=\"num\">掛單價</th><th class=\"num\">停損</th>" +
-      "<th class=\"num\">停利</th><th>已等待</th><th>追蹤狀態</th>" +
+      "<th class=\"num\">停利</th><th>已等待</th><th>追蹤狀態</th><th>撤單狀態</th>" +
       "<th>訊號來源</th><th>單號</th>" +
     "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
     (untracked
@@ -4423,6 +4432,8 @@ def render(state: Any) -> str:
         .replace("__ROLE__", str(getattr(state, "role", "client")))
         .replace("__FIELDS__", CENTRAL_FIELDS if is_central else CLIENT_FIELDS)
         .replace("__EXTRA_BUTTON__", extra_button)
+        .replace("__HIGH_FREQ_SOURCE_JSON__", json.dumps(HIGH_FREQ, ensure_ascii=False))
+        .replace("__MID_FREQ_SOURCE_JSON__", json.dumps(MID_FREQ, ensure_ascii=False))
         .replace("__TAB1__", "訊號發布" if is_central else "訊號跟單")
         .replace("__PWMIN__", str(MIN_PASSWORD_LENGTH))
     )

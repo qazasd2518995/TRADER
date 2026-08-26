@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import time
+import unicodedata
 import urllib.request
 from pathlib import Path
 from typing import Dict
@@ -14,55 +15,32 @@ from typing import Dict
 from copy_trader.config import DATA_DIR
 from copy_trader.line_db.factory import build_line_database_source
 from copy_trader.line_db.identity import execution_id, line_event_id
+from copy_trader.line_db.ledger import LineMessageLedger
 from copy_trader.line_db.models import LineDatabaseMessage
-from copy_trader.signal_parser.regex_parser import ParsedSignal, RegexSignalParser
+from copy_trader.signal_parser.regex_parser import ParsedSignal
+from copy_trader.signal_parser.strict_parser import StrictParseResult, parse_strict_signal
 
 
 logger = logging.getLogger(__name__)
 
-_CANCEL_WORDS = (
-    "取消", "撤單", "撤掉", "撤回", "先撤", "都撤", "撤了", "撤吧", "刪單", "砍單", "撤",
-)
-_CANCEL_EXCLUDE = (
-    "嗎", "?", "？", "有沒有", "會不會", "是不是", "設定", "後來", "怎麼", "為何", "如果", "要不要",
-)
+_EXACT_CANCEL_COMMANDS = frozenset({"撤", "撤單", "撤掉", "取消", "取消掛單", "全部撤單"})
+
+
+def normalize_cancel_command(text: str) -> str:
+    # Remove whitespace, emoji and decorative punctuation, but retain all
+    # letters/numbers. "撤(◐‿◑)" becomes "撤" while "這張不要撤" stays intact.
+    return "".join(
+        char
+        for char in (text or "")
+        if unicodedata.category(char)[0] not in {"C", "M", "P", "S", "Z"}
+    ).casefold()
 
 
 def is_cancel_reply(text: str) -> bool:
-    body = (text or "").strip()
-    if not body or len(body) > 40:
-        return False
-    if any(word in body for word in _CANCEL_EXCLUDE):
-        return False
-    if "止損" in body or "止盈" in body or "xauusd" in body.casefold():
-        return False
-    return any(word in body for word in _CANCEL_WORDS)
+    return normalize_cancel_command(text) in _EXACT_CANCEL_COMMANDS
 
 
-def _is_complete(signal: ParsedSignal) -> bool:
-    return bool(
-        signal.is_valid
-        and signal.direction in {"buy", "sell"}
-        and signal.entry_price is not None
-        and signal.stop_loss is not None
-        and signal.take_profit
-    )
-
-
-def _sl_tp_consistent(signal: ParsedSignal) -> bool:
-    if not _is_complete(signal):
-        return False
-    entry = float(signal.entry_price)
-    stop_loss = float(signal.stop_loss)
-    take_profits = [float(value) for value in signal.take_profit if value is not None]
-    if not take_profits:
-        return False
-    if signal.direction == "buy":
-        return stop_loss < entry < min(take_profits)
-    return max(take_profits) < entry < stop_loss
-
-
-def _signal_payload(signal: ParsedSignal) -> Dict:
+def _signal_payload(signal: ParsedSignal, result: StrictParseResult) -> Dict:
     return {
         "symbol": signal.symbol or "XAUUSD",
         "direction": signal.direction,
@@ -71,8 +49,8 @@ def _signal_payload(signal: ParsedSignal) -> Dict:
         "stop_loss": signal.stop_loss,
         "take_profit": list(signal.take_profit or []),
         "lot_size": signal.lot_size,
-        "confidence": signal.confidence,
-        "parse_method": "line_db+regex",
+        "parse_status": result.status,
+        "parse_method": f"line_db+{result.profile}",
         "raw_text_summary": signal.raw_text_summary,
         "error": signal.error,
     }
@@ -101,30 +79,35 @@ class HubPublisher:
 class CentralSignalCollector:
     """Translate exact LINE rows into Hub events and acknowledge each row."""
 
-    def __init__(self, source, publisher: HubPublisher):
+    def __init__(
+        self,
+        source,
+        publisher: HubPublisher,
+        ledger: LineMessageLedger | None = None,
+        *,
+        clock=time.time,
+        shadow_mode: bool = False,
+    ):
         self.source = source
         self.publisher = publisher
-        self.parser = RegexSignalParser()
+        self.ledger = ledger or LineMessageLedger()
+        self.clock = clock
+        self.shadow_mode = bool(shadow_mode)
 
-    def _candidate_signals(self, body: str) -> list[ParsedSignal]:
-        candidates = self.parser.parse_all_latest(body)
-        if not candidates:
-            candidate = self.parser.parse_latest(body)
-            candidates = [candidate] if candidate.direction else []
-        return [
-            signal for signal in candidates
-            if _is_complete(signal) and _sl_tp_consistent(signal)
-        ]
+    @staticmethod
+    def _database_id(message: LineDatabaseMessage) -> str:
+        return message.database_id or "unknown-database"
 
-    def _publish(self, payload: Dict) -> None:
+    def _publish(self, payload: Dict) -> Dict:
         response = self.publisher.publish(payload)
         if not response.get("ok"):
             raise RuntimeError(f"hub rejected LINE event: {response}")
+        return response
 
-    def _publish_cancel(self, message: LineDatabaseMessage) -> int:
+    def _publish_cancel(self, message: LineDatabaseMessage) -> int | None:
         target = message.chat.target
         if not message.is_reply or not is_cancel_reply(message.text):
-            return 0
+            return None
         if not target.accepts_cancel_sender(
             message.sender_id,
             message.sender_name,
@@ -138,7 +121,10 @@ class CentralSignalCollector:
                 message.related_sender_name,
             )
             return 0
-        if not target.accepts_trade_sender(message.related_sender_name):
+        if not target.accepts_trade_sender(
+            message.related_sender_id,
+            message.related_sender_name,
+        ):
             logger.info(
                 "ignored cancel for non-trusted original sender source=%s sender=%r",
                 target.display_name,
@@ -146,20 +132,46 @@ class CentralSignalCollector:
             )
             return 0
 
-        original_signals = self._candidate_signals(message.related_text)
-        if not original_signals:
-            logger.info(
-                "LINE reply looked like a cancel but quoted message is not a complete signal: %s",
+        if self.shadow_mode:
+            target_execution_ids = self.ledger.execution_ids(
+                self._database_id(message),
+                message.chat.chat_id,
                 message.related_message_id,
+            )
+            status = "shadow_cancel" if target_execution_ids else "manual_review_cancel_ledger_miss"
+            self.ledger.record_message(
+                message,
+                parser_profile=target.parser_profile,
+                parse_status=status,
+            )
+            logger.info(
+                "shadow LINE cancel source=%s target=%s status=%s",
+                target.display_name,
+                message.related_message_id,
+                status,
             )
             return 0
 
-        target_execution_ids = [
-            execution_id(message.chat.chat_id, message.related_message_id, index)
-            for index, _signal in enumerate(original_signals)
-        ]
+        target_execution_ids = self.ledger.published_execution_ids(
+            self._database_id(message),
+            message.chat.chat_id,
+            message.related_message_id,
+        )
+        if not target_execution_ids:
+            logger.info(
+                "LINE cancel has no published execution in the ledger: %s",
+                message.related_message_id,
+            )
+            self.ledger.record_message(
+                message,
+                parser_profile=target.parser_profile,
+                parse_status="manual_review_cancel_ledger_miss",
+            )
+            return 0
+
+        event_id = line_event_id(message.chat.chat_id, message.message_id, "cancel")
         payload = {
-            "event_id": line_event_id(message.chat.chat_id, message.message_id, "cancel"),
+            "event_id": event_id,
             "type": "cancel_signal",
             "source": target.display_name,
             "source_name": target.name,
@@ -169,9 +181,21 @@ class CentralSignalCollector:
             "target_execution_ids": target_execution_ids,
             "sender": message.sender_name,
             "message_time": message.timestamp.isoformat(),
-            "raw_text": message.text,
+            "command": normalize_cancel_command(message.text),
         }
-        self._publish(payload)
+        response = self._publish(payload)
+        self.ledger.record_message(
+            message,
+            parser_profile=target.parser_profile,
+            parse_status="accepted_cancel",
+        )
+        self.ledger.record_cancel_published(
+            message,
+            event_id=event_id,
+            target_message_id=message.related_message_id,
+            target_execution_ids=target_execution_ids,
+            hub_response=response,
+        )
         logger.info(
             "published exact LINE reply-cancel source=%s reply=%s target=%s orders=%s",
             target.display_name,
@@ -188,45 +212,105 @@ class CentralSignalCollector:
             return 0
 
         cancel_count = self._publish_cancel(message)
-        if cancel_count:
+        if cancel_count is not None:
             return cancel_count
 
-        if not target.accepts_trade_sender(message.sender_name):
+        if not target.accepts_trade_sender(message.sender_id, message.sender_name):
             logger.debug(
                 "ignored LINE message from non-trusted sender source=%s sender=%r",
                 target.display_name,
                 message.sender_name,
             )
+            self.ledger.record_message(
+                message,
+                parser_profile=target.parser_profile,
+                parse_status="rejected_untrusted_sender",
+            )
             return 0
 
-        published = 0
-        for index, signal in enumerate(self._candidate_signals(body)):
-            order_id = execution_id(message.chat.chat_id, message.message_id, index)
-            payload = {
-                "event_id": line_event_id(message.chat.chat_id, message.message_id, "trade", index),
-                "type": "trade_signal",
+        result = parse_strict_signal(body, target.parser_profile)
+        if not result.accepted or result.signal is None:
+            self.ledger.record_message(
+                message,
+                parser_profile=result.profile,
+                parse_status=result.status,
+            )
+            logger.debug(
+                "LINE message rejected source=%s status=%s reason=%s",
+                target.display_name,
+                result.status,
+                result.reason,
+            )
+            return 0
+
+        signal = result.signal
+        index = 0
+        order_id = execution_id(message.chat.chat_id, message.message_id, index)
+        event_id = line_event_id(message.chat.chat_id, message.message_id, "trade", index)
+        signal_payload = _signal_payload(signal, result)
+        age_seconds = max(0.0, self.clock() - message.created_time_ms / 1000)
+        stale = (
+            target.max_trade_age_seconds > 0
+            and age_seconds > target.max_trade_age_seconds
+        )
+        parse_status = (
+            "rejected_stale_backlog"
+            if stale
+            else "shadow_accepted" if self.shadow_mode else result.status
+        )
+        self.ledger.record_message(
+            message,
+            parser_profile=result.profile,
+            parse_status=parse_status,
+            executions=[{
                 "execution_id": order_id,
-                "source": target.display_name,
-                "source_name": target.name,
-                "sender": message.sender_name,
-                "line_chat_id": message.chat.chat_id,
-                "line_message_id": message.message_id,
-                "line_rowid": message.rowid,
-                "message_time": message.timestamp.isoformat(),
                 "signal_index": index,
-                "signal": _signal_payload(signal),
-                "raw_text": body,
-            }
-            self._publish(payload)
-            published += 1
-            logger.info(
-                "published LINE DB signal source=%s message=%s index=%s: %s",
+                "event_id": event_id,
+                "signal": signal_payload,
+            }],
+        )
+        if stale:
+            logger.warning(
+                "skipped stale LINE trade source=%s message=%s age=%.1fs limit=%ss",
                 target.display_name,
                 message.message_id,
-                index,
+                age_seconds,
+                target.max_trade_age_seconds,
+            )
+            return 0
+        if self.shadow_mode:
+            logger.info(
+                "shadow LINE trade source=%s message=%s: %s",
+                target.display_name,
+                message.message_id,
                 signal,
             )
-        return published
+            return 0
+
+        payload = {
+            "event_id": event_id,
+            "type": "trade_signal",
+            "execution_id": order_id,
+            "source": target.display_name,
+            "source_name": target.name,
+            "sender": message.sender_name,
+            "line_chat_id": message.chat.chat_id,
+            "line_message_id": message.message_id,
+            "line_rowid": message.rowid,
+            "line_revision": message.revision,
+            "message_time": message.timestamp.isoformat(),
+            "signal_index": index,
+            "signal": signal_payload,
+        }
+        response = self._publish(payload)
+        self.ledger.mark_trade_published(order_id, response)
+        logger.info(
+            "published strict LINE DB signal source=%s message=%s: %s",
+            target.display_name,
+            message.message_id,
+            signal,
+        )
+        return 1
 
     def run_cycle(self) -> int:
         published = 0
@@ -256,6 +340,12 @@ def main() -> None:
     parser.add_argument("--chats-json", default=os.environ.get("LINE_DB_CHATS", ""))
     parser.add_argument("--state-file", default=os.environ.get("LINE_DB_CURSOR_STATE", str(DATA_DIR / "line_db_cursor.json")))
     parser.add_argument("--interval", type=float, default=1.0)
+    parser.add_argument(
+        "--shadow",
+        action="store_true",
+        default=str(os.environ.get("LINE_DB_SHADOW_MODE") or "").casefold() in {"1", "true", "yes", "on"},
+        help="parse and ledger LINE rows without publishing Hub events",
+    )
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
 
@@ -265,7 +355,12 @@ def main() -> None:
         line_chats=args.chats_json,
         state_path=Path(args.state_file),
     )
-    collector = CentralSignalCollector(source, HubPublisher(args.hub_url, args.token))
+    collector = CentralSignalCollector(
+        source,
+        HubPublisher(args.hub_url, args.token),
+        LineMessageLedger(DATA_DIR / "line_message_ledger.sqlite3"),
+        shadow_mode=args.shadow,
+    )
     if args.once:
         collector.run_cycle()
     else:

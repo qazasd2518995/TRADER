@@ -8,6 +8,7 @@ from pathlib import Path
 import threading
 import time
 from typing import Iterable
+from dataclasses import replace
 
 from .models import LineChatTarget, LineDatabaseMessage, ResolvedLineChat
 
@@ -18,9 +19,10 @@ logger = logging.getLogger(__name__)
 class LineDatabaseSource:
     """Poll exact LINE rows and acknowledge them transactionally.
 
-    A per-chat SQLite rowid cursor replaces OCR hashes, fuzzy deduplication and
-    staleness windows. The first run baselines at the current maximum rowid so
-    existing chat history is never replayed as fresh trades.
+    A per-chat SQLite rowid cursor replaces OCR hashes and fuzzy deduplication.
+    The first run baselines at the current maximum rowid so existing chat
+    history is never replayed as fresh trades. Collector-level age limits remain
+    as a deliberate restart/backlog safety valve.
     """
 
     def __init__(
@@ -48,7 +50,7 @@ class LineDatabaseSource:
                     return value
         except (OSError, json.JSONDecodeError) as exc:
             logger.warning("LINE DB cursor could not be loaded; a fresh baseline will be used: %s", exc)
-        return {"version": 1, "databases": {}}
+        return {"version": 2, "databases": {}}
 
     def _save_state(self) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -62,12 +64,92 @@ class LineDatabaseSource:
     @property
     def chats(self) -> list[ResolvedLineChat]:
         if self._resolved is None:
-            self._resolved = self.provider.resolve_chats(self.targets)
+            database = self._database_state()
+            bindings = database.setdefault("bindings", {})
+            prepared = []
+            for target in self.targets:
+                binding = bindings.get(target.name) or {}
+                same_chat_configuration = (
+                    binding.get("configured_chat_name") == target.chat_name
+                )
+                same_sender_configuration = (
+                    list(binding.get("configured_trusted_senders") or ())
+                    == list(target.trusted_senders)
+                )
+                prepared.append(
+                    replace(
+                        target,
+                        chat_id=(
+                            target.chat_id
+                            or (
+                                str(binding.get("chat_id") or "")
+                                if same_chat_configuration
+                                else ""
+                            )
+                        ),
+                        chat_kind=(
+                            target.chat_kind
+                            or (
+                                str(binding.get("chat_kind") or "")
+                                if same_chat_configuration
+                                else ""
+                            )
+                        ),
+                        trusted_sender_ids=(
+                            target.trusted_sender_ids
+                            or (
+                                tuple(str(value) for value in binding.get("trusted_sender_ids") or ())
+                                if same_chat_configuration and same_sender_configuration
+                                else ()
+                            )
+                        ),
+                    )
+                )
+
+            resolved = self.provider.resolve_chats(prepared)
+            changed = False
+            stable: list[ResolvedLineChat] = []
+            for chat in resolved:
+                target = chat.target
+                sender_ids = target.trusted_sender_ids
+                resolver = getattr(self.provider, "resolve_sender_ids", None)
+                if target.trusted_senders and not sender_ids and callable(resolver):
+                    mapped = resolver(chat, target.trusted_senders)
+                    missing = [name for name in target.trusted_senders if name not in mapped]
+                    if missing:
+                        raise RuntimeError(
+                            f"trusted LINE sender could not be bound in {target.name}: "
+                            + ", ".join(repr(name) for name in missing)
+                        )
+                    sender_ids = tuple(mapped[name] for name in target.trusted_senders)
+                    target = replace(target, trusted_sender_ids=sender_ids)
+                    chat = ResolvedLineChat(target=target, chat_id=chat.chat_id, kind=chat.kind)
+
+                new_binding = {
+                    "chat_id": chat.chat_id,
+                    "chat_kind": chat.kind,
+                    "trusted_sender_ids": list(sender_ids),
+                    "configured_chat_name": target.chat_name,
+                    "configured_trusted_senders": list(target.trusted_senders),
+                    "bound_at": time.time(),
+                }
+                old_binding = bindings.get(target.name) or {}
+                if any(old_binding.get(key) != value for key, value in new_binding.items() if key != "bound_at"):
+                    bindings[target.name] = new_binding
+                    changed = True
+                stable.append(chat)
+            self._resolved = stable
+            if changed:
+                self._state["version"] = 2
+                self._save_state()
         return self._resolved
 
-    def _chat_state(self, chat: ResolvedLineChat) -> dict:
+    def _database_state(self) -> dict:
         databases = self._state.setdefault("databases", {})
-        database = databases.setdefault(self.provider.database_id, {"chats": {}})
+        return databases.setdefault(self.provider.database_id, {"chats": {}, "bindings": {}})
+
+    def _chat_state(self, chat: ResolvedLineChat) -> dict:
+        database = self._database_state()
         return database.setdefault("chats", {}).setdefault(chat.chat_id, {})
 
     def ensure_baseline(self) -> bool:
@@ -145,6 +227,8 @@ class LineDatabaseSource:
                     "chat_name": chat.target.chat_name,
                     "display_name": chat.target.display_name,
                     "kind": chat.kind,
+                    "identity_bound": bool(chat.target.chat_id or chat.target.trusted_sender_ids),
+                    "trusted_sender_count": len(chat.target.trusted_sender_ids),
                     "last_rowid": int(self._chat_state(chat).get("last_rowid") or 0),
                     "latest_rowid": self.provider.latest_rowid(chat),
                 }

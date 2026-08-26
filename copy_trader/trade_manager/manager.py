@@ -28,6 +28,16 @@ class OrderStatus(Enum):
     FAILED = "failed"             # Execution failed
 
 
+class CancelState(Enum):
+    """Exact pending-order cancellation lifecycle."""
+    NONE = "none"
+    REQUESTED = "requested"
+    COMMAND_SENT = "command_sent"
+    MT5_CONFIRMED = "mt5_confirmed"
+    FAILED_RETRY = "failed_retry"
+    ALREADY_FILLED = "already_filled"
+
+
 @dataclass
 class ManagedOrder:
     """Order with full lifecycle tracking."""
@@ -58,6 +68,11 @@ class ManagedOrder:
     cancel_requested: bool = False
     cancel_delete_sent: bool = False
     cancel_reason: str = ""
+    cancel_state: CancelState = CancelState.NONE
+    cancel_sent_at: float = 0.0
+    cancel_attempts: int = 0
+    cancel_error: str = ""
+    cancel_last_result: str = ""
 
     # 保本移損模式：已經因為觸及第幾關而推過停損（0=還沒推過）
     sl_trail_index: int = 0
@@ -266,13 +281,22 @@ class TradeManager:
             if order is None:
                 # The trade may have been filtered by membership/source settings.
                 return True
-            if order.status not in (OrderStatus.PENDING, OrderStatus.SENT):
+            if order.cancel_state in (CancelState.MT5_CONFIRMED, CancelState.ALREADY_FILLED):
                 return True
-            if order.cancel_delete_sent:
+            if order.status is OrderStatus.CANCELLED:
+                order.cancel_state = CancelState.MT5_CONFIRMED
+                return True
+            if order.status not in (OrderStatus.PENDING, OrderStatus.SENT):
+                if order.status in (OrderStatus.FILLED, OrderStatus.PARTIAL_CLOSED, OrderStatus.CLOSED):
+                    order.cancel_state = CancelState.ALREADY_FILLED
                 return True
             order.cancel_requested = True
             order.cancel_reason = reason
+            if order.cancel_state is CancelState.NONE:
+                order.cancel_state = CancelState.REQUESTED
             ticket = order.ticket
+            sent_at = order.cancel_sent_at
+            state = order.cancel_state
 
         expected_comment = f"copy_{signal_id}"
         if not ticket:
@@ -295,25 +319,48 @@ class TradeManager:
                         current.status = OrderStatus.FILLED
                         current.ticket = position.get("ticket")
                         current.cancel_requested = False
+                        current.cancel_state = CancelState.ALREADY_FILLED
                 logger.info("LINE 引用撤單到達時訂單已成交，保留部位：%s", signal_id)
                 return True
             logger.info("LINE 引用撤單等待 MT5 ticket：%s", signal_id)
             return False
 
-        success = self._delete_pending_order(int(ticket))
+        # Do not overwrite commands.json continuously while the EA is still
+        # consuming the previous delete command.
+        if state is CancelState.COMMAND_SENT and self.clock_age(sent_at) < self.CANCEL_RETRY_SECONDS:
+            return False
+
+        success = self._delete_pending_order(int(ticket), signal_id)
         if not success:
+            with self._lock:
+                current = self.orders.get(signal_id)
+                if current is not None:
+                    current.cancel_state = CancelState.FAILED_RETRY
+                    current.cancel_error = "command_write_failed"
             return False
         with self._lock:
             current = self.orders.get(signal_id)
             if current is not None and current.status in (OrderStatus.PENDING, OrderStatus.SENT):
                 current.ticket = int(ticket)
                 current.cancel_delete_sent = True
+                current.cancel_state = CancelState.COMMAND_SENT
+                current.cancel_sent_at = time.time()
+                current.cancel_attempts += 1
+                current.cancel_error = ""
         logger.info("LINE 引用撤單已送出 pending-delete：%s ticket=%s", signal_id, ticket)
         self._write_journal(
             "LINE_REPLY_CANCEL_SENT",
             f"signal_id={signal_id} | ticket={ticket} | 原因={reason}",
         )
-        return True
+        # Writing commands.json is not cancellation confirmation. The Hub
+        # cursor advances only after _check_vanished_orders reconciles MT5.
+        return False
+
+    CANCEL_RETRY_SECONDS = 5
+
+    @staticmethod
+    def clock_age(timestamp: float) -> float:
+        return max(0.0, time.time() - float(timestamp or 0.0))
 
     # MT5 order type: 偶數=buy 系列(0 BUY / 2 BUY_LIMIT / 4 BUY_STOP), 奇數=sell 系列
     @staticmethod
@@ -1168,6 +1215,8 @@ class TradeManager:
                     comment = pos.get('comment', '')
                     if comment == f"copy_{signal_id}":
                         order.status = OrderStatus.FILLED
+                        if order.cancel_requested:
+                            order.cancel_state = CancelState.ALREADY_FILLED
                         order.cancel_requested = False
                         order.cancel_delete_sent = False
                         order.ticket = pos.get('ticket')
@@ -1244,6 +1293,7 @@ class TradeManager:
                     order.status = OrderStatus.CANCELLED
                     order.cancel_requested = False
                     order.cancel_delete_sent = False
+                    order.cancel_state = CancelState.MT5_CONFIRMED
                     vanished.append((signal_id, order))
 
         for signal_id, order in vanished:
@@ -1279,24 +1329,40 @@ class TradeManager:
         except OSError:
             return
 
-        failures: Dict[str, Tuple[str, str]] = {}
+        failures: Dict[str, Tuple[str, str, str, str]] = {}
         for line in lines:
             parts = [p.strip() for p in line.split("|")]
             if len(parts) < 6 or parts[2].upper() != "FAIL":
                 continue
+            action = parts[1].casefold()
             signal_id = parts[5]
             retcode = parts[6] if len(parts) > 6 else ""
             message = parts[7] if len(parts) > 7 else ""
             if signal_id:
-                failures[signal_id] = (retcode, message)
+                failures[signal_id] = (action, retcode, message, line.strip())
         if not failures:
             return
 
         rejected = []
         with self._lock:
-            for signal_id, (retcode, message) in failures.items():
+            for signal_id, (action, retcode, message, result_line) in failures.items():
                 order = self.orders.get(signal_id)
                 if order is None or order.status not in (OrderStatus.PENDING, OrderStatus.SENT):
+                    continue
+                if action == "delete":
+                    if order.cancel_last_result == result_line:
+                        continue
+                    order.cancel_last_result = result_line
+                    order.cancel_state = CancelState.FAILED_RETRY
+                    order.cancel_delete_sent = False
+                    order.cancel_sent_at = 0.0
+                    order.cancel_error = f"{retcode} {message}".strip()
+                    logger.warning(
+                        "MT5 撤單失敗，將重試：%s（%s %s）",
+                        signal_id,
+                        retcode,
+                        message,
+                    )
                     continue
                 order.status = OrderStatus.FAILED
                 rejected.append((signal_id, order, retcode, message))
@@ -1550,10 +1616,12 @@ class TradeManager:
             order.pending_partial_since = 0.0
             logger.error(f"Partial close FAILED to send: {order.signal_id}")
 
-    def _delete_pending_order(self, ticket: int) -> bool:
+    def _delete_pending_order(self, ticket: int, signal_id: str = "") -> bool:
         """Send a delete command to MT5 to remove a pending order."""
         command = {
             "action": "delete",
-            "ticket": ticket
+            "ticket": ticket,
+            "trade_id": signal_id,
+            "comment": f"copy_{signal_id}" if signal_id else "",
         }
         return self._write_command(command)

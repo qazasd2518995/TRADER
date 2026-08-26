@@ -8,7 +8,7 @@ from typing import Iterable
 
 from .discovery import choose_database_candidate, discover_database_candidates
 from .keys import DatabaseKeyProvider
-from .models import LineChatTarget, LineDatabaseMessage, ResolvedLineChat
+from .models import LineChatTarget, LineDatabaseMessage, LineMessageMetadata, ResolvedLineChat
 
 
 class SQLiteLineDatabaseProvider:
@@ -90,20 +90,72 @@ class SQLiteLineDatabaseProvider:
                 ("openchat", "_squareChat", "_squareChatMid", "_name"),
                 ("group", "_groupChat", "_chatMid", "_chatName"),
             ):
-                row = connection.execute(
+                if target.chat_kind and target.chat_kind != kind:
+                    continue
+                if target.chat_id:
+                    row = connection.execute(
+                        f'SELECT "{id_column}" FROM "{table}" WHERE "{id_column}"=?',
+                        (target.chat_id,),
+                    ).fetchone()
+                    if row:
+                        matches.append((kind, str(row[0])))
+                    continue
+                rows = connection.execute(
                     f'SELECT "{id_column}" FROM "{table}" WHERE "{name_column}"=?',
                     (target.chat_name,),
-                ).fetchone()
-                if row:
-                    matches.append((kind, str(row[0])))
+                )
+                matches.extend((kind, str(row[0])) for row in rows if row and row[0])
             if not matches:
+                if target.chat_id:
+                    raise RuntimeError(
+                        f"bound LINE chat ID is no longer present for target: {target.name}"
+                    )
                 raise RuntimeError(f"LINE chat was not found: {target.chat_name}")
             if len(matches) > 1:
                 raise RuntimeError(
-                    f"LINE chat name is ambiguous across chat types: {target.chat_name}"
+                    f"LINE chat name is ambiguous: {target.chat_name}"
                 )
             kind, chat_id = matches[0]
             resolved.append(ResolvedLineChat(target=target, chat_id=chat_id, kind=kind))
+        return resolved
+
+    def resolve_sender_ids(
+        self,
+        chat: ResolvedLineChat,
+        sender_names: Iterable[str],
+    ) -> dict[str, str]:
+        """Resolve configured display names once, rejecting ambiguous matches."""
+        wanted = {"".join(str(name).split()).casefold(): str(name) for name in sender_names}
+        if not wanted:
+            return {}
+        rows = self.connect().execute(
+            """
+            SELECT DISTINCT m._from,
+                   COALESCE(sm._displayName, c._displayNameOverridden,
+                            c._displayName, m._from, '')
+              FROM _message AS m
+              LEFT JOIN _squareMember AS sm ON sm._squareMemberMid=m._from
+              LEFT JOIN _contact AS c ON c._mid=m._from
+             WHERE m._chatId=? AND COALESCE(m._from, '')<>''
+            """,
+            (chat.chat_id,),
+        )
+        candidates: dict[str, set[str]] = {key: set() for key in wanted}
+        for sender_id, display_name in rows:
+            normalized = "".join(str(display_name or "").split()).casefold()
+            if normalized in candidates and sender_id:
+                candidates[normalized].add(str(sender_id))
+
+        resolved: dict[str, str] = {}
+        for normalized, configured_name in wanted.items():
+            ids = candidates[normalized]
+            if len(ids) > 1:
+                raise RuntimeError(
+                    f"trusted sender name is ambiguous in LINE chat {chat.target.name}: "
+                    f"{configured_name!r}"
+                )
+            if ids:
+                resolved[configured_name] = next(iter(ids))
         return resolved
 
     def latest_rowid(self, chat: ResolvedLineChat) -> int:
@@ -134,7 +186,11 @@ class SQLiteLineDatabaseProvider:
                    COALESCE(o._from, ''),
                    COALESCE(osm._displayName, oc._displayNameOverridden,
                             oc._displayName, o._from, ''),
-                   COALESCE(o._text, '')
+                   '',
+                   COALESCE(r._rev, 0),
+                   COALESCE(r._status, 0),
+                   COALESCE(r._type, 0),
+                   COALESCE(r._reactionStatus, 0)
               FROM _message AS r
               LEFT JOIN _message AS o
                      ON o._id=r._relatedMessageId AND o._chatId=r._chatId
@@ -165,6 +221,49 @@ class SQLiteLineDatabaseProvider:
                     related_sender_id=str(values[9] or ""),
                     related_sender_name=str(values[10] or ""),
                     related_text=str(values[11] or ""),
+                    database_id=self.database_id,
+                    revision=int(values[12] or 0),
+                    status=int(values[13] or 0),
+                    message_type=int(values[14] or 0),
+                    reaction_status=str(values[15] or ""),
                 )
             )
         return messages
+
+    def fetch_message_metadata(
+        self,
+        chat: ResolvedLineChat,
+        message_ids: Iterable[str],
+    ) -> list[LineMessageMetadata]:
+        """Re-read revision/status fields without exposing message bodies.
+
+        This is intentionally diagnostic-only until real edit and recall
+        samples establish the meaning of LINE's private status values.
+        """
+        ids = tuple(dict.fromkeys(str(value) for value in message_ids if str(value)))
+        if not ids:
+            return []
+        if len(ids) > 500:
+            raise ValueError("at most 500 LINE message IDs may be checked at once")
+        placeholders = ",".join("?" for _ in ids)
+        rows = self.connect().execute(
+            f"""
+            SELECT _id, COALESCE(_rev, 0), COALESCE(_status, 0),
+                   COALESCE(_type, 0), COALESCE(_reactionStatus, 0),
+                   COALESCE(_text, '')
+              FROM _message
+             WHERE _chatId=? AND _id IN ({placeholders})
+            """,
+            (chat.chat_id, *ids),
+        )
+        return [
+            LineMessageMetadata(
+                message_id=str(row[0] or ""),
+                revision=int(row[1] or 0),
+                status=int(row[2] or 0),
+                message_type=int(row[3] or 0),
+                reaction_status=str(row[4] or ""),
+                text_sha256=hashlib.sha256(str(row[5] or "").encode("utf-8")).hexdigest(),
+            )
+            for row in rows
+        ]

@@ -174,6 +174,7 @@ python -m copy_trader.central.central_signal_center_web
 2. 只有一個可判定候選時，畫面會自動填入。
 3. 按「測試 LINE 資料庫」。
 4. 看到 `integrity=ok` 與正確聊天室數量後才按「開始」。
+5. 第一次實機驗收先勾選 `Shadow mode（只解析、不發布）`；確認一至兩週後才關閉。
 
 預設聊天室：
 
@@ -183,10 +184,22 @@ python -m copy_trader.central.central_signal_center_web
     "name": "gold_signal_1",
     "chat_name": "（乘）黃金報單🈲言群",
     "display_name": "黃金報單🈲言群",
-    "trusted_senders": ["乘", "James"]
+    "trusted_senders": ["乘", "James"],
+    "parser_profile": "mid_frequency_v1",
+    "max_trade_age_seconds": 300
+  },
+  {
+    "name": "high_freq_yuyu",
+    "chat_name": "🈲禁言群🈲 Focus forex 焦點利潤",
+    "display_name": "焦點利潤(yuyu)",
+    "trusted_senders": ["yuyu（yu__o822"],
+    "parser_profile": "yuyu_range_v1",
+    "max_trade_age_seconds": 180
   }
 ]
 ```
+
+`焦點利潤(yuyu)` 是既有高頻交易的產品來源 key。Windows 驗收時要確認測試結果同時找到兩個聊天室；不要誤選名稱相近但不是禁言群的 `Focus forex 焦點利潤`。
 
 ## 7. Windows 實機測試順序
 
@@ -197,10 +210,10 @@ python -m copy_trader.central.central_signal_center_web
 3. `verify`：唯一 DB 通過。
 4. Web DB test：聊天室解析成功。
 5. 測試群發一筆新的完整報單：Hub 只出現一個 trade event。
-6. 對該報單使用 LINE 回覆功能輸入「撤單」：Hub cancel event 的 target message ID 正確。
-7. MT5 使用測試帳戶及最小手數：只刪該 pending ticket。
+6. 對該報單使用 LINE 回覆功能輸入「撤單」：Hub cancel event 從總帳取得正確 execution ID。
+7. MT5 使用測試帳戶及最小手數：只刪該 pending ticket，且 4 秒確認前會員端 cursor 不前移。
 8. 讓另一張單先成交，再引用回覆「撤單」：必須保留 position，不得送 close。
-9. 重啟兩端：不得把既有聊天室歷史重新下單。
+9. 重啟兩端：超過 300／180 秒的累積報單不得補下；舊撤單仍能同步已發布掛單。
 
 ## 8. 故障排查
 

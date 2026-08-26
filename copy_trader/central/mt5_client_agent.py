@@ -28,6 +28,9 @@ class HubClient:
         self.hub_url = hub_url.rstrip("/")
         self.token = token
         self.timeout = timeout
+        # The Hub scans raw records before applying membership source filters.
+        # This cursor may therefore be ahead of the last visible signal.
+        self.last_cursor = 0
 
     def _request(self, path: str, retries: int = 2) -> Dict:
         """GET with 退避重試: 暫時性網路卡頓(timeout/連線斷)時自動重試, 避免單次抖動就放棄。"""
@@ -54,7 +57,19 @@ class HubClient:
         data = self._request(f"/signals?after={after}&limit={limit}")
         if not data.get("ok"):
             raise RuntimeError(data.get("error") or "hub_request_failed")
-        return list(data.get("signals") or [])
+        signals = list(data.get("signals") or [])
+        fallback_cursor = max(
+            [int(item.get("seq") or 0) for item in signals],
+            default=max(0, int(after or 0)),
+        )
+        try:
+            self.last_cursor = max(
+                max(0, int(after or 0)),
+                int(data.get("cursor") if data.get("cursor") is not None else fallback_cursor),
+            )
+        except (TypeError, ValueError):
+            self.last_cursor = fallback_cursor
+        return signals
 
 
 def _load_state(path: Path) -> Dict:
@@ -86,7 +101,9 @@ def _parsed_signal_from_payload(payload: Dict) -> ParsedSignal:
         stop_loss=payload.get("stop_loss"),
         take_profit=list(payload.get("take_profit") or []),
         lot_size=payload.get("lot_size"),
-        confidence=float(payload.get("confidence") or 0.95),
+        # LINE DB parsing is deterministic; there is no statistical confidence
+        # score. Keep the legacy field at zero for ParsedSignal compatibility.
+        confidence=float(payload.get("confidence") or 0.0),
         raw_text_summary=str(payload.get("raw_text_summary") or ""),
         parse_method=str(payload.get("parse_method") or "hub"),
         error=str(payload.get("error") or ""),
@@ -205,7 +222,8 @@ class MT5ClientAgent:
 
     def run_cycle(self) -> int:
         count = 0
-        for item in self.hub.signals_after(self.last_seq):
+        records = self.hub.signals_after(self.last_seq)
+        for item in records:
             seq = int(item.get("seq") or 0)
 
             # LINE 引用撤單：事件直接帶被引用報單的 deterministic execution ID。
@@ -276,6 +294,16 @@ class MT5ClientAgent:
             logger.info("submitted hub seq=%s as local signal %s: %s", seq, signal_id, signal)
             self._mark_seq(seq)
             count += 1
+        # A member may be unable to see every source in the raw Hub page. Move
+        # past those filtered records only after every visible event in this
+        # batch was handled successfully. Early-return and exception paths above
+        # deliberately do not reach this acknowledgement.
+        try:
+            filtered_cursor = int(getattr(self.hub, "last_cursor", 0) or 0)
+        except (TypeError, ValueError):
+            filtered_cursor = 0
+        if filtered_cursor > self.last_seq:
+            self._mark_seq(filtered_cursor)
         return count
 
     def run_forever(self, interval: float = 1.0) -> None:

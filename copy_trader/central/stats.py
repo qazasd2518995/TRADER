@@ -403,6 +403,9 @@ def _tracked_pending(trade_manager: Any, tracked: set) -> List[Dict[str, Any]]:
                 "source": order.source_window or "",
                 "created_at": order.created_at,
                 "elapsed_seconds": int(elapsed),
+                "cancel_state": getattr(getattr(order, "cancel_state", None), "value", "none"),
+                "cancel_attempts": int(getattr(order, "cancel_attempts", 0) or 0),
+                "cancel_error": str(getattr(order, "cancel_error", "") or ""),
             })
         return rows
     except Exception:
@@ -415,6 +418,7 @@ def source_settings(
     sources_raw: Dict[str, Any],
     martingale_raw: Dict[str, Any],
     ea_labels: Optional[set] = None,
+    known_sources: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """每個訊號來源的下單設定 + 目前馬丁層級。
 
@@ -435,7 +439,12 @@ def source_settings(
 
     ea_labels = ea_labels or set()
     known: List[str] = []
-    for name in list(profiles.keys()) + [t["source"] for t in trades] + list(sources_raw.values()):
+    for name in (
+        list(known_sources or [])
+        + list(profiles.keys())
+        + [t["source"] for t in trades]
+        + list(sources_raw.values())
+    ):
         name = str(name or "").strip()
         if name and name not in known and name not in ea_labels:
             known.append(name)
@@ -546,7 +555,11 @@ def _merge_partial_closes(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return merged
 
 
-def build_stats(settings: Dict[str, Any], trade_manager: Any = None) -> Dict[str, Any]:
+def build_stats(
+    settings: Dict[str, Any],
+    trade_manager: Any = None,
+    known_sources: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     mt5_dir = resolve_mt5_dir(str(settings.get("mt5_files_dir") or ""))
     now = time.time()
 
@@ -712,7 +725,12 @@ def build_stats(settings: Dict[str, Any], trade_manager: Any = None) -> Dict[str
         "positions": positions,
         "pending": pending_orders(trade_manager, mt5_dir, ea_magics=set(ea_sources.keys())),
         "source_settings": source_settings(
-            settings, trades, sources_raw, martingale_raw, ea_labels=set(ea_sources.values())
+            settings,
+            trades,
+            sources_raw,
+            martingale_raw,
+            ea_labels=set(ea_sources.values()),
+            known_sources=known_sources,
         ),
         # 別的 EA(自己下單、不靠訊號)有哪些，純粹讓前端知道要把哪些來源名稱
         # 當成「唯讀報表」處理，不要顯示成可調手數/馬丁的來源

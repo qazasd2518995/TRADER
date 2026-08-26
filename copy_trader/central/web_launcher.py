@@ -136,6 +136,7 @@ class LauncherState:
                 "port": "8765",
                 "token": secrets.token_urlsafe(24),
                 "interval": "1.0",
+                "shadow_mode": "false",
                 "cloudflare_tunnel": "true",
                 "cloudflared_path": "",
                 "auto_start": "false",
@@ -179,6 +180,16 @@ class LauncherState:
                     data.update(loaded)
         except Exception:
             pass
+        if self.role == "central":
+            # The first LINE-DB refactor shipped with only the mid-frequency
+            # room in its saved default. Upgrade exactly that legacy value so
+            # existing central machines regain yuyu; never alter custom lists.
+            from copy_trader.line_db.factory import migrate_legacy_default_line_chats
+
+            migrated, changed = migrate_legacy_default_line_chats(data.get("line_chats"))
+            if changed:
+                data["line_chats"] = migrated
+                logger.info("已將既有中央 LINE DB 預設升級為中頻／yuyu 嚴格解析設定")
         return data
 
     def save_settings(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -594,7 +605,14 @@ class LauncherState:
                 logger.info("Hub 管理頁面：%s/?token=%s", local_url, token)
                 self._start_cloudflare_tunnel(port)
 
-            collector = CentralSignalCollector(source, HubPublisher(publish_url, token))
+            from copy_trader.line_db.ledger import LineMessageLedger
+
+            collector = CentralSignalCollector(
+                source,
+                HubPublisher(publish_url, token),
+                LineMessageLedger(DATA_DIR / "line_message_ledger.sqlite3"),
+                shadow_mode=_truthy(self.settings.get("shadow_mode")),
+            )
             self.status = "運行中"
             self.service_started_at = time.time()
 
@@ -1021,6 +1039,8 @@ def make_handler(state: LauncherState):
                     stats = build_stats(
                         state.settings,
                         trade_manager=agent.trade_manager if agent is not None else None,
+                        known_sources=(state.entitlements().get("sources") or [])
+                        if state.role == "client" else [],
                     )
                     _json_response(self, 200, {"ok": True, "stats": stats})
                 except Exception as exc:

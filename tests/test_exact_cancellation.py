@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 import tempfile
+import time
 import unittest
 
 from copy_trader.central.mt5_client_agent import MT5ClientAgent
 from copy_trader.signal_parser.regex_parser import ParsedSignal
-from copy_trader.trade_manager.manager import OrderStatus, TradeManager
+from copy_trader.trade_manager.manager import CancelState, OrderStatus, TradeManager
 
 
 def signal() -> ParsedSignal:
@@ -34,12 +35,22 @@ class ExactCancellationTests(unittest.TestCase):
             manager.orders[second].ticket = 202
 
             deleted = []
-            manager._delete_pending_order = lambda ticket: deleted.append(ticket) or True
-            self.assertTrue(manager.cancel_pending_order(first))
-            self.assertEqual(deleted, [101])
+            manager._delete_pending_order = lambda ticket, signal_id="": deleted.append((ticket, signal_id)) or True
+            self.assertFalse(manager.cancel_pending_order(first))
+            self.assertEqual(deleted, [(101, first)])
             self.assertEqual(manager.orders[first].status, OrderStatus.SENT)
             self.assertTrue(manager.orders[first].cancel_delete_sent)
+            self.assertEqual(manager.orders[first].cancel_state, CancelState.COMMAND_SENT)
             self.assertEqual(manager.orders[second].status, OrderStatus.SENT)
+
+            manager._get_pending_orders = lambda allow_none=False: [{"ticket": 202}]
+            manager._get_positions = lambda allow_none=False: []
+            manager.orders[first].vanish_detected_at = time.time() - 5
+            manager._check_vanished_orders()
+
+            self.assertEqual(manager.orders[first].status, OrderStatus.CANCELLED)
+            self.assertEqual(manager.orders[first].cancel_state, CancelState.MT5_CONFIRMED)
+            self.assertTrue(manager.cancel_pending_order(first))
 
     def test_exact_cancel_never_closes_a_filled_position(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -59,6 +70,33 @@ class ExactCancellationTests(unittest.TestCase):
             manager.orders[order_id].status = OrderStatus.SENT
             self.assertFalse(manager.cancel_pending_order(order_id))
             self.assertTrue(manager.orders[order_id].cancel_requested)
+
+    def test_mt5_delete_failure_keeps_order_pending_and_retries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = TradeManager(directory)
+            order_id = "copy_ln_7777777777777777"
+            manager.submit_signal(signal(), auto_execute=False, signal_id=order_id)
+            order = manager.orders[order_id]
+            order.status = OrderStatus.SENT
+            order.ticket = 707
+            order.cancel_requested = True
+            order.cancel_state = CancelState.COMMAND_SENT
+            order.cancel_sent_at = time.time()
+            (Path(directory) / "trade_results.txt").write_text(
+                f"2026.08.27 01:00 | delete | FAIL | ticket:707 | XAUUSD | {order_id} | retcode:10006 | rejected\n",
+                encoding="utf-8",
+            )
+
+            manager._check_trade_results()
+
+            self.assertEqual(order.status, OrderStatus.SENT)
+            self.assertEqual(order.cancel_state, CancelState.FAILED_RETRY)
+            sent = []
+            manager._delete_pending_order = lambda ticket, signal_id="": sent.append((ticket, signal_id)) or True
+            self.assertFalse(manager.cancel_pending_order(order_id))
+            self.assertEqual(sent, [(707, order_id)])
+            self.assertEqual(order.cancel_state, CancelState.COMMAND_SENT)
+            self.assertEqual(order.cancel_attempts, 1)
 
     def test_same_line_execution_id_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -97,6 +135,24 @@ class ClientCursorTests(unittest.TestCase):
             agent.trade_manager = _DeferredManager()
             self.assertEqual(agent.run_cycle(), 0)
             self.assertEqual(agent.last_seq, 6)
+
+    def test_filtered_only_batch_advances_to_hub_cursor(self):
+        class FilteredHub:
+            hub_url = "https://hub.invalid"
+            last_cursor = 12
+
+            def signals_after(self, _last_seq):
+                return []
+
+        with tempfile.TemporaryDirectory() as directory:
+            agent = MT5ClientAgent.__new__(MT5ClientAgent)
+            agent.hub = FilteredHub()
+            agent.state_file = Path(directory) / "client-state.json"
+            agent.state = {"last_seq": 6}
+            agent.trade_manager = _DeferredManager()
+
+            self.assertEqual(agent.run_cycle(), 0)
+            self.assertEqual(agent.last_seq, 12)
 
 
 if __name__ == "__main__":

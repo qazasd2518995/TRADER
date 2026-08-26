@@ -6,19 +6,22 @@
 
 ```text
 LINE 加密 DB（唯讀）
-  → 每聊天室 rowid 游標
-  → Regex 完整性與 SL/TP 方向檢查
+  → 穩定 chat ID／sender ID + 每聊天室 rowid 游標
+  → 來源專屬 strict parser + backlog 安全閥
+  → LINE message／execution 總帳
   → Hub（event_id 精確冪等）
   → 會員端（execution_id 精確下單）
-  → MT5 File Bridge EA
+  → MT5 File Bridge EA（撤單須對帳確認）
 ```
 
-LINE 回覆／引用的 `_relatedMessageId` 會轉成原始報單的 deterministic `execution_id`。撤單只刪除該 ID 對應且尚未成交的掛單；不猜方向、不猜最近一單，也不會平掉已成交部位。
+LINE 回覆／引用的 `_relatedMessageId` 會直接查詢原始發布時保存的 `execution_id`。撤單不重新解析舊文字，只刪除該 ID 對應且尚未成交的掛單；不猜方向、不猜最近一單，也不會平掉已成交部位。
 
-系統刻意不再使用訊號時效、文字雜湊、模糊去重、同方向 supersede、逾時撤單或價格偏離撤單。仍保留兩種必要的精確狀態：
+系統不再使用 OCR 錯字、相似文字雜湊、同方向 supersede 或價格偏離猜測。仍保留必要的精確狀態與斷線安全：
 
 - LINE 每聊天室的持久化 rowid 游標，避免重啟回放歷史訊息。
 - Hub `event_id` 與 MT5 `execution_id` 冪等，避免網路重試重複下單。
+- 中頻 300 秒、高頻 180 秒的 backlog 上限；舊報單不補下，但舊撤單仍可對帳。
+- MT5 撤單依序為 REQUESTED、COMMAND_SENT、MT5_CONFIRMED／FAILED_RETRY／ALREADY_FILLED，寫出 delete 指令不等於成功。
 
 ## 開發啟動
 
@@ -36,6 +39,8 @@ python -m copy_trader.central.client_agent_web
 ```
 
 兩者都會在本機啟動 HTTP 控制台並開啟瀏覽器。中央端的設定頁可自動尋找 LINE DB，並設定安全金鑰名稱與聊天室 JSON；按「測試 LINE 資料庫」成功後才啟動。
+
+Windows 第一次接線建議先勾選中央端 `Shadow mode`：系統會走完整 DB、身分綁定、嚴格 parser 與總帳流程，但不發布 Hub，也不會讓會員端操作 MT5。完成一至兩週人工比對後再關閉。
 
 ## LINE DB 金鑰
 
@@ -57,7 +62,7 @@ Windows 會從目前使用者的 Credential Manager 讀取同名 target，並支
 python -m unittest discover -s tests -v
 ```
 
-測試涵蓋首次 baseline 不回放、失敗不前移游標、跨層精確 execution identity、未授權撤單、只撤指定掛單與 Hub 冪等。
+測試涵蓋首次 baseline、穩定 ID 綁定、嚴格來源格式、backlog 阻擋、總帳式撤單、失敗不前移游標、會員來源路由、MT5 撤單確認與 Hub 冪等。
 
 ## 發布
 
