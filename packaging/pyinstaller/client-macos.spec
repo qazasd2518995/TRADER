@@ -18,7 +18,7 @@ a = Analysis(
     [str(ROOT / "copy_trader/central/client_agent_web.py")],
     pathex=[str(ROOT)],
     binaries=[],
-    datas=datas(ROOT),
+    datas=datas(ROOT, "client"),
     hiddenimports=hidden("client", "macos"),
     hookspath=[],
     hooksconfig={},
@@ -54,7 +54,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name="黃金跟單會員端.app",
-    icon=str(ROOT / "src-tauri/icons/icon.icns"),
+    icon=str(ROOT / "packaging/assets/icon.icns"),
     bundle_identifier="com.goldtrader.member",
     info_plist={
         # 控制台是網頁介面，不需要 Dock 圖示以外的東西；

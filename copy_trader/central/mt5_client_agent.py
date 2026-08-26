@@ -14,7 +14,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from copy_trader.config import DATA_DIR, DEFAULT_SYMBOL, load_config
 from copy_trader.signal_parser.regex_parser import ParsedSignal
@@ -162,27 +162,9 @@ class MT5ClientAgent:
                         self.config.symbol_name, _resolved, mt5_files_dir,
                     )
                 self.config.symbol_name = _resolved
-        # 訊號時效鎖: hub 訊號擷取時間超過這麼久就不下單 (防會員端恢復後補到舊單)。0=不限。
-        self.max_signal_age_sec = max(0, int(getattr(self.config, "signal_max_age_minutes", 10) or 0) * 60)
-        # 同方向短時間改單防呆: 下單前撤掉這麼久內同方向的舊掛單。0=關閉 (預設)。
-        # 不分來源, 開著會讓 B 群的新單撤掉 A 群同方向的舊掛單 — 跟多群時務必留 0。
-        self.supersede_window_sec = max(0, int(getattr(self.config, "supersede_same_direction_minutes", 0) or 0) * 60)
-        # 同來源改單: 同一提供者這麼久內又發新單 → 撤掉他之前未成交的掛單, 只跟最新那筆。
-        # 分來源, 跟多群也安全, 預設 3 分鐘 (見 TradeManager.supersede_same_source)。
-        self.supersede_source_sec = max(0, int(getattr(self.config, "supersede_same_source_minutes", 3) or 0) * 60)
-        # 是否理會群組撤單訊息。預設關 — 只靠掛單逾時未成交自動刪單。
-        self.follow_group_cancel = bool(getattr(self.config, "follow_group_cancel", False))
-        logger.info(
-            "撤單策略: 逾時刪單 %.1f 小時 / 訊息撤單=%s / 同來源改單=%s / 同方向改單防呆=%s",
-            (self.config.cancel_pending_after_seconds or 0) / 3600.0,
-            "開" if self.follow_group_cancel else "關",
-            f"{self.supersede_source_sec // 60}分" if self.supersede_source_sec else "關",
-            f"{self.supersede_window_sec // 60}分" if self.supersede_window_sec else "關",
-        )
+        logger.info("撤單策略: 只接受 LINE 引用關係指定的原始報單")
 
         self.trade_manager = TradeManager(self.config.mt5_files_dir)
-        # 重開後的孤兒掛單也要照同一個逾時刪掉 (見 _sweep_orphan_pending_orders)
-        self.trade_manager.pending_cancel_after_seconds = int(self.config.cancel_pending_after_seconds or 0)
         self.trade_manager.default_lot_size = self.config.default_lot_size
         self.trade_manager.set_symbol_name(getattr(self.config, "symbol_name", DEFAULT_SYMBOL))
         self.trade_manager.partial_close_ratios = self.config.partial_close_ratios
@@ -226,23 +208,34 @@ class MT5ClientAgent:
         for item in self.hub.signals_after(self.last_seq):
             seq = int(item.get("seq") or 0)
 
-            # 群組撤單指令：撤掉最近一筆未成交掛單 (只動掛單, 不平已成交部位)
-            # 預設 follow_group_cancel=False → 一律忽略。撤單統一只靠「掛單逾時未成交
-            # 自動刪單」(cancel_pending_after_seconds)，因為訊息撤單不分來源，
-            # 跟兩個以上報單群時會撤到別群的掛單。
-            # 舊版訊號中心可能還在發 cancel_signal，所以會員端這邊也要各自把關。
+            # LINE 引用撤單：事件直接帶被引用報單的 deterministic execution ID。
+            # 只撤未成交掛單，不猜方向、不撤「最近一張」、也不平已成交部位。
             if item.get("type") == "cancel_signal":
-                if not self.follow_group_cancel:
-                    logger.info("忽略群組撤單 seq=%s (訊息撤單已停用, 改用逾時刪單)", seq)
-                    self._mark_seq(seq)
-                    continue
-                direction = str(item.get("direction") or "").strip().lower()
-                direction = direction if direction in ("buy", "sell") else ""
+                target_ids = [
+                    str(value) for value in (item.get("target_execution_ids") or [])
+                    if str(value)
+                ]
+                handled = 0
                 try:
-                    ok = self.trade_manager.cancel_latest_pending(direction)
-                    logger.info("收到群組撤單 seq=%s (%s) → %s", seq, direction or "any", "已撤掉最近掛單" if ok else "無掛單可撤")
+                    for signal_id in target_ids:
+                        ready = self.trade_manager.cancel_pending_order(
+                            signal_id,
+                            reason=f"line_reply:{item.get('line_message_id') or seq}",
+                        )
+                        if not ready:
+                            logger.info("LINE 引用撤單等待 ticket，保留 Hub seq=%s 下輪重試", seq)
+                            return count
+                        handled += 1
+                    logger.info(
+                        "收到 LINE 引用撤單 seq=%s target_message=%s → 已處理 %s/%s 個指定 ID",
+                        seq,
+                        item.get("target_line_message_id") or "?",
+                        handled,
+                        len(target_ids),
+                    )
                 except Exception as e:
                     logger.warning("處理撤單失敗 seq=%s: %s", seq, e)
+                    return count
                 self._mark_seq(seq)
                 count += 1
                 continue
@@ -250,15 +243,6 @@ class MT5ClientAgent:
             if item.get("type") != "trade_signal":
                 self._mark_seq(seq)
                 continue
-
-            # 訊號時效鎖: 擷取時間太舊就跳過 (例如會員端剛恢復, 補到一堆舊單)
-            captured_at = float(item.get("captured_at") or 0)
-            if self.max_signal_age_sec > 0 and captured_at > 0:
-                age = time.time() - captured_at
-                if age > self.max_signal_age_sec:
-                    logger.info("跳過過期 hub 訊號 seq=%s (擷取已過 %.0f 分鐘)", seq, age / 60.0)
-                    self._mark_seq(seq)
-                    continue
 
             payload = item.get("signal") or {}
             signal = _parsed_signal_from_payload(payload)
@@ -279,20 +263,12 @@ class MT5ClientAgent:
                 logger.info("來源「%s」已停用，略過 seq=%s", source, seq)
                 self._mark_seq(seq)
                 continue
-            # 同來源改單: 同一個提供者在 supersede_same_source_minutes 內又發新單,
-            # 代表他在修正報單 (常見手法是「收回訊息再重發」) → 撤掉他之前還沒成交的
-            # 掛單, 只跟最新那筆。分來源, 不會動到別群。已成交的部位不碰。
-            if self.supersede_source_sec > 0:
-                self.trade_manager.supersede_same_source(source, self.supersede_source_sec)
-            # 同方向短時間改單防呆 (不分來源, 預設關): 跟多群時開這個會互相誤撤
-            if self.supersede_window_sec > 0 and signal.direction in ("buy", "sell"):
-                self.trade_manager.cancel_pending_same_direction(signal.direction, self.supersede_window_sec)
+            signal_id = str(item.get("execution_id") or f"copy_hub_{seq}")
             signal_id = self.trade_manager.submit_signal(
                 signal,
                 auto_execute=True,
-                cancel_after_seconds=self.config.cancel_pending_after_seconds,
-                cancel_if_price_beyond=self.config.cancel_if_price_beyond_percent,
                 source_window=source,
+                signal_id=signal_id,
             )
             order = self.trade_manager.get_order_status(signal_id)
             if order is not None and order.status == OrderStatus.FAILED:

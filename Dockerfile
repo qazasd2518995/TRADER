@@ -2,8 +2,7 @@
 #
 # The Hub is pure standard-library Python (copy_trader/central/hub_server.py).
 # We copy ONLY copy_trader/central and blank out copy_trader/__init__.py so the
-# container never pulls the Windows/macOS-only modules (pywin32, tkinter, the
-# clipboard reader, etc.) that the rest of the package imports. hub_server's
+# container does not need the local LINE database reader or MT5 client. hub_server's
 # `from copy_trader.config import DATA_DIR` is wrapped in try/except and falls
 # back to cwd, and the store path is supplied via COPY_TRADER_HUB_STORE below.
 FROM python:3.12-slim

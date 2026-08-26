@@ -49,14 +49,6 @@ CLIENT_FIELDS = """
         <p class="hint">每個 LINE 群組可以各自設定。選「均注」= 每筆固定手數、不進關卡；選「馬丁」= 逐關加碼，各群層級獨立計算，互不影響。沒有列出來的來源會套用上方的全域設定。</p>
       </div>
       <div class="field-group">
-        <h3>自動刪單</h3>
-        <div class="field-grid">
-          <label>幾秒未進場刪單<input id="cancel_pending_after_seconds" placeholder="10800（3 小時）；0 = 不刪" /></label>
-          <label>價格偏離幾 % 刪單<input id="cancel_if_price_beyond_percent" placeholder="0 = 停用（目前設定）" /></label>
-        </div>
-        <p class="hint">掛單超過設定時間仍未成交，會員端會自動撤掉並通知 MT5 刪除委託。目前只用逾時這一條規則，價格偏離刪單已停用（填 0）。改動只影響之後送出的新單。</p>
-      </div>
-      <div class="field-group">
         <h3>其他策略（EA 自動下單）</h3>
         <div class="field-grid">
           <label>魔術編號 → 名稱<input id="ea_sources" placeholder='{"20260503": "趨勢線策略"}' /></label>
@@ -66,6 +58,20 @@ CLIENT_FIELDS = """
 """
 
 CENTRAL_FIELDS = """
+      <div class="field-group">
+        <h3>LINE 本機資料庫</h3>
+        <div class="field-grid">
+          <label>加密資料庫路徑<input id="line_database_path" placeholder="可留空自動尋找；多個候選時請明確選擇" /></label>
+          <label>安全金鑰名稱<input id="line_keychain_service" placeholder="line-db-research" /></label>
+          <label class="field-wide">聊天室設定（JSON）<textarea id="line_chats" spellcheck="false" placeholder='[{"name":"gold_signal_1","chat_name":"（乘）黃金報單🈲言群","display_name":"黃金報單🈲言群","trusted_senders":["乘","James"]}]'></textarea></label>
+        </div>
+        <div class="inline-actions">
+          <button class="btn" id="findLineDatabase" type="button">自動尋找資料庫</button>
+          <button class="btn" id="testLineDatabase" type="button">測試 LINE 資料庫</button>
+          <span class="hint" id="lineDatabaseResult"></span>
+        </div>
+        <p class="hint">金鑰不會存進設定或送到瀏覽器。macOS 從 Keychain 讀取；Windows 從目前使用者的 Credential Manager 讀取。第一次設定請依 docs/windows-line-database.md 操作。</p>
+      </div>
       <div class="field-group">
         <h3>訊號發布</h3>
         <div class="field-grid">
@@ -1082,11 +1088,6 @@ tbody tr:hover { background: var(--sunk); }
 .side-buy  { color: var(--win); font-weight: 600; }
 .side-sell { color: var(--loss); font-weight: 600; }
 /* 倒數用金色而非紅綠——紅綠在這頁專門表示賺賠，不能拿去講「快到期」 */
-.countdown { font-variant-numeric: tabular-nums; color: var(--ink-2); }
-.countdown.urgent { color: var(--gold); font-weight: 700; }
-/* 掛單期間最接近過的差距，比目前更近時附註 */
-.near { color: var(--muted); font-size: 11px; }
-
 .empty {
   padding: 34px 20px; text-align: center; color: var(--muted); font-size: 13px;
 }
@@ -1104,13 +1105,17 @@ tbody tr:hover { background: var(--sunk); }
 .field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px 20px; }
 .field-grid label { display: grid; grid-template-columns: 130px 1fr; align-items: center; gap: 10px; font-size: 13px; color: var(--ink-2); }
 .field-grid label.switch { grid-template-columns: 130px auto; justify-content: start; }
-.field-grid input, .field-grid select {
+.field-grid input, .field-grid select, .field-grid textarea {
   font: inherit; font-size: 13px; padding: 7px 10px; min-width: 0;
   border: 1px solid var(--rule); border-radius: 7px;
   background: var(--paper); color: var(--ink);
 }
+.field-grid textarea { min-height: 150px; resize: vertical; font-family: var(--mono); line-height: 1.45; }
+.field-grid label.field-wide { grid-column: 1 / -1; align-items: start; }
 .field-grid input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--gold-mark); }
 .hint { margin: 14px 0 0; font-size: 12.5px; color: var(--muted); }
+.inline-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+.inline-actions .hint { margin: 0; }
 .settings-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--hair); }
 
 .notice {
@@ -1548,11 +1553,11 @@ body.auth-locked > *:not(#authGate) { display: none; }
 
       <section class="panel">
         <div class="panel-head">
-          <h2>擷取來源</h2>
-          <p class="spacer">中央機監控中的視窗</p>
+          <h2>LINE 資料來源</h2>
+          <p class="spacer">加密資料庫中的聊天室</p>
         </div>
         <div class="panel-body">
-          <div id="cenWindows" class="mock" style="box-shadow:none"></div>
+          <div id="cenChats" class="mock" style="box-shadow:none"></div>
         </div>
       </section>
     </div>
@@ -1936,12 +1941,12 @@ const MID_SOURCE  = Object.keys(SOURCE_ALIAS).find((k) => SOURCE_ALIAS[k] === "�
 
 function ids() {
   return ROLE === "central"
-    ? ["hub_url", "host", "port", "token", "interval", "cloudflare_tunnel", "cloudflared_path", "auto_start"]
+    ? ["line_database_path", "line_keychain_service", "line_chats", "hub_url", "host", "port", "token", "interval", "cloudflare_tunnel", "cloudflared_path", "auto_start"]
     // 會員端刻意不含 hub_url / token：那兩個不該讓會員看到，也不該由前端回送
     // （token 是管理權限的通行證，送到瀏覽器等於直接把付費牆拆了）
     : ["mt5_files_dir", "interval", "auto_start", "default_lot_size", "use_martingale",
        "martingale_multiplier", "martingale_max_level", "martingale_lots", "partial_close_ratios",
-       "cancel_pending_after_seconds", "cancel_if_price_beyond_percent", "source_profiles", "ea_sources"];
+       "source_profiles", "ea_sources"];
 }
 function collect() {
   const out = {};
@@ -2584,56 +2589,38 @@ function renderRecords(trades, ids, state, repaint) {
     "</tr></thead><tbody>" + rows + "</tbody></table>";
 }
 
-/* 待成交掛單：倒數本地每秒自己跑，不等 3 秒一次的輪詢，會員才看得到它真的在動 */
 function durationText(seconds) {
-  if (seconds == null) return "不自動刪單";
+  if (seconds == null) return "—";
   const s = Math.max(0, Math.floor(seconds));
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
   if (h) return h + " 小時 " + String(m).padStart(2, "0") + " 分";
   if (m) return m + " 分 " + String(sec).padStart(2, "0") + " 秒";
   return sec + " 秒";
 }
-function tickCountdowns() {
-  const now = Date.now();
-  for (const cell of document.querySelectorAll("[data-deadline]")) {
-    const left = (Number(cell.dataset.deadline) - now) / 1000;
-    cell.textContent = left <= 0 ? "刪單中…" : durationText(left);
-    cell.classList.toggle("urgent", left > 0 && left <= 900);   // 剩不到 15 分鐘
-  }
-}
 function renderPending(pending, running) {
   const box = $("pending");
-  const rule = (S.stats && S.stats.cancel_rules) || {};
-  const ruleText = rule.after_seconds
-    ? "超過 " + durationText(rule.after_seconds) + " 未進場自動刪單"
-    : "目前未設定逾時刪單";
   $("pendingSummary").textContent = pending.length
-    ? pending.length + " 筆等待進場 · " + ruleText
-    : (running ? "沒有等待中的掛單 · " + ruleText : "服務未啟動");
+    ? pending.length + " 筆等待進場 · 撤單只依 LINE 引用關係"
+    : (running ? "沒有等待中的掛單 · 撤單只依 LINE 引用關係" : "服務未啟動");
 
   if (!pending.length) {
     box.innerHTML = '<div class="empty"><b>' +
       (running ? "沒有等待中的掛單" : "服務未啟動，看不到掛單") + "</b>" +
-      (running ? esc(ruleText) : "按上方「開始跟單」後，等待進場的單會出現在這裡") + "</div>";
+      (running ? "撤單只接受 LINE 回覆／引用指定的原始報單" : "按上方「開始跟單」後，等待進場的單會出現在這裡") + "</div>";
     return;
   }
   const rows = pending.map((p) => {
-    const deadline = p.remaining_seconds == null ? null : Date.now() + p.remaining_seconds * 1000;
-    // tracked=false 是 MT5 上真的有、但會員端沒在管的單，不能假裝它有倒數
-    const countdown = p.tracked === false
+    const tracking = p.tracked === false
       ? '<span class="tag tag-warn">未追蹤</span>'
-      : (deadline ? durationText(p.remaining_seconds) : "不自動刪單");
+      : '<span class="tag tag-win">已追蹤</span>';
     return "<tr>" +
       '<td class="' + (p.side === "buy" ? "side-buy" : "side-sell") + '">' + (p.side === "buy" ? "買進" : "賣出") + "</td>" +
       "<td>" + esc(p.symbol || "XAUUSD") + "</td>" +
       '<td class="num mono">' + (p.entry_price ? n2.format(p.entry_price) : "—") + "</td>" +
       '<td class="num mono">' + (p.sl ? n2.format(p.sl) : "—") + "</td>" +
       '<td class="num mono">' + (p.tp ? n2.format(p.tp) : "—") + "</td>" +
-      '<td class="num mono">' + (p.distance == null ? "—" :
-        n2.format(p.distance) + (p.closest_gap != null && p.closest_gap < p.distance
-          ? '<span class="near"> ↓' + n2.format(p.closest_gap) + "</span>" : "")) + "</td>" +
       '<td class="mono">' + (p.elapsed_seconds == null ? esc(p.setup_time || "—") : durationText(p.elapsed_seconds)) + "</td>" +
-      '<td class="num countdown"' + (deadline ? ' data-deadline="' + deadline + '"' : "") + ">" + countdown + "</td>" +
+      "<td>" + tracking + "</td>" +
       "<td>" + esc(p.source ? srcName(p.source) : "—") + "</td>" +
       '<td class="mono">' + esc(p.ticket == null ? "尚未取得" : p.ticket) + "</td>" +
     "</tr>";
@@ -2642,16 +2629,15 @@ function renderPending(pending, running) {
   box.innerHTML =
     '<div class="table-scroll"><table><thead><tr>' +
       "<th>方向</th><th>商品</th><th class=\"num\">掛單價</th><th class=\"num\">停損</th>" +
-      "<th class=\"num\">停利</th><th class=\"num\">距成交</th><th>已等待</th><th class=\"num\">距自動刪單</th>" +
+      "<th class=\"num\">停利</th><th>已等待</th><th>追蹤狀態</th>" +
       "<th>訊號來源</th><th>單號</th>" +
     "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
     (untracked
       ? '<div class="notice" style="margin:12px 14px 14px">' +
         "<div><b>有 " + untracked + " 張單在 MT5 上，但會員端沒有在管</b>" +
-        "這些單不會逾時自動刪，成交後的輸贏也不會計入馬丁層級。按「停止」再「開始跟單」" +
+        "這些單目前無法被 LINE 引用撤單命中，成交後的輸贏也不會計入馬丁層級。按「停止」再「開始跟單」" +
         "會重新認領它們。</div></div>"
       : "");
-  tickCountdowns();
 }
 
 function renderPositions(positions, currency, ids) {
@@ -3668,18 +3654,17 @@ function paintCentralDash(snap) {
   const hubAddr = remoteHub || snap.cloudflare_url ||
     ("http://" + (snap.lan_ip || "127.0.0.1") + ":" + port);
 
-  // 擷取視窗：後端從 config.json 讀出來放進 snapshot（不在 launcher 設定裡）
-  const windows = Array.isArray(snap.capture_windows) ? snap.capture_windows : [];
+  const chats = Array.isArray(snap.line_chats) ? snap.line_chats : [];
 
   const cards = [
     { k: "服務狀態", v: running ? "發布中" : "已停止",
-      sub: running ? "擷取器運行中" : "按上方「開始發布」啟動",
+      sub: running ? "LINE DB 監看中" : "按上方「開始發布」啟動",
       cls: running ? "up" : "", accent: running ? "win" : "violet" },
     { k: "運行時間", v: upText, sub: running ? "自本次啟動起" : "尚未啟動", accent: "cyan" },
     { k: "發布模式", v: mode,
       sub: remoteHub ? "訊號送往雲端" : "會員直連這台", accent: "gold" },
-    { k: "擷取來源", v: String(windows.length || "—"),
-      sub: windows.length ? "個視窗監控中" : "尚未設定擷取視窗", accent: "violet" },
+    { k: "LINE 聊天室", v: String(chats.length || "—"),
+      sub: chats.length ? "個聊天室監看中" : "尚未設定聊天室", accent: "violet" },
     { k: "Hub 連線", v: snap.hub_configured || remoteHub ? "已設定" : "未設定",
       sub: snap.cloudflare_url ? "Cloudflare Tunnel 已啟用" : "見下方發布目標",
       cls: (snap.hub_configured || remoteHub) ? "up" : "down",
@@ -3701,15 +3686,15 @@ function paintCentralDash(snap) {
   set("cenHub", hubAddr);
   set("cenLan", (snap.lan_ip || "—") + ":" + port);
 
-  const wrap = $("cenWindows");
+  const wrap = $("cenChats");
   if (wrap) {
-    wrap.innerHTML = windows.length
-      ? windows.map((w) => `
+    wrap.innerHTML = chats.length
+      ? chats.map((chat) => `
           <div class="mock-row">
             <span class="dot ${running ? "dot--on" : "dot--off"}"></span>
-            <span>${esc(w)}</span>
+            <span>${esc(chat)}</span>
           </div>`).join("")
-      : '<div class="mock-row"><span class="k">尚未設定擷取視窗，到「設定」填入要監控的 LINE 群組名稱</span></div>';
+      : '<div class="mock-row"><span class="k">尚未設定 LINE 資料庫聊天室</span></div>';
   }
 }
 
@@ -4342,6 +4327,52 @@ toggle.onclick = () => {
 };
 $("closeSettings").onclick = () => { $("settings").hidden = true; toggle.setAttribute("aria-expanded", "false"); };
 
+if ($("testLineDatabase")) {
+  $("testLineDatabase").onclick = async () => {
+    const button = $("testLineDatabase");
+    const result = $("lineDatabaseResult");
+    button.disabled = true;
+    result.textContent = "測試中…";
+    try {
+      const response = await post("/api/test-line-database", collect());
+      const info = response.line_database || {};
+      const chats = Array.isArray(info.chats) ? info.chats : [];
+      result.textContent = "連線成功 · integrity=" + (info.integrity_check || "unknown") + " · " + chats.length + " 個聊天室";
+      await refreshStatus();
+    } catch (e) {
+      result.textContent = "連線失敗：" + e.message;
+    } finally {
+      button.disabled = false;
+    }
+  };
+}
+
+if ($("findLineDatabase")) {
+  $("findLineDatabase").onclick = async () => {
+    const button = $("findLineDatabase");
+    const result = $("lineDatabaseResult");
+    button.disabled = true;
+    result.textContent = "搜尋中…";
+    try {
+      const response = await post("/api/find-line-databases", {});
+      const info = response.line_databases || {};
+      const candidates = Array.isArray(info.candidates) ? info.candidates : [];
+      if (info.recommended) {
+        $("line_database_path").value = info.recommended;
+        result.textContent = "找到並已填入資料庫 · 共 " + candidates.length + " 個候選";
+      } else if (candidates.length) {
+        result.textContent = "找到 " + candidates.length + " 個候選，無法唯一判定；請依 Windows 文件驗證後填入。";
+      } else {
+        result.textContent = "未在已知位置找到 .edb；請依 Windows 文件手動檢查。";
+      }
+    } catch (e) {
+      result.textContent = "搜尋失敗：" + e.message;
+    } finally {
+      button.disabled = false;
+    }
+  };
+}
+
 if ($("openHub")) {
   $("openHub").onclick = () => {
     const s = collect();
@@ -4366,7 +4397,6 @@ refreshMarket();
 setInterval(refreshStatus, 1000);
 setInterval(refreshStats, 3000);
 setInterval(refreshMarket, 5000);
-setInterval(tickCountdowns, 1000);
 </script>
 </body>
 </html>"""

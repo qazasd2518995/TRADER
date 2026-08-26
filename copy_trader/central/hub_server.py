@@ -36,6 +36,7 @@ class SignalStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._records: List[Dict[str, Any]] = []
+        self._event_index: Dict[str, Dict[str, Any]] = {}
         self._latest_seq = 0
         self._load()
 
@@ -66,6 +67,9 @@ class SignalStore:
                     if seq <= 0:
                         continue
                     self._records.append(record)
+                    event_id = str(record.get("event_id") or "")
+                    if event_id:
+                        self._event_index.setdefault(event_id, record)
                     self._latest_seq = max(self._latest_seq, seq)
         except OSError as e:
             logger.warning("failed to load signal store %s: %s", self.path, e)
@@ -74,12 +78,23 @@ class SignalStore:
         now = time.time()
         record = dict(payload)
         with self._lock:
+            # LINE DB events have a stable identity. A retry after a lost HTTP
+            # response must return the original record instead of appending a
+            # second order. This is transport idempotency, not heuristic signal
+            # deduplication.
+            event_id = str(record.get("event_id") or "")
+            if event_id and event_id in self._event_index:
+                existing = dict(self._event_index[event_id])
+                existing["already_published"] = True
+                return existing
             self._latest_seq += 1
             record["seq"] = self._latest_seq
             record.setdefault("id", f"sig_{self._latest_seq}_{uuid.uuid4().hex[:8]}")
             record.setdefault("type", "trade_signal")
             record.setdefault("published_at", now)
             self._records.append(record)
+            if event_id:
+                self._event_index[event_id] = record
             with self.path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
         return record

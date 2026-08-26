@@ -28,7 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from copy_trader.config import DATA_DIR, _instance_name, load_config
+from copy_trader.config import DATA_DIR, _instance_name
 from copy_trader.central.membership import MIN_PASSWORD_LENGTH
 
 logger = logging.getLogger(__name__)
@@ -123,7 +123,14 @@ class LauncherState:
 
     def defaults(self) -> Dict[str, Any]:
         if self.role == "central":
+            # Delayed import keeps the member package independent from the
+            # central-only encrypted LINE database stack.
+            from copy_trader.line_db.factory import DEFAULT_LINE_CHATS
+
             return {
+                "line_database_path": "",
+                "line_keychain_service": "line-db-research",
+                "line_chats": json.dumps(DEFAULT_LINE_CHATS, ensure_ascii=False, indent=2),
                 "hub_url": "",
                 "host": "0.0.0.0",
                 "port": "8765",
@@ -154,8 +161,6 @@ class LauncherState:
             "martingale_max_level": "5",
             "martingale_lots": "",
             "partial_close_ratios": "0.5,0.3,0.2",
-            "cancel_pending_after_seconds": "10800",
-            "cancel_if_price_beyond_percent": "0",
             # 每個訊號來源各自的下單模式，存成 JSON 字串（設定檔全部是字串型別）
             "source_profiles": "{}",
             # 同一個 MT5 帳戶裡，另外掛的、自己會下單的 EA（例如趨勢線策略）——
@@ -532,10 +537,24 @@ class LauncherState:
             from copy_trader.central.hub_server import HubHTTPServer, HubRequestHandler, SignalStore
             from copy_trader.central.mt5_client_agent import HubClient
             from copy_trader.central.signal_collector import CentralSignalCollector, HubPublisher
+            from copy_trader.line_db.factory import build_line_database_source
 
             token = str(self.settings.get("token") or "")
             interval = max(0.2, float(self.settings.get("interval") or 1.0))
             remote_hub = str(self.settings.get("hub_url") or "").strip().rstrip("/")
+
+            source = build_line_database_source(
+                database_path=str(self.settings.get("line_database_path") or ""),
+                keychain_service=str(self.settings.get("line_keychain_service") or "line-db-research"),
+                line_chats=self.settings.get("line_chats"),
+                state_path=DATA_DIR / "line_db_cursor.json",
+            )
+            line_status = source.status()
+            logger.info(
+                "LINE 資料庫已連線：integrity=%s，聊天室=%s",
+                line_status.get("integrity_check"),
+                ", ".join(chat["display_name"] for chat in line_status.get("chats", [])),
+            )
 
             if remote_hub:
                 # 雲端 Hub 模式：不在本機開 Hub，直接把訊號發到雲端（例如 Fly.io）。
@@ -575,7 +594,7 @@ class LauncherState:
                 logger.info("Hub 管理頁面：%s/?token=%s", local_url, token)
                 self._start_cloudflare_tunnel(port)
 
-            collector = CentralSignalCollector(load_config(), HubPublisher(publish_url, token))
+            collector = CentralSignalCollector(source, HubPublisher(publish_url, token))
             self.status = "運行中"
             self.service_started_at = time.time()
 
@@ -710,20 +729,6 @@ class LauncherState:
                 on = "跟單" if p.get("enabled", True) else "已停用"
                 logger.info("來源設定：%s → %s / %s / 基礎手數 %s", name, on, mode, p.get("base_lot", "(全域)"))
 
-        # 刪單規則讀的是 agent 的 config（submit_signal 送單當下才取值），不是 TradeManager。
-        # 這兩個值會寫進每一筆新掛單；已經送出的舊單沿用當初的設定。
-        cfg = self.client_agent.config
-        cfg.cancel_pending_after_seconds = int(_flt("cancel_pending_after_seconds", cfg.cancel_pending_after_seconds))
-        cfg.cancel_if_price_beyond_percent = _flt("cancel_if_price_beyond_percent", cfg.cancel_if_price_beyond_percent)
-        timeout_text = (
-            f"{cfg.cancel_pending_after_seconds} 秒（{cfg.cancel_pending_after_seconds / 3600:.1f} 小時）"
-            if cfg.cancel_pending_after_seconds else "關閉"
-        )
-        beyond_text = (
-            f"{cfg.cancel_if_price_beyond_percent}%" if cfg.cancel_if_price_beyond_percent else "關閉"
-        )
-        logger.info("刪單規則：逾時未進場 %s｜價格偏離 %s", timeout_text, beyond_text)
-
         # martingale_per_source 只從 config.json 或每群設定推導，面板沒有這個欄位；
         # 跟多個報單群時這個值決定虧損會不會互相放大手數，所以印出來。
         logger.info(
@@ -768,13 +773,9 @@ class LauncherState:
                 return
 
             self._apply_client_trade_settings()
-            # 重啟後把 MT5 上還活著的單接回追蹤，否則會變成沒人管的孤兒單：
-            # 不會逾時自動刪，成交後的輸贏也不會計入馬丁層級。
-            cfg = self.client_agent.config
-            self.client_agent.trade_manager.adopt_open_orders(
-                cancel_after_seconds=cfg.cancel_pending_after_seconds,
-                cancel_if_price_beyond=cfg.cancel_if_price_beyond_percent,
-            )
+            # 重啟後把 MT5 上還活著的單接回追蹤，讓成交結果與 LINE 引用撤單
+            # 仍能命中原始 execution ID。
+            self.client_agent.trade_manager.adopt_open_orders()
             self.client_agent.trade_manager.start()
             logger.info("會員端已啟動，last_seq=%s", self.client_agent.last_seq)
             self.status = "運行中"
@@ -877,7 +878,7 @@ class LauncherState:
             "cloudflare_url": self.cloudflare_url,
             "uptime_seconds": int(time.time() - self.service_started_at) if self.service_started_at else 0,
             "auth": self._auth_snapshot(),
-            "capture_windows": self._capture_window_names(),
+            "line_chats": self._line_chat_names(),
             "tick": self._live_tick(),
         }
 
@@ -894,23 +895,53 @@ class LauncherState:
             logger.debug("讀不到即時報價", exc_info=True)
             return None
 
-    def _capture_window_names(self) -> List[str]:
-        """中央機正在監控的視窗名稱。給訊號中心的面板顯示用。
-
-        擷取視窗設定在 config.json（不在 launcher 的設定檔裡），所以要另外讀。
-        讀失敗就回空陣列 —— 面板會顯示「尚未設定」，比整個掛掉好。
-        會員端不需要這個，直接回空。
-        """
+    def _line_chat_names(self) -> List[str]:
+        """Return configured LINE DB chat labels for the central dashboard."""
         if self.role != "central":
             return []
         try:
-            from copy_trader.config import load_config
-            cfg = load_config()
-            return [w.display_name or w.name or w.window_name
-                    for w in (cfg.capture_windows or [])]
+            from copy_trader.line_db.factory import parse_line_chat_targets
+
+            return [target.display_name for target in parse_line_chat_targets(
+                self.settings.get("line_chats")
+            )]
         except Exception:
-            logger.debug("讀不到 capture_windows", exc_info=True)
+            logger.debug("讀不到 line_chats", exc_info=True)
             return []
+
+    def test_line_database(self) -> Dict[str, Any]:
+        """Validate the encrypted DB, configured chats and persistent cursor."""
+        if self.role != "central":
+            raise PermissionError("central_only")
+        from copy_trader.line_db.factory import build_line_database_source
+
+        source = build_line_database_source(
+            database_path=str(self.settings.get("line_database_path") or ""),
+            keychain_service=str(self.settings.get("line_keychain_service") or "line-db-research"),
+            line_chats=self.settings.get("line_chats"),
+            state_path=DATA_DIR / "line_db_cursor.json",
+        )
+        return source.status()
+
+    def find_line_databases(self) -> Dict[str, Any]:
+        """Return bounded local candidates without opening or decrypting them."""
+        if self.role != "central":
+            raise PermissionError("central_only")
+        from copy_trader.line_db.discovery import (
+            choose_database_candidate,
+            discover_database_candidates,
+        )
+
+        candidates = discover_database_candidates()
+        try:
+            recommended = str(choose_database_candidate(candidates))
+        except RuntimeError:
+            recommended = ""
+        return {
+            "platform": sys.platform,
+            "recommended": recommended,
+            "candidates": [candidate.public_dict() for candidate in candidates],
+        }
 
     def _auth_snapshot(self) -> Optional[Dict[str, Any]]:
         """給前端的登入狀態。session_token 絕不外送到瀏覽器。"""
@@ -1065,6 +1096,21 @@ def make_handler(state: LauncherState):
                     settings = state.save_settings(_read_json(self))
                     health = HubClient(str(settings.get("hub_url") or ""), str(settings.get("token") or "")).health()
                     _json_response(self, 200, {"ok": True, "health": health})
+                    return
+                if parsed.path == "/api/test-line-database":
+                    if state.role != "central":
+                        _json_response(self, 403, {"ok": False, "error": "central_only"})
+                        return
+                    state.save_settings(_read_json(self))
+                    status = state.test_line_database()
+                    _json_response(self, 200, {"ok": True, "line_database": status})
+                    return
+                if parsed.path == "/api/find-line-databases":
+                    if state.role != "central":
+                        _json_response(self, 403, {"ok": False, "error": "central_only"})
+                        return
+                    result = state.find_line_databases()
+                    _json_response(self, 200, {"ok": True, "line_databases": result})
                     return
                 if parsed.path == "/api/quit":
                     state.stop_service()

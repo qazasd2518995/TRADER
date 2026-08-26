@@ -4,6 +4,7 @@ Handles order lifecycle, partial closes, and cancellation.
 """
 import calendar
 import json
+import re
 import time
 import threading
 import logging
@@ -12,7 +13,6 @@ from dataclasses import dataclass, field
 from typing import Any, Optional, List, Dict, Tuple
 from pathlib import Path
 from enum import Enum
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -53,22 +53,19 @@ class ManagedOrder:
     # 掛單從 MT5 消失（被手動刪或券商撤）的偵測時間，用來過濾「成交瞬間」的空窗
     vanish_detected_at: Optional[float] = None
 
+    # LINE 引用撤單只送 pending-delete。送出後仍維持 SENT，直到 MT5 對帳
+    # 確認掛單消失；若同時已成交，fill detector 會接管而不會平倉。
+    cancel_requested: bool = False
+    cancel_delete_sent: bool = False
+    cancel_reason: str = ""
+
     # 保本移損模式：已經因為觸及第幾關而推過停損（0=還沒推過）
     sl_trail_index: int = 0
     trailed_sl: Optional[float] = None   # 目前已送出的停損價，避免重複送同一張改單
 
-    # 掛單期間市價最接近進場價的紀錄，逾時刪單時一併寫進日誌 ——
-    # 這樣才回答得出「刪掉時離成交還差多少」，不用事後翻 MT5 圖表。
-    closest_price: Optional[float] = None   # 最接近的那一刻的市價
-    closest_gap: Optional[float] = None     # 與進場價的差距（絕對值）
-    closest_at: Optional[float] = None      # 發生時間
-
     # Signal source window
     source_window: str = ""  # Display name of the window that produced this signal
 
-    # Cancellation rules
-    cancel_after_seconds: Optional[int] = None
-    cancel_if_price_beyond: Optional[float] = None
     created_at: float = field(default_factory=time.time)
 
 
@@ -131,7 +128,7 @@ class TradeManager:
 
         # Trade journal path (same as app.py uses)
         try:
-            from config import DATA_DIR
+            from copy_trader.config import DATA_DIR
             self._journal_file = DATA_DIR / "trade_journal.txt"
         except Exception:
             self._journal_file = Path("trade_journal.txt")
@@ -139,16 +136,6 @@ class TradeManager:
         # Signal source mapping: ticket -> source_window (for trade history enrichment)
         self._signal_sources_file = self.mt5_files_dir / "signal_sources.json"
         self._signal_sources: Dict[str, str] = self._load_signal_sources()
-
-        # 掛單建立時間 ticket -> epoch，存檔以撐過重開。
-        # self.orders 是純記憶體，程式一重開就全空，重開前下的掛單再也不會被
-        # 逾時刪單處理到 —— 而逾時刪單是目前唯一的刪單規則。這份存檔就是補那個洞。
-        # 不用 MT5 orders.json 裡的 time_setup，因為那是「券商伺服器時間」，
-        # 與本地時間差通常 2~3 小時，跟我們 3 小時的窗口同量級，會早刪或晚刪。
-        self._pending_created_file = self.mt5_files_dir / "pending_created.json"
-        self._pending_created: Dict[str, float] = self._load_pending_created()
-        # 孤兒掛單(不在 self.orders 裡)用的逾時秒數；由上層依 config 設定。0=不清掃。
-        self.pending_cancel_after_seconds: int = 0
 
         logger.info(f"TradeManager initialized with MT5 dir: {mt5_files_dir}")
         logger.info(f"Martingale: {'ON' if self.use_martingale else 'OFF'} (x{self.martingale_multiplier})")
@@ -190,9 +177,8 @@ class TradeManager:
         self,
         signal: 'ParsedSignal',
         auto_execute: bool = True,
-        cancel_after_seconds: int = None,
-        cancel_if_price_beyond: float = None,
-        source_window: str = ""
+        source_window: str = "",
+        signal_id: str = "",
     ) -> str:
         """
         Submit a new signal for execution.
@@ -200,9 +186,8 @@ class TradeManager:
         Args:
             signal: Parsed trading signal
             auto_execute: If True, execute immediately
-            cancel_after_seconds: Cancel pending order after this time
-            cancel_if_price_beyond: Cancel if price moves beyond this percent from entry
             source_window: Display name of the window that produced this signal
+            signal_id: Stable LINE-derived execution ID. Empty uses a local ID.
 
         Returns:
             Signal ID for tracking
@@ -226,34 +211,37 @@ class TradeManager:
             logger.warning("止盈排序失敗，沿用原順序：%s", exc)
 
         with self._lock:
-            # id 必須在鎖內產生並確定唯一。原本是 f"copy_{int(time.time()*1000)}"，
-            # 毫秒解析度且沒有防撞：同一毫秒送出兩張單就會拿到同一個 id，
-            # self.orders[signal_id] = order 直接覆蓋前一張 —— 那張單從此不存在，
-            # 不會被監控、不會逾時撤單、來源對應也錯掉，而且完全無聲。
-            # 會員端從 hub 補抓積壓訊號時是連續迴圈送單，最容易踩到。
-            #
-            # 往後找第一個沒被占用的毫秒：格式不變、仍單調遞增，正常情況(不撞號)
-            # 產生的 id 與修改前完全相同。順便避開 _signal_sources 裡的舊鍵，
-            # 這樣即使系統時間往回跳，也不會複用到已清掉的訂單 id
-            # (comment 比對 manager.py:888 是用 `f"copy_{signal_id}" in comment`，
-            #  複用 id 會讓新單誤認成舊倉位)。
-            ms = int(time.time() * 1000)
-            while f"copy_{ms}" in self.orders or f"copy_{ms}" in self._signal_sources:
-                ms += 1
-            signal_id = f"copy_{ms}"
+            if signal_id:
+                if not re.fullmatch(r"[A-Za-z0-9_-]{1,24}", signal_id):
+                    raise ValueError("signal_id must be 1-24 safe ASCII characters")
+                existing = self.orders.get(signal_id)
+                if existing is not None:
+                    retry_failed = auto_execute and existing.status is OrderStatus.FAILED and existing.ticket is None
+                    logger.info("LINE execution %s is already tracked (status=%s)", signal_id, existing.status.value)
+                    if not retry_failed:
+                        return signal_id
+            else:
+                # id 必須在鎖內產生並確定唯一。毫秒解析度碰撞時往後找。
+                ms = int(time.time() * 1000)
+                while f"copy_{ms}" in self.orders or f"copy_{ms}" in self._signal_sources:
+                    ms += 1
+                signal_id = f"copy_{ms}"
 
-            order = ManagedOrder(
-                signal_id=signal_id,
-                signal=signal,
-                source_window=source_window,
-                cancel_after_seconds=cancel_after_seconds,
-                cancel_if_price_beyond=cancel_if_price_beyond,
-                remaining_volume=signal.lot_size or self.default_lot_size
-            )
-            self.orders[signal_id] = order
+            if signal_id in self.orders:
+                order = self.orders[signal_id]
+                retry_existing = True
+            else:
+                retry_existing = False
+            if not retry_existing:
+                order = ManagedOrder(
+                    signal_id=signal_id,
+                    signal=signal,
+                    source_window=source_window,
+                    remaining_volume=signal.lot_size or self.default_lot_size,
+                )
+                self.orders[signal_id] = order
 
-        # Save source_window mapping immediately (not just after fill)
-        # so cancel keywords can match pending orders to their source
+        # Save source_window mapping immediately for reports and restart adoption.
         if source_window:
             self._signal_sources[signal_id] = source_window
             # 立刻寫檔：原本只在成交時才存，導致新群組要等到第一筆成交
@@ -267,138 +255,65 @@ class TradeManager:
 
         return signal_id
 
-    def cancel_order(self, signal_id: str, reason: str = "user_cancelled") -> bool:
-        """
-        Cancel a pending or close an open order.
-        NOTE: Cancelled orders do NOT affect martingale level.
+    def cancel_pending_order(self, signal_id: str, reason: str = "line_reply") -> bool:
+        """Handle one exact LINE cancellation without ever closing a position.
 
-        Args:
-            signal_id: The signal ID to cancel
-            reason: Reason for cancellation
-
-        Returns:
-            True if successful
+        ``False`` means the order exists but its MT5 ticket is not visible yet,
+        so the Hub sequence must not advance and the caller should retry.
         """
         with self._lock:
             order = self.orders.get(signal_id)
-            if not order:
-                return False
-
-            if order.status in [OrderStatus.PENDING, OrderStatus.SENT]:
-                order.status = OrderStatus.CANCELLED
-                # Delete from MT5 if we have the ticket
-                if order.ticket:
-                    self._delete_pending_order(order.ticket)
-                self.on_order_cancelled(signal_id)
-                logger.info(f"Cancelled order {signal_id} (ticket: {order.ticket}): {reason}")
+            if order is None:
+                # The trade may have been filtered by membership/source settings.
                 return True
+            if order.status not in (OrderStatus.PENDING, OrderStatus.SENT):
+                return True
+            if order.cancel_delete_sent:
+                return True
+            order.cancel_requested = True
+            order.cancel_reason = reason
+            ticket = order.ticket
 
-            if order.status in [OrderStatus.FILLED, OrderStatus.PARTIAL_CLOSED]:
-                # Need to close the position - this WILL affect martingale
-                # based on whether it's currently in profit or loss
-                current_profit = self._get_position_profit(order.ticket)
-                success = self._close_position(order.ticket)
-                if success:
-                    order.status = OrderStatus.CLOSED
-                    # Manual close counts as win/loss based on current P/L
-                    is_win = current_profit >= 0
-                    self.on_trade_result(is_win, signal_id, source_window=order.source_window)
-                    logger.info(f"Closed position {signal_id}: {reason} ({'WIN' if is_win else 'LOSS'})")
-                return success
+        expected_comment = f"copy_{signal_id}"
+        if not ticket:
+            # The EA can consume commands.json before orders.json is refreshed.
+            # Resolve the exact comment directly instead of guessing by direction.
+            for pending in self._get_pending_orders():
+                if str(pending.get("comment") or "") == expected_comment:
+                    ticket = pending.get("ticket")
+                    break
 
-        return False
-
-    def cancel_latest_pending(self, direction: str = "", reason: str = "group_cancel") -> bool:
-        """撤掉「最近一筆」尚未成交的掛單 (只動 PENDING/SENT, 不碰已成交部位)。
-
-        對應群組發的「取消/撤」訊息。direction 給 'buy'/'sell' 時只撤該方向。
-        找不到符合的掛單就回 False (安全：什麼都不做, 不會誤平已成交部位)。
-        """
-        with self._lock:
-            candidates = [
-                (sid, o) for sid, o in self.orders.items()
-                if o.status in (OrderStatus.PENDING, OrderStatus.SENT)
-                and (not direction or getattr(o.signal, "direction", "") == direction)
-            ]
-        if not candidates:
-            logger.info("group_cancel: 沒有符合的未成交掛單可撤 (direction=%r)", direction or "any")
+        if not ticket:
+            # A fill may have won the race. Treat the cancel event as handled,
+            # update local tracking, and most importantly never send "close".
+            for position in self._get_positions():
+                if str(position.get("comment") or "") != expected_comment:
+                    continue
+                with self._lock:
+                    current = self.orders.get(signal_id)
+                    if current is not None:
+                        current.status = OrderStatus.FILLED
+                        current.ticket = position.get("ticket")
+                        current.cancel_requested = False
+                logger.info("LINE 引用撤單到達時訂單已成交，保留部位：%s", signal_id)
+                return True
+            logger.info("LINE 引用撤單等待 MT5 ticket：%s", signal_id)
             return False
-        candidates.sort(key=lambda kv: kv[1].created_at, reverse=True)
-        sid = candidates[0][0]
-        return self.cancel_order(sid, reason=reason)
 
-    def cancel_pending_same_direction(self, direction: str, within_seconds: float, exclude_signal_id: str = "") -> int:
-        """撤掉 within_seconds 內、同方向的未成交舊掛單 (只動 PENDING/SENT)。
-
-        「同方向短時間改單防呆」：新訊號下單前呼叫，撤掉剛剛同方向的舊掛單，
-        避免乘改單/OCR怪異造成同方向多下一張。回傳撤掉的張數。
-
-        注意：不分來源。開著會讓 B 群的新單撤掉 A 群同方向的舊掛單，跟多群時
-        務必留 0，改用 supersede_same_source() 那條。
-        """
-        if not direction or within_seconds <= 0:
-            return 0
-        now = time.time()
+        success = self._delete_pending_order(int(ticket))
+        if not success:
+            return False
         with self._lock:
-            victims = [
-                sid for sid, o in self.orders.items()
-                if sid != exclude_signal_id
-                and o.status in (OrderStatus.PENDING, OrderStatus.SENT)
-                and getattr(o.signal, "direction", "") == direction
-                and (now - o.created_at) <= within_seconds
-            ]
-        n = 0
-        for sid in victims:
-            if self.cancel_order(sid, reason="superseded_same_direction"):
-                n += 1
-        if n:
-            logger.info("同方向改單防呆：撤掉 %d 張 %s 舊掛單 (被新訊號取代)", n, direction)
-        return n
-
-    def supersede_same_source(self, source_window: str, within_seconds: float,
-                              exclude_signal_id: str = "") -> int:
-        """同一來源在 within_seconds 內又發新單 → 撤掉該來源之前那些還沒成交的掛單。
-
-        為什麼需要：提供者會「收回訊息再重發」來修正報單。實測 2026-08-14，yuyu 在
-        23 秒內發了三次 —— 前兩次都被自己收回 (畫面上留下兩行「已收回訊息」)，止損
-        分別是 4359 / 4369，最後定案 4364。我們的擷取延遲只有 3 秒，等於每個中途版本
-        都在被收回前就發布出去了，會員端於是對同一則報單掛了三張單、曝險變三倍，
-        而且三張的止損各不相同。
-
-        （順帶一提：那三筆 OCR 全部讀對了。同一張圖重複辨識 5 次結果一致、連續截圖
-        6 次也一致 —— 是提供者真的改了三次，不是辨識問題。）
-
-        設計上的兩個決定：
-
-        * 不分方向。收回重發時提供者可能連方向都改掉；既然舊的那則已經被收回，
-          留著它就是錯的。同一個提供者在 3 分鐘內發出兩筆「互相獨立」的真訊號並不
-          實際 —— 真要那樣，兩張反向單本身也會互相衝突。
-        * 只動 PENDING/SENT，**絕不碰已成交的部位**。已經進場的單屬於既成事實，
-          要平倉該走停損/止盈或人工決定，不能被一個新訊號默默平掉。
-        """
-        if not source_window or within_seconds <= 0:
-            return 0
-        now = time.time()
-        with self._lock:
-            victims = [
-                (sid, o) for sid, o in self.orders.items()
-                if sid != exclude_signal_id
-                and o.status in (OrderStatus.PENDING, OrderStatus.SENT)
-                and (o.source_window or "") == source_window
-                and (now - o.created_at) <= within_seconds
-            ]
-        n = 0
-        for sid, o in victims:
-            sig = o.signal
-            if self.cancel_order(sid, reason="superseded_same_source"):
-                n += 1
-                logger.info(
-                    "同來源改單：撤掉 %s 的舊掛單 %s（%s @%s SL %s，%.0f 秒前送出）— 已被新訊號取代",
-                    source_window, sid, getattr(sig, "direction", "?"),
-                    getattr(sig, "entry_price", "?"), getattr(sig, "stop_loss", "?"),
-                    now - o.created_at,
-                )
-        return n
+            current = self.orders.get(signal_id)
+            if current is not None and current.status in (OrderStatus.PENDING, OrderStatus.SENT):
+                current.ticket = int(ticket)
+                current.cancel_delete_sent = True
+        logger.info("LINE 引用撤單已送出 pending-delete：%s ticket=%s", signal_id, ticket)
+        self._write_journal(
+            "LINE_REPLY_CANCEL_SENT",
+            f"signal_id={signal_id} | ticket={ticket} | 原因={reason}",
+        )
+        return True
 
     # MT5 order type: 偶數=buy 系列(0 BUY / 2 BUY_LIMIT / 4 BUY_STOP), 奇數=sell 系列
     @staticmethod
@@ -430,20 +345,16 @@ class TradeManager:
             return wall - offset
         return None
 
-    def adopt_open_orders(
-        self,
-        cancel_after_seconds: Optional[int] = None,
-        cancel_if_price_beyond: Optional[float] = None,
-    ) -> int:
+    def adopt_open_orders(self) -> int:
         """重啟後把 MT5 上還活著的本系統單接回追蹤清單。
 
         沒有這一步的話，每次重啟都會留下「孤兒單」：MT5 上掛著，但會員端不認得它，
-        於是既不會逾時自動刪單，成交後的輸贏也不會計入馬丁層級。
+        成交後的輸贏也不會計入馬丁層級，LINE 引用撤單也找不到原始 execution ID。
 
         靠 magic number 認自己的單，comment 裡帶著原本的 signal_id。
         回傳認領的張數。
         """
-        from copy_trader.signal_parser.groq_parser import ParsedSignal
+        from copy_trader.signal_parser.regex_parser import ParsedSignal
 
         adopted = 0
         pending = self._read_json_file(self.pending_orders_file) or {}
@@ -488,8 +399,6 @@ class TradeManager:
                 remaining_volume=volume,
                 initial_volume=volume,
                 source_window=self._signal_sources.get(signal_id, ""),
-                cancel_after_seconds=cancel_after_seconds,
-                cancel_if_price_beyond=cancel_if_price_beyond,
                 created_at=created_at if created_at else time.time(),
             )
             if status is OrderStatus.FILLED:
@@ -841,36 +750,6 @@ class TradeManager:
         """Get the ticket -> source_window mapping (for trade history enrichment)."""
         return self._signal_sources
 
-    def _load_pending_created(self) -> Dict[str, float]:
-        """Load the persisted ticket -> 掛單建立時間 map."""
-        try:
-            if self._pending_created_file.exists():
-                with open(self._pending_created_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                return {str(k): float(v) for k, v in data.items()}
-        except Exception as e:
-            logger.warning(f"Failed to load pending_created: {e}")
-        return {}
-
-    def _save_pending_created(self):
-        """Persist the ticket -> 掛單建立時間 map."""
-        try:
-            if len(self._pending_created) > 200:
-                for k in sorted(self._pending_created, key=self._pending_created.get)[:-200]:
-                    del self._pending_created[k]
-            with open(self._pending_created_file, 'w', encoding='utf-8') as f:
-                json.dump(self._pending_created, f)
-        except Exception as e:
-            logger.warning(f"Failed to save pending_created: {e}")
-
-    def _note_pending_created(self, ticket: int, created_at: float) -> None:
-        """記下某張掛單的建立時間 (只記第一次, 重開後才有東西可以算逾時)。"""
-        key = str(ticket)
-        if key in self._pending_created:
-            return
-        self._pending_created[key] = float(created_at)
-        self._save_pending_created()
-
     def _execute_order(self, signal_id: str) -> bool:
         """Execute an order by writing to commands.json."""
         with self._lock:
@@ -1078,8 +957,6 @@ class TradeManager:
                 self._check_trailing_sl()
                 # 先偵測成交(上面)，再對帳消失的掛單，避免把「剛成交」誤判成「被刪除」
                 self._check_vanished_orders()
-                self._check_cancellation_conditions()
-                self._sweep_orphan_pending_orders()  # 重開後的孤兒掛單
 
                 # Periodically clean up finished orders to prevent memory growth
                 now = time.time()
@@ -1289,8 +1166,10 @@ class TradeManager:
                 filled = False
                 for pos in positions:
                     comment = pos.get('comment', '')
-                    if f"copy_{signal_id}" in comment:
+                    if comment == f"copy_{signal_id}":
                         order.status = OrderStatus.FILLED
+                        order.cancel_requested = False
+                        order.cancel_delete_sent = False
                         order.ticket = pos.get('ticket')
                         order.entry_price = pos.get('price_open')
                         order.entry_time = time.time()
@@ -1318,17 +1197,13 @@ class TradeManager:
                 if not filled and not order.ticket:
                     for po in pending_orders:
                         comment = po.get('comment', '')
-                        if f"copy_{signal_id}" in comment:
+                        if comment == f"copy_{signal_id}":
                             order.ticket = po.get('ticket')
                             logger.debug(f"Pending order ticket found: {signal_id} -> {order.ticket}")
-                            # Map ticket → source immediately so cancel-by-source works
-                            # (don't wait until fill — pending orders need source isolation too)
+                            # Map ticket → source immediately for history and restart adoption.
                             if order.source_window and order.ticket:
                                 self._signal_sources[str(order.ticket)] = order.source_window
                                 self._save_signal_sources()
-                            # 存下建立時間, 這樣程式重開後這張掛單仍算得出逾時
-                            if order.ticket:
-                                self._note_pending_created(order.ticket, order.created_at)
                             break
 
     # 掛單從 MT5 消失後，要連續看不到這麼久才認定它真的沒了。
@@ -1339,8 +1214,8 @@ class TradeManager:
     def _check_vanished_orders(self):
         """對帳：掛單在 MT5 被手動刪掉（或券商撤掉）時，把追蹤狀態同步過來。
 
-        沒有這一步的話，使用者在 MT5 手動刪單後，會員端會一直顯示那張掛單還在等，
-        倒數也還在跑——面板跟現實對不起來。
+        沒有這一步的話，使用者手動刪單或 LINE delete 指令成功後，會員端
+        仍會顯示掛單在等待，面板會跟 MT5 實況對不起來。
         """
         pending = self._get_pending_orders(allow_none=True)
         if pending is None:
@@ -1367,6 +1242,8 @@ class TradeManager:
                     continue
                 if now - order.vanish_detected_at >= self.VANISH_CONFIRM_SECONDS:
                     order.status = OrderStatus.CANCELLED
+                    order.cancel_requested = False
+                    order.cancel_delete_sent = False
                     vanished.append((signal_id, order))
 
         for signal_id, order in vanished:
@@ -1390,7 +1267,7 @@ class TradeManager:
         """讀 EA 的執行回報，把被券商拒絕的單標成失敗。
 
         沒有這一步的話，拒單會變成幽靈：commands.json 被 EA 消化掉了，但 MT5 上
-        不會有任何訂單，會員端卻一直把它當成「等待成交」，直到三小時逾時才清掉。
+        不會有任何訂單，會員端卻一直把它當成「等待成交」。
 
         實例 (2026-08-03)：市價賣單的停利 4035 落在市價 4030 之上（賣單的停利
         必須低於進場價），MT5 回 retcode 10016 Invalid stops 直接拒單。
@@ -1680,172 +1557,3 @@ class TradeManager:
             "ticket": ticket
         }
         return self._write_command(command)
-
-    def _sweep_orphan_pending_orders(self):
-        """刪掉「已逾時但不在 self.orders 裡」的掛單 — 也就是程式重開後的孤兒單。
-
-        self.orders 只活在記憶體，會員端重開一次就全空；重開前下的掛單於是
-        永遠等不到 _check_cancellation_conditions 的逾時判定。因為逾時刪單是
-        目前唯一啟用的刪單規則，那個破口等於整條機制失效，所以這裡直接以
-        MT5 的掛單清單為準再掃一次。
-
-        安全界線：
-          * 只碰 magic == self.magic_number 的掛單 — 使用者自己手動下的單不動
-          * 只碰掛單 (orders.json)，已成交部位在 positions.json，本來就掃不到
-          * 沒有建立時間紀錄的掛單「從現在開始計時」，絕不立刻刪 —
-            存檔遺失/換機器時寧可晚刪，也不能把剛下的單誤刪
-        """
-        timeout = int(self.pending_cancel_after_seconds or 0)
-        if timeout <= 0:
-            return
-
-        pending = self._get_pending_orders()
-        if not pending:
-            return
-
-        with self._lock:
-            tracked = {o.ticket for o in self.orders.values() if o.ticket}
-
-        now = time.time()
-        alive = set()
-        dirty = False
-        for po in pending:
-            ticket = po.get('ticket')
-            if not ticket:
-                continue
-            try:
-                magic = int(po.get('magic') or 0)
-            except (TypeError, ValueError):
-                magic = 0
-            if magic != self.magic_number:
-                continue  # 不是我們下的單
-
-            alive.add(str(ticket))
-            if ticket in tracked:
-                continue  # 記憶體裡有, 交給 _check_cancellation_conditions 處理
-
-            created = self._pending_created.get(str(ticket))
-            if created is None:
-                self._pending_created[str(ticket)] = now
-                dirty = True
-                logger.info("發現未追蹤的掛單 ticket=%s (應為重開前下的), 從現在開始計時", ticket)
-                continue
-
-            age = now - created
-            if age > timeout:
-                self._delete_pending_order(ticket)
-                logger.info(
-                    "孤兒掛單逾時刪單: ticket=%s 已掛 %.1f 小時 > %.1f 小時",
-                    ticket, age / 3600.0, timeout / 3600.0,
-                )
-                self._write_journal(
-                    "ORPHAN_PENDING_DELETED",
-                    f"ticket={ticket} | 已掛={age/3600.0:.1f}h | 逾時={timeout/3600.0:.1f}h "
-                    f"| 來源={self._signal_sources.get(str(ticket), '未知')}",
-                )
-
-        # 已經不在掛單清單裡的 (成交/被刪) → 清掉紀錄, 避免無限成長
-        stale = [k for k in self._pending_created if k not in alive]
-        if stale:
-            for k in stale:
-                del self._pending_created[k]
-            dirty = True
-        if dirty:
-            self._save_pending_created()
-
-    def _check_cancellation_conditions(self):
-        """Check time and price-based cancellation conditions."""
-        current_time = time.time()
-        current_price = self._get_current_price()
-
-        with self._lock:
-            for signal_id, order in list(self.orders.items()):
-                if order.status not in [OrderStatus.PENDING, OrderStatus.SENT]:
-                    continue
-
-                should_cancel = False
-                cancel_reason = ""
-
-                # 記錄市價最接近進場價的一刻（每秒更新），供刪單時佐證用
-                entry = order.signal.entry_price
-                if current_price and entry:
-                    gap = abs(float(current_price) - float(entry))
-                    if order.closest_gap is None or gap < order.closest_gap:
-                        order.closest_gap = gap
-                        order.closest_price = float(current_price)
-                        order.closest_at = current_time
-
-                # Time-based cancellation
-                if order.cancel_after_seconds:
-                    elapsed = current_time - order.created_at
-                    if elapsed > order.cancel_after_seconds:
-                        should_cancel = True
-                        cancel_reason = f"timeout ({elapsed:.0f}s)"
-
-                # Price-based cancellation
-                if (
-                    not should_cancel
-                    and order.cancel_if_price_beyond
-                    and current_price
-                    and order.signal.entry_price
-                ):
-                    signal = order.signal
-                    percent = float(order.cancel_if_price_beyond)
-                    entry_price = float(signal.entry_price)
-                    upper_bound = entry_price * (1 + percent / 100.0)
-                    lower_bound = entry_price * (1 - percent / 100.0)
-
-                    if signal.direction == 'buy' and current_price > upper_bound:
-                        should_cancel = True
-                        cancel_reason = (
-                            f"price {current_price} beyond +{percent}% "
-                            f"(>{upper_bound:.3f}) from entry {entry_price}"
-                        )
-                    elif signal.direction == 'sell' and current_price < lower_bound:
-                        should_cancel = True
-                        cancel_reason = (
-                            f"price {current_price} beyond -{percent}% "
-                            f"(<{lower_bound:.3f}) from entry {entry_price}"
-                        )
-
-                if should_cancel:
-                    order.status = OrderStatus.CANCELLED
-                    price_note = self._describe_miss(order, current_price)
-                    if order.ticket:
-                        self._delete_pending_order(order.ticket)
-                        logger.info(
-                            "Order %s auto-cancelled + MT5 delete sent (ticket %s): %s%s",
-                            signal_id, order.ticket, cancel_reason,
-                            f" | {price_note}" if price_note else "",
-                        )
-                    else:
-                        logger.warning(f"Order {signal_id} auto-cancelled but no MT5 ticket found: {cancel_reason}")
-                    self.on_order_cancelled(signal_id)
-                    self._write_journal(
-                        "ORDER_AUTO_CANCELLED",
-                        f"signal_id={signal_id} | ticket={order.ticket} | 原因={cancel_reason} "
-                        + (f"| {price_note} " if price_note else "")
-                        + f"| 信號={order.signal} | 來源={order.source_window}"
-                    )
-
-    @staticmethod
-    def _describe_miss(order: 'ManagedOrder', current_price: Optional[float]) -> str:
-        """刪單當下的價格佐證：離成交還差多少、期間最接近到哪裡。
-
-        沒有這個，事後只能翻 MT5 圖表才知道「掛 4300 被刪掉時，行情到底有沒有靠近過」。
-        """
-        entry = order.signal.entry_price
-        if not entry:
-            return "市價單"
-        parts = [f"掛單價={entry}"]
-        if current_price:
-            parts.append(f"刪單當下市價={current_price:.2f}（差 {abs(current_price - entry):.2f}）")
-        if order.closest_price is not None:
-            when = ""
-            if order.closest_at:
-                when = time.strftime("%H:%M:%S", time.localtime(order.closest_at))
-            parts.append(
-                f"期間最接近={order.closest_price:.2f}（差 {order.closest_gap:.2f}"
-                + (f" 於 {when}" if when else "") + "）"
-            )
-        return " ".join(parts)

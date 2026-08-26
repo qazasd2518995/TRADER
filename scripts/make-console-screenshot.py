@@ -176,8 +176,6 @@ SETTINGS = {
     "martingale_max_level": "5",
     "martingale_lots": "",
     "partial_close_ratios": "0.5,0.3,0.2",
-    "cancel_pending_after_seconds": "10800",
-    "cancel_if_price_beyond_percent": "0",
     "ea_sources": json.dumps({EA_MAGIC: "趨勢線策略"}, ensure_ascii=False),
     "source_profiles": json.dumps({
         SOURCES["mid"]:  {"mode": "martingale", "lot": "0.01"},
@@ -206,17 +204,13 @@ class _Sig:
 
 
 class _Order:
-    def __init__(self, status, sid, ticket, sig, source, age, limit, closest, gap):
+    def __init__(self, status, sid, ticket, sig, source, age):
         self.status = status
         self.signal_id = sid
         self.ticket = ticket
         self.signal = sig
         self.source_window = source
         self.created_at = time.time() - age
-        self.cancel_after_seconds = limit
-        self.cancel_if_price_beyond = None
-        self.closest_price = closest
-        self.closest_gap = gap
 
 
 class FakeTradeManager:
@@ -229,16 +223,11 @@ class FakeTradeManager:
         self._orders = [
             _Order(OrderStatus.PENDING, "copy_sig201", 802_001,
                    _Sig("buy", 2_332.50, 2_322.00, [2_348.0, 2_356.0]),
-                   SOURCES["mid"], age=1_260, limit=10_800,
-                   closest=2_335.10, gap=2.60),
+                   SOURCES["mid"], age=1_260),
             _Order(OrderStatus.PENDING, "copy_sig202", 802_002,
                    _Sig("sell", 2_352.80, 2_362.00, [2_338.0]),
-                   SOURCES["high"], age=420, limit=10_800,
-                   closest=2_348.40, gap=4.40),
+                   SOURCES["high"], age=420),
         ]
-
-    def _get_current_price(self):
-        return self.CURRENT_PRICE
 
     def get_all_orders(self):
         return self._orders
@@ -369,7 +358,7 @@ def make_handler(mt5_dir: Path, tier: str = "flagship", role: str = "client"):
                     ],
                     "lan_ip": "192.168.0.24", "cloudflare_url": "",
                     # 訊號中心的面板要顯示監控中的視窗；會員端用不到
-                    "capture_windows": list(SOURCES.values()) if role == "central" else [],
+                    "line_chats": list(SOURCES.values()) if role == "central" else [],
                     # 即時報價：讓最後一根會跳。用時間當種子，每秒都不一樣。
                     "tick": None if role == "central" else {
                         "symbol": SYMBOL, "stale": False,

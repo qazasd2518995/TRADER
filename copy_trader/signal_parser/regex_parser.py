@@ -81,20 +81,10 @@ class RegexSignalParser:
         r'(\d{4,5}(?:\.\d+)?)\s*附近',  # wayne: 4430附近 (nearby price as entry)
         r'[（(]\s*(\d{4,5}(?:\.\d+)?)\s*[）)]',  # Noir: 輕倉空（4584）(parenthesized entry)
     ]
-    # Fallback: OCR sometimes truncates entry price to 2-3 digits (e.g. "5080" → "50")
-    ENTRY_PARTIAL_PATTERNS = [
-        r'(?:buy|sell|買|賣)\s*[：:]\s*(\d{2,3})(?:\s|$|\D)',  # Buy：50 (truncated)
-    ]
-
     SL_PATTERNS = [
         r'(?:止損|止损|止隕|止璗|止摃|止損|止撰|sl|si|stop\s*loss|損|隕|璗)\s*[：:=]?\s*(\d{4,5}(?:\.\d+)?)',
         r'(?:止損|止损|止隕|止璗|sl|si)\s*(\d{4,5}(?:\.\d+)?)',
     ]
-    # Fallback SL: OCR truncates to 2-3 digits (e.g. "止損 496" instead of "止損 4963")
-    SL_PARTIAL_PATTERNS = [
-        r'(?:止損|止损|止隕|止璗|止摃|止撰|sl|si|stop\s*loss|損|隕|璗)\s*[：:=]?\s*(\d{2,3})(?:\s|$|\D)',
-    ]
-
     TP_PATTERNS = [
         # Multiple TPs: "Tp 4889 4894 4899" or "止盈 4889 4894 4899"
         r'(?:止盈|止赢|止贏|止嬴|止營|止瑩|獲利|覆利|获利|」\s*三|tp|take\s*profit|盈)\s*[：:=]?\s*((?:\d{4,5}(?:\.\d+)?\s*)+)',
@@ -104,37 +94,23 @@ class RegexSignalParser:
         r'(?:止盈|止赢|止贏|止營|止瑩|獲利|覆利|获利|」\s*三|tp)\s*[：:=]?\s*(\d{4,5}(?:\.\d+)?)',
         # Fallback: number right after SL pattern on sell signals (lower price = TP for sell)
     ]
-    # Fallback TP: OCR truncates to 2-3 digits (e.g. "止盈 49 昍" instead of "止盈 4983")
-    TP_PARTIAL_PATTERNS = [
-        r'(?:止盈|止赢|止贏|止嬴|止營|止瑩|獲利|覆利|获利|」\s*三|tp|take\s*profit|盈)\s*[：:=]?\s*(\d{2,3})(?:\s|$|\D)',
-    ]
-
     MARKET_ORDER_PATTERNS = [
         r'市價|市价|market|現價|现价',
     ]
-
-    # LINE chat timestamp patterns (OCR adds spaces between chars)
-    # Matches: "下 午 1 30", "上 午 10 15", "下午2:30", etc.
-    LINE_TIMESTAMP_PATTERN = r'[下上]\s*午\s*\d{1,2}\s*[:.：]?\s*\d{2}'
-    # LINE date header patterns: "2月13日", "今天", "昨天", "星期一"
-    LINE_DATE_PATTERN = r'\d{1,2}\s*月\s*\d{1,2}\s*[日E]'
 
     def __init__(self):
         # Compile patterns for performance
         self._buy_re = [re.compile(p, re.IGNORECASE) for p in self.BUY_PATTERNS]
         self._sell_re = [re.compile(p, re.IGNORECASE) for p in self.SELL_PATTERNS]
         self._entry_re = [re.compile(p, re.IGNORECASE) for p in self.ENTRY_PATTERNS]
-        self._entry_partial_re = [re.compile(p, re.IGNORECASE) for p in self.ENTRY_PARTIAL_PATTERNS]
         self._sl_re = [re.compile(p, re.IGNORECASE) for p in self.SL_PATTERNS]
-        self._sl_partial_re = [re.compile(p, re.IGNORECASE) for p in self.SL_PARTIAL_PATTERNS]
         self._tp_re = [re.compile(p, re.IGNORECASE) for p in self.TP_PATTERNS]
-        self._tp_partial_re = [re.compile(p, re.IGNORECASE) for p in self.TP_PARTIAL_PATTERNS]
         self._market_re = [re.compile(p, re.IGNORECASE) for p in self.MARKET_ORDER_PATTERNS]
 
         logger.info("RegexSignalParser initialized")
 
     def _normalize_text(self, text: str) -> str:
-        """Normalize OCR text into parser-friendly ASCII tokens."""
+        """Normalize exact LINE message text into parser-friendly tokens."""
         replacements = {
             "\r": " ",
             "\n": " ",
@@ -149,7 +125,6 @@ class RegexSignalParser:
             "止贏": " TP ",
             "止赢": " TP ",
             "獲利": " TP ",
-            "覆利": " TP ",  # OCR misread of 獲利
             "获利": " TP ",
             "買入": " BUY ",
             "买入": " BUY ",
@@ -170,103 +145,22 @@ class RegexSignalParser:
         return normalized.strip()
 
     def parse_latest(self, text: str) -> ParsedSignal:
-        """
-        Parse only the LATEST signal from multi-message OCR text.
-
-        Splits by LINE timestamps, tries parsing each block from newest
-        (bottom of chat) to oldest. Returns the first valid signal found.
-
-        Priority: blocks with explicit direction (buy/sell keyword) are preferred
-        over blocks where direction was inferred from SL/TP positions, to avoid
-        false positives from random numbers in chat.
-
-        Args:
-            text: Raw text from OCR (may contain multiple messages)
-
-        Returns:
-            ParsedSignal object from the newest message
-        """
-        blocks = self._split_by_timestamps(text)
-
-        if len(blocks) <= 1:
-            # Only one block, parse normally
-            return self.parse(text)
-
-        logger.debug(f"Split OCR text into {len(blocks)} blocks by timestamps")
-
-        # Pass 1: Try newest to oldest, only accept blocks with EXPLICIT direction
-        # (buy/sell keyword present). This avoids false positives from random numbers.
-        best_inferred = None
-        best_inferred_idx = -1
-
-        for i, block in enumerate(reversed(blocks)):
-            block_text = block.strip()
-            if len(block_text) < 10:
-                continue
-
-            signal = self.parse(block_text)
-            if signal.is_valid:
-                block_idx = len(blocks) - 1 - i
-                # Check if this block has an explicit direction keyword
-                if self._has_explicit_direction(block_text):
-                    logger.info(f"Using signal from block {block_idx + 1}/{len(blocks)} (newest with explicit direction)")
-                    return signal
-                elif best_inferred is None:
-                    # Save the first (newest) inferred signal as fallback
-                    best_inferred = signal
-                    best_inferred_idx = block_idx
-
-        # Pass 2: If no block had explicit direction, use the newest inferred signal
-        if best_inferred:
-            logger.info(f"Using inferred signal from block {best_inferred_idx + 1}/{len(blocks)} (no explicit direction found)")
-            return best_inferred
-
-        # Fallback: parse entire text (in case splitting broke a signal)
-        logger.debug("No valid signal in individual blocks, parsing full text")
+        """Parse one exact LINE database message."""
         return self.parse(text)
 
     def parse_all_latest(self, text: str) -> List[ParsedSignal]:
         """
-        Parse ALL valid signals from the latest timestamp block.
-
-        When a single OCR capture contains multiple signals (e.g. 乘 posts
-        Sell 4460 and BUY 4425 at the same time), this returns all of them.
+        Parse all valid signals when one LINE message contains multiple orders.
 
         Returns:
             List of ParsedSignal objects (may be empty or have 1+ items)
         """
-        blocks = self._split_by_timestamps(text)
-
-        if not blocks:
-            return [self.parse(text)] if self.parse(text).is_valid else []
-
-        # Find the newest non-trivial block(s) with signals
-        results = []
-
-        for block in reversed(blocks):
-            block_text = block.strip()
-            if len(block_text) < 10:
-                continue
-
-            # Try to split this block into multiple signals by direction keywords
-            sub_signals = self._split_block_by_directions(block_text)
-
-            if len(sub_signals) > 1:
-                # Multiple signals found in one block
-                for sub_text in sub_signals:
-                    sig = self.parse(sub_text)
-                    if sig.is_valid:
-                        results.append(sig)
-                if results:
-                    logger.info(f"Found {len(results)} signals in same block")
-                    return results
-
-            # Single signal in this block
-            sig = self.parse(block_text)
-            if sig.is_valid:
-                return [sig]
-
-        # Fallback: parse entire text
+        sub_signals = self._split_block_by_directions(text.strip())
+        if len(sub_signals) > 1:
+            results = [self.parse(part) for part in sub_signals]
+            results = [signal for signal in results if signal.is_valid]
+            if results:
+                return results
         sig = self.parse(text)
         return [sig] if sig.is_valid else []
 
@@ -316,57 +210,12 @@ class RegexSignalParser:
 
         return sub_blocks if len(sub_blocks) > 1 else [text]
 
-    def _has_explicit_direction(self, text: str) -> bool:
-        """Check if text contains an explicit buy/sell direction keyword."""
-        # Quick check for common keywords first (avoid compiled pattern overhead)
-        if re.search(r'\b(?:buy|sell|long|short)\b', text, re.IGNORECASE):
-            return True
-        if re.search(r'做多|做空|買入|买入|賣出|卖出|多單|多单|空單|空单', text):
-            return True
-        # Single-char direction adjacent to price: "5180多", "5180空"
-        if re.search(r'\d{4,5}(?:\.\d+)?\s*(?:多|空)', text):
-            return True
-        for pattern in self._buy_re:
-            if pattern.search(text):
-                return True
-        for pattern in self._sell_re:
-            if pattern.search(text):
-                return True
-        return False
-
-    def split_message_blocks(self, text: str) -> List[str]:
-        """公開版的訊息區塊切分。
-
-        給需要「逐則訊息比對」的採集端用 (例：OCR 路徑要先確認某一則含提供者的
-        模板指紋，才從那一則抽訊號 — 否則同一畫面上別人的單會被一起收進來)。
-        """
-        return self._split_by_timestamps(text)
-
-    def _split_by_timestamps(self, text: str) -> List[str]:
-        """
-        Split OCR text into message blocks using LINE timestamps, date headers,
-        and Y-position gap markers (|MSG|) from BubbleDetector.
-
-        LINE timestamps appear AFTER each message: "...message content... 下午 2:30"
-        |MSG| markers are inserted by BubbleDetector when a Y-position gap indicates
-        a different chat bubble (different sender/message).
-        """
-        # Combined pattern: timestamps OR date headers OR message boundary marker
-        split_pattern = f'(?:{self.LINE_TIMESTAMP_PATTERN}|{self.LINE_DATE_PATTERN}|\\|MSG\\|)'
-        parts = re.split(split_pattern, text)
-
-        # Filter out empty/whitespace-only blocks.
-        # Keep blocks >= 1 char so short cancel keywords ("撤", "SL") survive the split.
-        # Signal parsing has its own length check in parse() so this is safe.
-        blocks = [p for p in parts if p and len(p.strip()) >= 1]
-        return blocks
-
     def parse(self, text: str) -> ParsedSignal:
         """
         Parse trading signal from text using regex.
 
         Args:
-            text: Raw text from OCR
+            text: Exact LINE message text
 
         Returns:
             ParsedSignal object
@@ -391,22 +240,10 @@ class RegexSignalParser:
         # This prevents picking up SL/TP from older signals above the latest one
         signal_text = self._text_from_last_direction(text_clean)
 
-        # 1. Extract SL/TP first (full-digit pass), then retry with truncated OCR fallback
+        # Extract only complete prices from the exact database text.
         stop_loss = self._extract_stop_loss(signal_text)
         take_profits = self._extract_take_profits(signal_text)
-
-        # Second pass: use found prices as reference to expand truncated OCR numbers
-        ref_prices = [p for p in [stop_loss] + (take_profits or []) if p]
-        if not stop_loss and ref_prices:
-            stop_loss = self._extract_stop_loss(signal_text, ref_prices=ref_prices)
-            if stop_loss:
-                ref_prices = [p for p in [stop_loss] + (take_profits or []) if p]
-        if not take_profits and ref_prices:
-            take_profits = self._extract_take_profits(signal_text, ref_prices=ref_prices)
-            if take_profits:
-                ref_prices = [p for p in [stop_loss] + (take_profits or []) if p]
-
-        entry_price, is_market = self._extract_entry(signal_text, ref_prices=ref_prices)
+        entry_price, is_market = self._extract_entry(signal_text)
 
         # Fallback: use parenthesized entry captured before normalization
         # e.g. Noir "輕倉空（4584）" → entry=4584
@@ -415,14 +252,8 @@ class RegexSignalParser:
             is_market = False
             logger.info(f"Using parenthesized entry: {_paren_entry}")
 
-        # 2. Detect direction (can infer from SL/TP if not explicit)
+        # Require an explicit direction; price geometry alone is not authority.
         direction = self._detect_direction(signal_text)
-
-        # If no explicit direction, try to infer from SL/TP
-        if not direction and stop_loss and take_profits:
-            direction = self._infer_direction_from_sltp(stop_loss, take_profits)
-            if direction:
-                logger.info(f"Inferred direction '{direction}' from SL/TP positions")
 
         if not direction:
             return ParsedSignal(
@@ -443,7 +274,7 @@ class RegexSignalParser:
         # 成最近的 4065 → 整單在第一個目標就全平，4060/4055 永遠用不到；而分批平倉
         # 在等 tps[0]=4055 這個最遠的價，倉位早就沒了 → 賣單等於完全沒有分批平倉。
         # 排序放在這裡而不是 _extract_take_profits 裡面，是因為 direction 到這行才定案
-        # (第 404 行；而且 _infer_direction_from_sltp 本身不看順序)。
+        # (只有到這裡才知道方向)。
         take_profits = order_take_profits(direction, take_profits)
 
         # 5. Validate
@@ -481,11 +312,11 @@ class RegexSignalParser:
         """Find the last direction keyword and return text from that point onward,
         but also include preceding entry price if adjacent.
 
-        When OCR captures multiple signals in one block (no timestamp between them),
+        When one LINE message contains multiple signals,
         the older signal's SL/TP can pollute the newer signal's parsing.
         By finding the LAST buy/sell keyword, we only search SL/TP after it.
 
-        Example OCR: "乘XAUUSD黃金 SL:5030 ... 乘XAUUSD黃金 BUY:4999 SL:4990 TP:5017"
+        Example: "乘XAUUSD黃金 SL:5030 ... 乘XAUUSD黃金 BUY:4999 SL:4990 TP:5017"
         → returns: "BUY:4999 SL:4990 TP:5017"
 
         For "黃金 4695-4696 空 Tp ...", the entry price directly precedes the
@@ -563,31 +394,9 @@ class RegexSignalParser:
 
         return None
 
-    def _infer_direction_from_sltp(self, sl: float, tps: List[float]) -> Optional[str]:
-        """
-        Infer direction from SL and TP positions.
-
-        For BUY: SL < TP (stop below, profit above)
-        For SELL: SL > TP (stop above, profit below)
-        """
-        if not tps:
-            return None
-
-        avg_tp = sum(tps) / len(tps)
-
-        if sl < avg_tp:
-            return "buy"
-        elif sl > avg_tp:
-            return "sell"
-
-        return None
-
-    def _extract_entry(self, text: str, ref_prices: list = None) -> Tuple[Optional[float], bool]:
+    def _extract_entry(self, text: str) -> Tuple[Optional[float], bool]:
         """
         Extract entry price.
-
-        Args:
-            ref_prices: reference prices (SL, TP) for expanding truncated OCR numbers
 
         Returns:
             (entry_price, is_market_order)
@@ -652,84 +461,11 @@ class RegexSignalParser:
                     except:
                         pass
 
-        # Fallback: try partial entry patterns (2-3 digits, OCR truncation)
-        if ref_prices:
-            for pattern in self._entry_partial_re:
-                match = pattern.search(text)
-                if match:
-                    try:
-                        partial = match.group(1)
-                        expanded = self._expand_truncated_price(partial, ref_prices)
-                        if expanded:
-                            logger.info(f"Expanded truncated entry '{partial}' -> {expanded} (using SL/TP as reference)")
-                            return expanded, False
-                    except:
-                        pass
-
-        # 讀不到進場價 → 回 (None, False)，也就是「這則還沒讀完整」，而不是市價單。
-        #
-        # 這裡原本是 `return None, True`（沒有進場價就當市價單），把「OCR 辨識失敗
-        # （未知）」跟「提供者說要市價進場（已知）」混為一談。追蹤的提供者實際上
-        # 每一筆都會給進場點、全部是限價單，所以 entry=None 永遠只代表沒讀到。
-        #
-        # 實測 2026-08-12 的後果：同一則訊號被重讀時進場價沒讀出來，就變成第二筆
-        # 「市價單」發布出去 —— SL/TP 與原訊號完全相同，去重卻因為正規化文字不同
-        # （"Buy 市價" vs "Buy ：4415"）擋不住。會員端於是對同一個訊號開了兩張 1 手
-        # 的單，而且第二張用當下市價成交（4405.92 / 4410.81 / 4427.82 這種零碎價，
-        # 對照正常單的 4399 / 4415 / 4419）。seq=200 那筆進場時已經衝過目標 8.8 點。
-        #
-        # 寧可漏一筆也不要用錯的價格下單：回 False 之後 _is_complete() 會判定不完整、
-        # 不發布，等下一輪把畫面讀清楚。真正的市價單仍然認得 —— 文字裡出現
-        # 「市價/市价/現價/现价/market」時，函式開頭的 _market_re 就會先回 (None, True)。
+        # Missing entry is incomplete unless the message explicitly says market.
         return None, False
 
-    def _expand_truncated_price(self, partial: str, ref_prices: list) -> Optional[float]:
-        """
-        Try to expand a truncated price (e.g. '49' -> 4963.0) using reference prices.
-
-        Strategy:
-        1. If partial is a prefix of a reference price, use ref's trailing digits
-        2. Otherwise, pad with zeros to match the reference's digit count
-           (e.g. '498' with ref 4963 -> 4980)
-
-        This handles OCR truncation like "止盈 49 昍" (should be "止盈 4983").
-        """
-        valid_refs = [p for p in ref_prices if p and p >= 1000]
-        if not valid_refs:
-            return None
-
-        partial_len = len(partial)
-        best_expanded = None
-        best_distance = float('inf')
-
-        for ref in valid_refs:
-            ref_str = str(int(ref))
-            ref_len = len(ref_str)
-
-            # Partial must be shorter than reference
-            if partial_len >= ref_len:
-                continue
-
-            if ref_str[:partial_len] == partial:
-                # Prefix match: use ref's trailing digits for best estimate
-                expanded = int(partial + ref_str[partial_len:])
-            else:
-                # No prefix match: pad with zeros (e.g. '498' -> '4980')
-                expanded = int(partial + "0" * (ref_len - partial_len))
-
-            distance = abs(expanded - ref)
-            # Only accept if within reasonable range (< 5% of ref price)
-            if distance < ref * 0.05 and distance < best_distance:
-                best_distance = distance
-                best_expanded = float(expanded)
-
-        if best_expanded:
-            logger.debug(f"Expanded '{partial}' -> {best_expanded} (ref: {valid_refs})")
-
-        return best_expanded
-
-    def _extract_stop_loss(self, text: str, ref_prices: list = None) -> Optional[float]:
-        """Extract stop loss price, with fallback for truncated OCR."""
+    def _extract_stop_loss(self, text: str) -> Optional[float]:
+        """Extract a complete stop-loss price."""
         simple_match = re.search(
             r'(?:\bsl\b|stop\s*loss|\u6b62\u640d|\u6b62\u635f)\s*[^\d]{0,6}(\d{4,5}(?:\.\d+)?)',
             text,
@@ -750,24 +486,10 @@ class RegexSignalParser:
                 except:
                     pass
 
-        # Fallback: try partial patterns (2-3 digits, OCR truncation)
-        if ref_prices:
-            for pattern in self._sl_partial_re:
-                match = pattern.search(text)
-                if match:
-                    try:
-                        partial = match.group(1)
-                        expanded = self._expand_truncated_price(partial, ref_prices)
-                        if expanded:
-                            logger.info(f"Expanded truncated SL '{partial}' -> {expanded}")
-                            return expanded
-                    except:
-                        pass
-
         return None
 
-    def _extract_take_profits(self, text: str, ref_prices: list = None) -> List[float]:
-        """Extract take profit prices (supports multiple), with fallback for truncated OCR."""
+    def _extract_take_profits(self, text: str) -> List[float]:
+        """Extract one or more complete take-profit prices."""
         take_profits = []
 
         simple_matches = re.findall(
@@ -806,20 +528,6 @@ class RegexSignalParser:
                     take_profits.append(tp)
             except:
                 pass
-
-        # Fallback: try partial patterns (2-3 digits, OCR truncation like "止盈 49 昍")
-        if not take_profits and ref_prices:
-            for pattern in self._tp_partial_re:
-                match = pattern.search(text)
-                if match:
-                    try:
-                        partial = match.group(1)
-                        expanded = self._expand_truncated_price(partial, ref_prices)
-                        if expanded:
-                            logger.info(f"Expanded truncated TP '{partial}' -> {expanded}")
-                            take_profits.append(expanded)
-                    except:
-                        pass
 
         # 先做穩定的升冪排序（去重／比對用）。最終「由近到遠」的方向性排序在 parse()
         # 裡 direction 定案之後才套用 — 這裡還不知道方向（見 order_take_profits）。

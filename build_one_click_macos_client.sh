@@ -7,9 +7,7 @@ echo "============================================"
 echo "  Build one-click macOS member client"
 echo "============================================"
 
-if python3 -m PyInstaller --version >/dev/null 2>&1 && python3 - <<'PY' >/dev/null 2>&1
-import PIL
-PY
+if python3 -m PyInstaller --version >/dev/null 2>&1
 then
   echo "Using existing Python build dependencies."
 else
@@ -17,7 +15,7 @@ else
   python3 -m venv .venv-one-click-macos
   . .venv-one-click-macos/bin/activate
   python -m pip install --upgrade pip
-  python -m pip install -r one_click_requirements_macos_client.txt
+  python -m pip install -r one_click_requirements_macos.txt
 fi
 
 PYINSTALLER_CONFIG_DIR="${PYINSTALLER_CONFIG_DIR:-/tmp/pyinstaller_config}" python3 -m PyInstaller --noconfirm packaging/pyinstaller/client-macos.spec

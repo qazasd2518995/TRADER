@@ -17,17 +17,16 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import re
-import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
-    from copy_trader.config import DATA_DIR
+    from copy_trader.config import DATA_DIR, load_config
 except Exception:  # pragma: no cover - 打包環境下的保險
     DATA_DIR = Path.cwd()
+    load_config = None
 
 # 事件日誌的標題行：[2026-07-08 17:54:19] ORDER_FILLED
 _JOURNAL_HEAD = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]\s+([A-Z_]+)\s*$")
@@ -49,35 +48,13 @@ _journal_cache: Dict[str, Tuple[float, int, List[Dict[str, Any]]]] = {}
 # --------------------------------------------------------------------------
 
 def resolve_mt5_dir(configured: str = "") -> Path:
-    """設定裡填了就用填的，否則沿用 TradeManager 的自動偵測順序。"""
+    """Use the explicit Web setting or the shared headless MT5 detector."""
     configured = (configured or "").strip().strip('"')
     if configured:
         return Path(configured)
-
-    try:
-        from copy_trader.platform import PlatformConfig
-
-        path = PlatformConfig().get_mt5_files_path()
-        if path and Path(path).is_dir():
-            return Path(path)
-    except Exception:
-        pass
-
-    if sys.platform == "darwin":
-        return (
-            Path.home()
-            / "Library" / "Application Support"
-            / "net.metaquotes.wine.metatrader5" / "drive_c"
-            / "Program Files" / "MetaTrader 5" / "MQL5" / "Files"
-        )
-
-    for candidate in (
-        r"C:\Program Files\MetaTrader 5\MQL5\Files",
-        r"C:\Program Files (x86)\MetaTrader 5\MQL5\Files",
-    ):
-        if os.path.isdir(candidate):
-            return Path(candidate)
-    return Path(r"C:\Program Files\MetaTrader 5\MQL5\Files")
+    if load_config is not None:
+        return Path(load_config().mt5_files_dir)
+    return Path()
 
 
 def journal_path() -> Path:
@@ -392,9 +369,6 @@ def _untracked_pending(mt5_dir: Optional[Path], tracked: set, ea_magics: set) ->
             "source": "",
             "created_at": 0.0,
             "elapsed_seconds": None,
-            "cancel_after_seconds": 0,
-            "remaining_seconds": None,
-            "cancel_if_price_beyond": None,
             "setup_time": raw.get("time_setup") or "",
         })
     return out
@@ -408,16 +382,11 @@ def _tracked_pending(trade_manager: Any, tracked: set) -> List[Dict[str, Any]]:
 
         waiting = {OrderStatus.PENDING, OrderStatus.SENT}
         now = time.time()
-        try:
-            current_price = trade_manager._get_current_price()
-        except Exception:
-            current_price = None
         rows = []
         for order in trade_manager.get_all_orders():
             if order.status not in waiting:
                 continue
             signal = order.signal
-            limit = order.cancel_after_seconds or 0
             elapsed = now - order.created_at
             if order.ticket is not None:
                 tracked.add(order.ticket)
@@ -434,16 +403,6 @@ def _tracked_pending(trade_manager: Any, tracked: set) -> List[Dict[str, Any]]:
                 "source": order.source_window or "",
                 "created_at": order.created_at,
                 "elapsed_seconds": int(elapsed),
-                "cancel_after_seconds": int(limit),
-                # limit 為 0 = 不因逾時刪單，倒數就沒有意義
-                "remaining_seconds": int(max(0, limit - elapsed)) if limit else None,
-                "cancel_if_price_beyond": order.cancel_if_price_beyond,
-                # 離成交還差多少，以及掛單期間最接近過的價位
-                "current_price": current_price,
-                "distance": (abs(current_price - float(getattr(signal, "entry_price", 0) or 0))
-                             if current_price and getattr(signal, "entry_price", None) else None),
-                "closest_price": order.closest_price,
-                "closest_gap": order.closest_gap,
             })
         return rows
     except Exception:
@@ -758,10 +717,6 @@ def build_stats(settings: Dict[str, Any], trade_manager: Any = None) -> Dict[str
         # 別的 EA(自己下單、不靠訊號)有哪些，純粹讓前端知道要把哪些來源名稱
         # 當成「唯讀報表」處理，不要顯示成可調手數/馬丁的來源
         "ea_sources": list(ea_sources.values()),
-        "cancel_rules": {
-            "after_seconds": _int(settings.get("cancel_pending_after_seconds"), 10800),
-            "price_beyond_percent": _float(settings.get("cancel_if_price_beyond_percent"), 1.0),
-        },
         "sources": _by_source(trades),
         "daily": _by_day(trades),
         "martingale": {

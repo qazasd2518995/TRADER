@@ -8,9 +8,7 @@ echo "  Build one-click macOS central signal app"
 echo "============================================"
 
 if python3 -m PyInstaller --version >/dev/null 2>&1 && python3 - <<'PY' >/dev/null 2>&1
-import PIL
-import Quartz
-import AppKit
+import apsw
 PY
 then
   echo "Using existing Python build dependencies."
@@ -19,7 +17,7 @@ else
   python3 -m venv .venv-one-click-macos
   . .venv-one-click-macos/bin/activate
   python -m pip install --upgrade pip
-  python -m pip install -r one_click_requirements_macos_client.txt
+  python -m pip install -r one_click_requirements_macos.txt
 fi
 
 PYINSTALLER_CONFIG_DIR="${PYINSTALLER_CONFIG_DIR:-/tmp/pyinstaller_config}" python3 -m PyInstaller --noconfirm packaging/pyinstaller/central-macos.spec

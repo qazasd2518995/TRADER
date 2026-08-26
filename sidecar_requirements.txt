@@ -1,9 +1,0 @@
-# Copy Trader Sidecar — dependencies (no PySide6/qasync)
-Pillow>=10.0
-rapidocr>=3.7.0
-onnxruntime>=1.17.0
-pywin32>=306
-imagehash>=4.3.0
-groq>=0.5.0
-anthropic>=0.25.0
-pyinstaller>=6.0

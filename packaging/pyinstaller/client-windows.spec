@@ -18,7 +18,7 @@ a = Analysis(
     [str(ROOT / "copy_trader/central/client_agent_web.py")],
     pathex=[str(ROOT)],
     binaries=[],
-    datas=datas(ROOT),
+    datas=datas(ROOT, "client"),
     hiddenimports=hidden("client", "windows"),
     hookspath=[],
     hooksconfig={},
@@ -39,7 +39,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
-    icon=str(ROOT / "src-tauri/icons/icon.ico"),
+    icon=str(ROOT / "packaging/assets/icon.ico"),
     target_arch=None,
 )
 

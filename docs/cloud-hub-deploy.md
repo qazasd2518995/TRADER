@@ -49,7 +49,7 @@ curl https://gold-signal-hub-tw.fly.dev/health
 
 ## 設計重點
 
-- **Dockerfile** 只 `COPY copy_trader/central`，並把 `copy_trader/__init__.py` 清空，避免容器載入 Windows/macOS 專用模組（pywin32、tkinter、剪貼板擷取等）。Hub 本身只用 Python 標準函式庫。
+- **Dockerfile** 只 `COPY copy_trader/central`，並把 `copy_trader/__init__.py` 清空；雲端 Hub 不需要本機 LINE DB provider 或 MT5 client。Hub 本身只用 Python 標準函式庫。
 - **Store 路徑** 由 `COPY_TRADER_HUB_STORE=/data/central_hub_signals.jsonl` 指到掛載的磁碟。即使磁碟被清空，會員端 agent 也會自動把 `last_seq` 對齊到 Hub 目前的 `latest_seq`，不會重放歷史訊號或漏單。
 - **Token** 不寫進 image 或 repo，只透過 `fly secrets` 在執行期注入。
 - **`.dockerignore`** 排除整個 repo 只留 `copy_trader/`，讓每次部署的 build context 維持在數十 KB（repo 根目錄含 `tools/line_chat.db` 約 1GB，務必別一起上傳）。

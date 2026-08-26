@@ -12,19 +12,16 @@ from pathlib import Path
 
 ROOT = Path(SPECPATH).parents[1]
 sys.path.insert(0, str(Path(SPECPATH)))
-from _common import hidden, datas, excludes, collect_ocr   # noqa: E402
+from _common import hidden, datas, excludes, collect_apsw   # noqa: E402
 
-# OCR 的模型與原生 DLL 靠靜態分析找不到（模型是執行期用路徑組出來讀的），
-# 一定要 collect_all 整包抓。少了這段一樣打得出來、一樣沒有警告，只是
-# RapidOCR 在會員按下開始時才載入失敗。
-_ocr_datas, _ocr_bins, _ocr_hidden = collect_ocr()
+_apsw_datas, _apsw_bins, _apsw_hidden = collect_apsw()
 
 a = Analysis(
     [str(ROOT / "copy_trader/central/central_signal_center_web.py")],
     pathex=[str(ROOT)],
-    binaries=_ocr_bins,
-    datas=datas(ROOT) + _ocr_datas,
-    hiddenimports=hidden("central", "windows") + _ocr_hidden,
+    binaries=_apsw_bins,
+    datas=datas(ROOT, "central") + _apsw_datas,
+    hiddenimports=hidden("central", "windows") + _apsw_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -44,7 +41,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
-    icon=str(ROOT / "src-tauri/icons/icon.ico"),
+    icon=str(ROOT / "packaging/assets/icon.ico"),
     target_arch=None,
 )
 

@@ -1,12 +1,9 @@
 # Dependencies
-node_modules/
 venv/
 
 # Build outputs
 dist/
 build/
-src-tauri/target/
-src-tauri/binaries/
 
 # Python
 __pycache__/
@@ -28,13 +25,12 @@ Thumbs.db
 copy_trader_*.png
 _*.png
 _*.txt
-_ocr_*.png
 
 # Runtime artifacts / test state
 trade_journal.txt
 agent_test_state.json
 central_client_state.json
-central_ocr_seen.json
+line_db_cursor.json
 *.ex5
 
 # Debug screenshots
@@ -45,14 +41,8 @@ test_*.png
 config.json
 copy_trader_signals.json
 
-# Error logs
-sidecar_err.txt
-
 # Claude Code
 .claude/
-
-# TS build info
-tsconfig.tsbuildinfo
 
 # 執行期設定與啟動腳本：含 Hub 密碼與個人路徑，不可進版控
 client_web_launcher_settings.json

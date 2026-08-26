@@ -1,3 +1,0 @@
-# One-click member client launcher for macOS.
-Pillow>=10.0
-pyinstaller>=6.0

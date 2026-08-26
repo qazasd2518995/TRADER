@@ -12,18 +12,16 @@ from pathlib import Path
 
 ROOT = Path(SPECPATH).parents[1]
 sys.path.insert(0, str(Path(SPECPATH)))
-from _common import hidden, datas, excludes, collect_ocr   # noqa: E402
+from _common import hidden, datas, excludes, collect_apsw   # noqa: E402
 
-# 同 central-windows.spec：OCR 模型與原生函式庫要 collect_all 整包抓，
-# 靜態分析看不到它們。
-_ocr_datas, _ocr_bins, _ocr_hidden = collect_ocr()
+_apsw_datas, _apsw_bins, _apsw_hidden = collect_apsw()
 
 a = Analysis(
     [str(ROOT / "copy_trader/central/central_signal_center_web.py")],
     pathex=[str(ROOT)],
-    binaries=_ocr_bins,
-    datas=datas(ROOT) + _ocr_datas,
-    hiddenimports=hidden("central", "macos") + _ocr_hidden,
+    binaries=_apsw_bins,
+    datas=datas(ROOT, "central") + _apsw_datas,
+    hiddenimports=hidden("central", "macos") + _apsw_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -58,7 +56,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name="黃金訊號中心.app",
-    icon=str(ROOT / "src-tauri/icons/icon.icns"),
+    icon=str(ROOT / "packaging/assets/icon.icns"),
     bundle_identifier="com.goldtrader.central",
     info_plist={
         # 控制台是網頁介面，不需要 Dock 圖示以外的東西；

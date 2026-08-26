@@ -2,12 +2,8 @@
 
 為什麼需要這支
 --------------
-2026-08-25：四份 spec 合併成共用的 _common.py 時，EXCLUDES 被兩個角色共用，
-而裡面含 rapidocr / onnxruntime / cv2 / numpy。對會員端那是正確的（他不擷取
-畫面），對訊號中心卻是致命的 —— 整條擷取管線就是 PrintWindow + OCR。
-
-打出來的訊號中心從 278 MB 變成 34 MB，**建置過程零錯誤零警告**，
-要等使用者按下開始、log 噴 RapidOCR 載入失敗才會發現。
+訊號中心必須帶 SQLite3MC 版 APSW 才能解開 LINE DB；會員端則不應夾帶它。
+PyInstaller 對延遲匯入與原生 extension 可能建置成功卻漏檔，因此在產物上驗證。
 
 這種「少了東西但建置成功」的失敗最難抓，所以用大小 + 模組雙重檢查釘死。
 
@@ -27,17 +23,16 @@ DIST = ROOT / "dist"
 SPEC = {
     "central": (
         "黃金訊號中心",
-        # 擷取管線的核心，少一個就等於不會讀訊號
-        ["rapidocr", "onnxruntime", "cv2", "numpy"],
+        ["apsw"],
         [],
-        200,
+        8,
     ),
     "client": (
         "黃金跟單會員端",
         [],
         # 會員端不擷取畫面，夾進去只是讓安裝檔多 244 MB
-        ["rapidocr", "onnxruntime"],
-        15,
+        ["apsw", "rapidocr", "onnxruntime", "PySide6"],
+        8,
     ),
 }
 
