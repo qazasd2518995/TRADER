@@ -226,9 +226,10 @@ class MT5ClientAgent:
         for item in records:
             seq = int(item.get("seq") or 0)
 
-            # LINE 引用撤單：事件直接帶被引用報單的 deterministic execution ID。
+            # LINE 引用撤單／原訊息收回：事件直接帶原報單的 deterministic execution ID。
             # 只撤未成交掛單，不猜方向、不撤「最近一張」、也不平已成交部位。
             if item.get("type") == "cancel_signal":
+                cancel_reason = str(item.get("cancel_reason") or "line_reply")
                 target_ids = [
                     str(value) for value in (item.get("target_execution_ids") or [])
                     if str(value)
@@ -238,15 +239,16 @@ class MT5ClientAgent:
                     for signal_id in target_ids:
                         ready = self.trade_manager.cancel_pending_order(
                             signal_id,
-                            reason=f"line_reply:{item.get('line_message_id') or seq}",
+                            reason=f"{cancel_reason}:{item.get('line_message_id') or seq}",
                         )
                         if not ready:
-                            logger.info("LINE 引用撤單等待 ticket，保留 Hub seq=%s 下輪重試", seq)
+                            logger.info("LINE 撤單等待 MT5 確認，保留 Hub seq=%s 下輪重試", seq)
                             return count
                         handled += 1
                     logger.info(
-                        "收到 LINE 引用撤單 seq=%s target_message=%s → 已處理 %s/%s 個指定 ID",
+                        "收到 LINE 撤單 seq=%s reason=%s target_message=%s → 已處理 %s/%s 個指定 ID",
                         seq,
+                        cancel_reason,
                         item.get("target_line_message_id") or "?",
                         handled,
                         len(target_ids),

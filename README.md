@@ -7,6 +7,7 @@
 ```text
 LINE 加密 DB（唯讀）
   → 穩定 chat ID／sender ID + 每聊天室 rowid 游標
+  → 已發布訊息 revision／UNSENT 收回監看
   → 來源專屬 strict parser + backlog 安全閥
   → LINE message／execution 總帳
   → Hub（event_id 精確冪等）
@@ -22,6 +23,7 @@ LINE 回覆／引用的 `_relatedMessageId` 會直接查詢原始發布時保存
 - Hub `event_id` 與 MT5 `execution_id` 冪等，避免網路重試重複下單。
 - 中頻 300 秒、高頻 180 秒的 backlog 上限；舊報單不補下，但舊撤單仍可對帳。
 - MT5 撤單依序為 REQUESTED、COMMAND_SENT、MT5_CONFIRMED／FAILED_RETRY／ALREADY_FILLED，寫出 delete 指令不等於成功。
+- LINE 收回以 `UNSENT=true + event type 20 + revision 增加` 三重條件命中原 message ID，再由總帳同步撤單。
 
 ## 開發啟動
 

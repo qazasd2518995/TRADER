@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
 import logging
 import os
@@ -93,6 +94,7 @@ class CentralSignalCollector:
         self.ledger = ledger or LineMessageLedger()
         self.clock = clock
         self.shadow_mode = bool(shadow_mode)
+        self._recall_checked_at: dict[str, float] = {}
 
     @staticmethod
     def _database_id(message: LineDatabaseMessage) -> str:
@@ -179,6 +181,8 @@ class CentralSignalCollector:
             "line_message_id": message.message_id,
             "target_line_message_id": message.related_message_id,
             "target_execution_ids": target_execution_ids,
+            "target_signals": self.ledger.execution_signals(target_execution_ids),
+            "cancel_reason": "line_reply",
             "sender": message.sender_name,
             "message_time": message.timestamp.isoformat(),
             "command": normalize_cancel_command(message.text),
@@ -312,6 +316,133 @@ class CentralSignalCollector:
         )
         return 1
 
+    @staticmethod
+    def _local_iso(timestamp: float) -> str:
+        return datetime.fromtimestamp(timestamp).astimezone().isoformat()
+
+    def _reconcile_recalls(self) -> int:
+        """Detect in-place LINE UNSENT transitions for ledgered trades."""
+        provider = getattr(self.source, "provider", None)
+        fetch_metadata = getattr(provider, "fetch_message_metadata", None)
+        if provider is None or not callable(fetch_metadata):
+            return 0
+        chats = getattr(self.source, "chats", None)
+        if not chats:
+            return 0
+
+        detected_at = float(self.clock())
+        published = 0
+        database_id = str(getattr(provider, "database_id", "") or "unknown-database")
+        for chat in chats:
+            watch_seconds = int(chat.target.recall_watch_seconds or 0)
+            if watch_seconds <= 0:
+                continue
+            watched = self.ledger.watched_messages(
+                database_id,
+                chat.chat_id,
+                created_after_ms=int((detected_at - watch_seconds) * 1000),
+                include_shadow=self.shadow_mode,
+            )
+            previous_check = self._recall_checked_at.get(chat.chat_id)
+            for offset in range(0, len(watched), 500):
+                batch = watched[offset:offset + 500]
+                metadata_by_id = {
+                    item.message_id: item
+                    for item in fetch_metadata(
+                        chat,
+                        [str(row["message_id"]) for row in batch],
+                    )
+                }
+                for row in batch:
+                    message_id = str(row["message_id"])
+                    metadata = metadata_by_id.get(message_id)
+                    if metadata is None or not metadata.unsent:
+                        continue
+                    # The historical samples show a normal row at rev=1 and
+                    # an in-place UNSENT transition at rev=2. Requiring a
+                    # revision increase prevents treating an already-unsent
+                    # row as a new cancellation event.
+                    if int(metadata.revision or 0) <= int(row["revision"] or 0):
+                        continue
+                    recall_event_id = line_event_id(chat.chat_id, message_id, "recall")
+                    if self.ledger.recall_recorded(recall_event_id):
+                        continue
+                    target_execution_ids = self.ledger.execution_ids(
+                        database_id,
+                        chat.chat_id,
+                        message_id,
+                        published_only=not self.shadow_mode,
+                    )
+                    if not target_execution_ids:
+                        continue
+
+                    if self.shadow_mode:
+                        self.ledger.record_recall(
+                            event_id=recall_event_id,
+                            database_id=database_id,
+                            chat_id=chat.chat_id,
+                            message_id=message_id,
+                            target_execution_ids=target_execution_ids,
+                            observed_revision=metadata.revision,
+                            original_message_time_ms=int(row["created_time_ms"] or 0),
+                            observation_window_started_at=previous_check,
+                            detected_at=detected_at,
+                            state="shadow",
+                        )
+                        logger.info(
+                            "shadow LINE recall source=%s message=%s revision=%s",
+                            chat.target.display_name,
+                            message_id,
+                            metadata.revision,
+                        )
+                        continue
+
+                    payload = {
+                        "event_id": recall_event_id,
+                        "type": "cancel_signal",
+                        "source": chat.target.display_name,
+                        "source_name": chat.target.name,
+                        "line_chat_id": chat.chat_id,
+                        "line_message_id": message_id,
+                        "target_line_message_id": message_id,
+                        "target_execution_ids": target_execution_ids,
+                        "target_signals": self.ledger.execution_signals(target_execution_ids),
+                        "cancel_reason": "line_unsent",
+                        "line_revision": metadata.revision,
+                        "message_time": self._local_iso(
+                            int(row["created_time_ms"] or 0) / 1000
+                        ),
+                        "recall_detected_at": self._local_iso(detected_at),
+                        "recall_observation_window_started_at": (
+                            self._local_iso(previous_check) if previous_check else ""
+                        ),
+                        "recall_time_source": "database_poll_detection",
+                    }
+                    response = self._publish(payload)
+                    self.ledger.record_recall(
+                        event_id=recall_event_id,
+                        database_id=database_id,
+                        chat_id=chat.chat_id,
+                        message_id=message_id,
+                        target_execution_ids=target_execution_ids,
+                        observed_revision=metadata.revision,
+                        original_message_time_ms=int(row["created_time_ms"] or 0),
+                        observation_window_started_at=previous_check,
+                        detected_at=detected_at,
+                        state="published",
+                        hub_response=response,
+                    )
+                    published += 1
+                    logger.info(
+                        "published LINE recall-cancel source=%s message=%s orders=%s revision=%s",
+                        chat.target.display_name,
+                        message_id,
+                        len(target_execution_ids),
+                        metadata.revision,
+                    )
+            self._recall_checked_at[chat.chat_id] = detected_at
+        return published
+
     def run_cycle(self) -> int:
         published = 0
         for message in self.source.poll():
@@ -319,6 +450,7 @@ class CentralSignalCollector:
             # If publishing raised, this row is not acknowledged and is retried.
             self.source.acknowledge(message)
             published += count
+        published += self._reconcile_recalls()
         return published
 
     def run_forever(self, interval: float = 1.0) -> None:

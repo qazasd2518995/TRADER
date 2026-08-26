@@ -481,7 +481,7 @@ class HubRequestHandler(BaseHTTPRequestHandler):
   </header>
   <main>
     <table>
-      <thead><tr><th>Seq</th><th>來源</th><th>方向</th><th>Entry</th><th>SL</th><th>TP</th><th>時間</th></tr></thead>
+      <thead><tr><th>Seq</th><th>來源</th><th>事件</th><th>方向</th><th>Entry</th><th>SL</th><th>TP</th><th>訊息／偵測時間</th></tr></thead>
       <tbody id="rows"></tbody>
     </table>
   </main>
@@ -500,9 +500,18 @@ class HubRequestHandler(BaseHTTPRequestHandler):
       status.textContent = `latest seq ${data.latest_seq}`;
       for (const item of data.signals || []) {
         after = Math.max(after, Number(item.seq || 0));
-        const sig = item.signal || {};
+        const cancelled = item.type === "cancel_signal";
+        const sig = cancelled ? ((item.target_signals || [])[0] || {}) : (item.signal || {});
+        const eventLabel = cancelled
+          ? (item.cancel_reason === "line_unsent" ? "訊息收回" : "引用撤單")
+          : "新報單";
+        const eventTime = item.recall_detected_at
+          || (item.published_at ? new Date(item.published_at * 1000).toLocaleString() : "");
+        const timeLabel = item.message_time
+          ? `${item.message_time}${cancelled && eventTime ? ` / ${eventTime}` : ""}`
+          : eventTime;
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td>${esc(item.seq)}</td><td>${esc(item.source)}</td><td><span class="pill">${esc(sig.direction)}</span></td><td>${esc(sig.entry_price ?? "market")}</td><td>${esc(sig.stop_loss)}</td><td>${esc((sig.take_profit || []).join(", "))}</td><td class="muted">${esc(new Date((item.published_at || 0) * 1000).toLocaleString())}</td>`;
+        tr.innerHTML = `<td>${esc(item.seq)}</td><td>${esc(item.source)}</td><td><span class="pill">${esc(eventLabel)}</span></td><td>${esc(sig.direction || "—")}</td><td>${esc(sig.entry_price ?? "—")}</td><td>${esc(sig.stop_loss ?? "—")}</td><td>${esc((sig.take_profit || []).join(", ") || "—")}</td><td class="muted">${esc(timeLabel)}</td>`;
         rows.prepend(tr);
       }
     }

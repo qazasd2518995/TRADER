@@ -21,10 +21,15 @@ LEGACY_SINGLE_CHAT_DEFAULT = {
     "trusted_senders": ["乘", "James"],
 }
 
-MID_FREQUENCY_DEFAULT = {
+PRE_RECALL_MID_FREQUENCY_DEFAULT = {
     **LEGACY_SINGLE_CHAT_DEFAULT,
     "parser_profile": "mid_frequency_v1",
     "max_trade_age_seconds": 300,
+}
+
+MID_FREQUENCY_DEFAULT = {
+    **PRE_RECALL_MID_FREQUENCY_DEFAULT,
+    "recall_watch_seconds": 2592000,
 }
 
 LEGACY_YUYU_HIGH_FREQUENCY_DEFAULT = {
@@ -36,10 +41,15 @@ LEGACY_YUYU_HIGH_FREQUENCY_DEFAULT = {
     "trusted_senders": ["yuyu（yu__o822"],
 }
 
-YUYU_HIGH_FREQUENCY_DEFAULT = {
+PRE_RECALL_YUYU_HIGH_FREQUENCY_DEFAULT = {
     **LEGACY_YUYU_HIGH_FREQUENCY_DEFAULT,
     "parser_profile": "yuyu_range_v1",
     "max_trade_age_seconds": 180,
+}
+
+YUYU_HIGH_FREQUENCY_DEFAULT = {
+    **PRE_RECALL_YUYU_HIGH_FREQUENCY_DEFAULT,
+    "recall_watch_seconds": 2592000,
 }
 
 DEFAULT_LINE_CHATS = [
@@ -64,6 +74,7 @@ def migrate_legacy_default_line_chats(value: Any) -> tuple[Any, bool]:
     legacy_defaults = (
         [LEGACY_SINGLE_CHAT_DEFAULT],
         [LEGACY_SINGLE_CHAT_DEFAULT, LEGACY_YUYU_HIGH_FREQUENCY_DEFAULT],
+        [PRE_RECALL_MID_FREQUENCY_DEFAULT, PRE_RECALL_YUYU_HIGH_FREQUENCY_DEFAULT],
     )
     if parsed not in legacy_defaults:
         return value, False

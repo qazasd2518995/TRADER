@@ -42,6 +42,7 @@ class LineChatTarget:
     trusted_sender_ids: tuple[str, ...] = field(default_factory=tuple)
     parser_profile: str = "strict_gold_v1"
     max_trade_age_seconds: int = 300
+    recall_watch_seconds: int = 2592000
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -69,6 +70,11 @@ class LineChatTarget:
             "max_trade_age_seconds",
             max(0, int(self.max_trade_age_seconds)),
         )
+        object.__setattr__(
+            self,
+            "recall_watch_seconds",
+            max(0, int(self.recall_watch_seconds)),
+        )
         if self.chat_kind and self.chat_kind not in {"openchat", "group"}:
             raise ValueError("LINE chat_kind must be openchat or group")
         if self.parser_profile not in SUPPORTED_PARSER_PROFILES:
@@ -89,6 +95,7 @@ class LineChatTarget:
             trusted_sender_ids=_clean_list(value.get("trusted_sender_ids")),
             parser_profile=str(value.get("parser_profile") or "strict_gold_v1"),
             max_trade_age_seconds=int(value.get("max_trade_age_seconds", 300)),
+            recall_watch_seconds=int(value.get("recall_watch_seconds", 2592000)),
         )
 
     def accepts_trade_sender(self, sender_id: str, sender_name: str = "") -> bool:
@@ -175,3 +182,7 @@ class LineMessageMetadata:
     message_type: int
     reaction_status: str
     text_sha256: str
+    created_time_ms: int = 0
+    attribute: int = 0
+    event_type: str = ""
+    unsent: bool = False

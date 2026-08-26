@@ -142,6 +142,8 @@ python -m copy_trader.line_db.windows_setup `
 [OK] ...：解密、完整性與訊息 schema 均通過
 ```
 
+`verify` 也會檢查收回同步需要的 `_rev`、`_type`、`_attribute`、`_eventInfo` 與 `_contentMetadata`；缺少任一欄位都不能宣稱支援收回。
+
 工具不列出聊天室名稱、訊息正文或 key。成功後會印出應填進 Web 控制台的完整 DB 路徑。
 
 如果所有候選都失敗，依序判斷：
@@ -186,7 +188,8 @@ python -m copy_trader.central.central_signal_center_web
     "display_name": "黃金報單🈲言群",
     "trusted_senders": ["乘", "James"],
     "parser_profile": "mid_frequency_v1",
-    "max_trade_age_seconds": 300
+    "max_trade_age_seconds": 300,
+    "recall_watch_seconds": 2592000
   },
   {
     "name": "high_freq_yuyu",
@@ -194,7 +197,8 @@ python -m copy_trader.central.central_signal_center_web
     "display_name": "焦點利潤(yuyu)",
     "trusted_senders": ["yuyu（yu__o822"],
     "parser_profile": "yuyu_range_v1",
-    "max_trade_age_seconds": 180
+    "max_trade_age_seconds": 180,
+    "recall_watch_seconds": 2592000
   }
 ]
 ```
@@ -213,7 +217,8 @@ python -m copy_trader.central.central_signal_center_web
 6. 對該報單使用 LINE 回覆功能輸入「撤單」：Hub cancel event 從總帳取得正確 execution ID。
 7. MT5 使用測試帳戶及最小手數：只刪該 pending ticket，且 4 秒確認前會員端 cursor 不前移。
 8. 讓另一張單先成交，再引用回覆「撤單」：必須保留 position，不得送 close。
-9. 重啟兩端：超過 300／180 秒的累積報單不得補下；舊撤單仍能同步已發布掛單。
+9. 發一張測試掛單後使用 LINE「收回」原訊息：一個輪詢週期內應出現 `cancel_reason=line_unsent`，且只刪該 pending ticket。
+10. 重啟兩端：超過 300／180 秒的累積報單不得補下；舊撤單與三十天監看期內的收回仍能同步已發布掛單。
 
 ## 8. 故障排查
 

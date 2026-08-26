@@ -229,6 +229,9 @@ class LineDatabaseSource:
                     "kind": chat.kind,
                     "identity_bound": bool(chat.target.chat_id or chat.target.trusted_sender_ids),
                     "trusted_sender_count": len(chat.target.trusted_sender_ids),
+                    "parser_profile": chat.target.parser_profile,
+                    "max_trade_age_seconds": chat.target.max_trade_age_seconds,
+                    "recall_watch_seconds": chat.target.recall_watch_seconds,
                     "last_rowid": int(self._chat_state(chat).get("last_rowid") or 0),
                     "latest_rowid": self.provider.latest_rowid(chat),
                 }

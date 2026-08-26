@@ -13,7 +13,12 @@ from copy_trader.line_db.factory import (
 )
 from copy_trader.line_db.identity import execution_id
 from copy_trader.line_db.ledger import LineMessageLedger
-from copy_trader.line_db.models import LineChatTarget, LineDatabaseMessage, ResolvedLineChat
+from copy_trader.line_db.models import (
+    LineChatTarget,
+    LineDatabaseMessage,
+    LineMessageMetadata,
+    ResolvedLineChat,
+)
 from copy_trader.line_db.source import LineDatabaseSource
 
 
@@ -90,6 +95,27 @@ class QueueSource:
 
     def acknowledge(self, row):
         self.acknowledged.append(row.message_id)
+
+
+class RecallProvider:
+    database_id = "unknown-database"
+
+    def __init__(self):
+        self.metadata = {}
+
+    def fetch_message_metadata(self, _chat, message_ids):
+        return [self.metadata[value] for value in message_ids if value in self.metadata]
+
+
+class RecallSource(QueueSource):
+    def __init__(self, chat, rows):
+        super().__init__(rows)
+        self.provider = RecallProvider()
+        self.chats = [chat]
+
+    def acknowledge(self, row):
+        super().acknowledge(row)
+        self.rows = [item for item in self.rows if item.message_id != row.message_id]
 
 
 class RecordingPublisher:
@@ -248,9 +274,27 @@ class LineChatFactoryTests(unittest.TestCase):
         self.assertTrue(changed)
         targets = parse_line_chat_targets(migrated)
         self.assertEqual(
-            [(target.parser_profile, target.max_trade_age_seconds) for target in targets],
-            [("mid_frequency_v1", 300), ("yuyu_range_v1", 180)],
+            [
+                (
+                    target.parser_profile,
+                    target.max_trade_age_seconds,
+                    target.recall_watch_seconds,
+                )
+                for target in targets
+            ],
+            [
+                ("mid_frequency_v1", 300, 2592000),
+                ("yuyu_range_v1", 180, 2592000),
+            ],
         )
+
+        pre_recall = [
+            {key: value for key, value in item.items() if key != "recall_watch_seconds"}
+            for item in migrated
+        ]
+        upgraded, changed = migrate_legacy_default_line_chats(pre_recall)
+        self.assertTrue(changed)
+        self.assertTrue(all("recall_watch_seconds" in item for item in upgraded))
 
 
 class CollectorTests(unittest.TestCase):
@@ -434,6 +478,63 @@ class CollectorTests(unittest.TestCase):
         )
         cancel_record = ledger.message_record("unknown-database", "chat-mid", "shadow-cancel")
         self.assertEqual(cancel_record["parse_status"], "shadow_cancel")
+
+    def test_in_place_unsent_revision_publishes_exact_ledger_cancel_once(self):
+        trade = message(self.chat, 16, "recalled-message", SIGNAL_TEXT)
+        source = RecallSource(self.chat, [trade])
+        source.provider.metadata[trade.message_id] = LineMessageMetadata(
+            message_id=trade.message_id,
+            revision=1,
+            status=1,
+            message_type=1,
+            reaction_status="",
+            text_sha256="normal",
+            created_time_ms=trade.created_time_ms,
+            attribute=0,
+            event_type="",
+            unsent=False,
+        )
+        publisher = RecordingPublisher()
+        ledger = LineMessageLedger()
+        current_time = [time.time()]
+        collector = CentralSignalCollector(
+            source,
+            publisher,
+            ledger,
+            clock=lambda: current_time[0],
+        )
+
+        self.assertEqual(collector.run_cycle(), 1)
+        source.provider.metadata[trade.message_id] = LineMessageMetadata(
+            message_id=trade.message_id,
+            revision=2,
+            status=1,
+            message_type=3,
+            reaction_status="",
+            text_sha256="recalled-empty",
+            created_time_ms=trade.created_time_ms,
+            attribute=1,
+            event_type="20",
+            unsent=True,
+        )
+        current_time[0] += 1
+
+        self.assertEqual(collector.run_cycle(), 1)
+        self.assertEqual(len(publisher.payloads), 2)
+        trade_event, recall_event = publisher.payloads
+        self.assertEqual(recall_event["type"], "cancel_signal")
+        self.assertEqual(recall_event["cancel_reason"], "line_unsent")
+        self.assertEqual(recall_event["target_line_message_id"], trade.message_id)
+        self.assertEqual(recall_event["target_execution_ids"], [trade_event["execution_id"]])
+        self.assertEqual(recall_event["target_signals"][0]["direction"], "sell")
+        self.assertEqual(recall_event["target_signals"][0]["entry_price"], 4903.0)
+        self.assertEqual(recall_event["line_revision"], 2)
+        self.assertEqual(recall_event["recall_time_source"], "database_poll_detection")
+        self.assertTrue(recall_event["recall_observation_window_started_at"])
+
+        self.assertEqual(collector.run_cycle(), 0)
+        recall_record = ledger.recall_record(recall_event["event_id"])
+        self.assertEqual(recall_record["state"], "published")
 
 
 if __name__ == "__main__":

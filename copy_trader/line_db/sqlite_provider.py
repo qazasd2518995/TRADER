@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Iterable
 
@@ -237,8 +238,8 @@ class SQLiteLineDatabaseProvider:
     ) -> list[LineMessageMetadata]:
         """Re-read revision/status fields without exposing message bodies.
 
-        This is intentionally diagnostic-only until real edit and recall
-        samples establish the meaning of LINE's private status values.
+        The strict UNSENT combination is verified for recall synchronization;
+        other edit/reaction values remain diagnostic-only.
         """
         ids = tuple(dict.fromkeys(str(value) for value in message_ids if str(value)))
         if not ids:
@@ -250,20 +251,44 @@ class SQLiteLineDatabaseProvider:
             f"""
             SELECT _id, COALESCE(_rev, 0), COALESCE(_status, 0),
                    COALESCE(_type, 0), COALESCE(_reactionStatus, 0),
-                   COALESCE(_text, '')
+                   COALESCE(_text, ''), COALESCE(_createdTime, 0),
+                   COALESCE(_attribute, 0), COALESCE(_eventInfo, ''),
+                   COALESCE(_contentMetadata, '')
               FROM _message
              WHERE _chatId=? AND _id IN ({placeholders})
             """,
             (chat.chat_id, *ids),
         )
-        return [
-            LineMessageMetadata(
-                message_id=str(row[0] or ""),
-                revision=int(row[1] or 0),
-                status=int(row[2] or 0),
-                message_type=int(row[3] or 0),
-                reaction_status=str(row[4] or ""),
-                text_sha256=hashlib.sha256(str(row[5] or "").encode("utf-8")).hexdigest(),
+        result = []
+        for row in rows:
+            try:
+                event_info = json.loads(str(row[8] or ""))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                event_info = {}
+            try:
+                content_metadata = json.loads(str(row[9] or ""))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                content_metadata = {}
+            event_type = str(event_info.get("type") or "") if isinstance(event_info, dict) else ""
+            unsent = bool(
+                isinstance(content_metadata, dict)
+                and content_metadata.get("UNSENT") is True
+                and event_type == "20"
+                and int(row[3] or 0) == 3
+                and int(row[7] or 0) == 1
             )
-            for row in rows
-        ]
+            result.append(
+                LineMessageMetadata(
+                    message_id=str(row[0] or ""),
+                    revision=int(row[1] or 0),
+                    status=int(row[2] or 0),
+                    message_type=int(row[3] or 0),
+                    reaction_status=str(row[4] or ""),
+                    text_sha256=hashlib.sha256(str(row[5] or "").encode("utf-8")).hexdigest(),
+                    created_time_ms=int(row[6] or 0),
+                    attribute=int(row[7] or 0),
+                    event_type=event_type,
+                    unsent=unsent,
+                )
+            )
+        return result

@@ -26,7 +26,8 @@ python -m copy_trader.central.central_signal_center_web
     "display_name": "黃金報單🈲言群",
     "trusted_senders": ["乘", "James"],
     "parser_profile": "mid_frequency_v1",
-    "max_trade_age_seconds": 300
+    "max_trade_age_seconds": 300,
+    "recall_watch_seconds": 2592000
   },
   {
     "name": "high_freq_yuyu",
@@ -34,7 +35,8 @@ python -m copy_trader.central.central_signal_center_web
     "display_name": "焦點利潤(yuyu)",
     "trusted_senders": ["yuyu（yu__o822"],
     "parser_profile": "yuyu_range_v1",
-    "max_trade_age_seconds": 180
+    "max_trade_age_seconds": 180,
+    "recall_watch_seconds": 2592000
   }
 ]
 ```
@@ -60,6 +62,14 @@ Shadow mode 會把結果記為 `shadow_accepted`／`shadow_cancel`，但不會�
 5. 會員端只呼叫 `cancel_pending_order(execution_id)`。
 
 寫出 pending-delete 只算 `COMMAND_SENT`。會員端會等待 MT5 掛單消失並通過 4 秒確認才前移 Hub cursor；拒絕會重試，若已成交則標成 `ALREADY_FILLED` 並保留部位。其他方向或同群其他掛單都不會被撤掉。
+
+## 訊息收回
+
+LINE 收回不是新增 row，而可能把原 row 更新為 `_rev=2`。中央端會對三十天內、總帳中仍為已發布狀態的訊息重新讀 metadata；同時看到 `UNSENT=true`、event type 20、message type 3、attribute 1 與 revision 增加時，直接用原 message ID 查總帳並發布 `cancel_reason=line_unsent`。
+
+收回後正文已不存在，但系統仍知道它原本對應的方向、進場、SL／TP、execution ID 與 Hub sequence。這些結構化資料足以精確取消掛單，不需要保存完整聊天室正文。
+
+Web／Hub 顯示的 `recall_detected_at` 是本機偵測時間。正常一秒輪詢時，收回發生時間可縮小在前後約一秒的觀察區間；中央端離線時無法知道歷史上精確按下收回的分鐘，只能在重連後立刻同步最終狀態。
 
 ## 會員端
 

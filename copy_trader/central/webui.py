@@ -64,7 +64,7 @@ CENTRAL_FIELDS = """
         <div class="field-grid">
           <label>加密資料庫路徑<input id="line_database_path" placeholder="可留空自動尋找；多個候選時請明確選擇" /></label>
           <label>安全金鑰名稱<input id="line_keychain_service" placeholder="line-db-research" /></label>
-          <label class="field-wide">聊天室設定（JSON）<textarea id="line_chats" spellcheck="false" placeholder='[{"name":"gold_signal_1","chat_name":"（乘）黃金報單🈲言群","display_name":"黃金報單🈲言群","trusted_senders":["乘","James"],"parser_profile":"mid_frequency_v1","max_trade_age_seconds":300},{"name":"high_freq_yuyu","chat_name":"🈲禁言群🈲 Focus forex 焦點利潤","display_name":"焦點利潤(yuyu)","trusted_senders":["yuyu（yu__o822"],"parser_profile":"yuyu_range_v1","max_trade_age_seconds":180}]'></textarea></label>
+          <label class="field-wide">聊天室設定（JSON）<textarea id="line_chats" spellcheck="false" placeholder='[{"name":"gold_signal_1","chat_name":"（乘）黃金報單🈲言群","display_name":"黃金報單🈲言群","trusted_senders":["乘","James"],"parser_profile":"mid_frequency_v1","max_trade_age_seconds":300,"recall_watch_seconds":2592000},{"name":"high_freq_yuyu","chat_name":"🈲禁言群🈲 Focus forex 焦點利潤","display_name":"焦點利潤(yuyu)","trusted_senders":["yuyu（yu__o822"],"parser_profile":"yuyu_range_v1","max_trade_age_seconds":180,"recall_watch_seconds":2592000}]'></textarea></label>
         </div>
         <div class="inline-actions">
           <button class="btn" id="findLineDatabase" type="button">自動尋找資料庫</button>

@@ -83,7 +83,19 @@ def command_verify(args) -> int:
                     "SELECT name FROM sqlite_master WHERE type='table'"
                 )
             }
-            required = "_message" in tables and bool({"_squareChat", "_groupChat"} & tables)
+            message_columns = {
+                str(row[1]) for row in connection.execute("PRAGMA table_info('_message')")
+            } if "_message" in tables else set()
+            required_message_columns = {
+                "_id", "_chatId", "_createdTime", "_from", "_text",
+                "_contentType", "_messageRelationType", "_relatedMessageId",
+                "_rev", "_status", "_type", "_attribute", "_eventInfo",
+                "_contentMetadata", "_reactionStatus",
+            }
+            required = (
+                required_message_columns <= message_columns
+                and bool({"_squareChat", "_groupChat"} & tables)
+            )
             if not required:
                 print(f"[略過] {candidate.path}：可開啟，但不是支援的 LINE 訊息 schema")
                 continue

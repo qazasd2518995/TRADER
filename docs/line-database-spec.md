@@ -1,6 +1,6 @@
 # LINE 本機資料庫串接規格
 
-版本：2.0
+版本：2.1
 
 用途：TRADER 中央訊號機唯讀擷取目前 Windows／macOS 使用者已登入的 LINE Desktop 聊天資料。
 
@@ -63,7 +63,7 @@ mt5_client_agent.py + trade_manager/manager.py
 - `resolve_sender_ids(chat, names)`：第一次把受信任顯示名稱解析成唯一 sender ID；同名或找不到皆拒絕綁定。
 - `latest_rowid(chat)`：取得聊天室目前 high-water mark。
 - `fetch_after(chat, rowid, limit)`：只讀取 `rowid > cursor`，同聊天室依 rowid 遞增。
-- `fetch_message_metadata(chat, ids)`：重新讀取 revision/status/reaction metadata 並只回正文雜湊；目前僅供診斷。
+- `fetch_message_metadata(chat, ids)`：重新讀取 revision/status/event/content metadata 並只回正文雜湊；UNSENT 用於精確收回同步，reaction／一般 edit 仍只供診斷。
 - `close()`：釋放連線。
 
 目前 codec profile：
@@ -96,6 +96,9 @@ _message
   _rev
   _status
   _type
+  _attribute
+  _eventInfo
+  _contentMetadata
   _reactionStatus
 
 _squareChat 或 _groupChat
@@ -153,7 +156,32 @@ _squareMember 或 _contact
 
 Shadow mode 使用相同 DB、身分綁定、parser、幾何驗證與總帳，但 trade/cancel 都不發布 Hub。它不是另一套模擬 parser；正式接 MT5 前應用它比對一至兩週。
 
-## 8. 引用撤單規格
+### 收回同步
+
+2026-08-27 在目前兩個真實聊天室的唯讀驗證結果：
+
+- 中頻 70 筆、高頻 152 筆收回樣本。
+- 222 筆全部同時符合 `_contentMetadata.UNSENT=true`、`_eventInfo.type=20`、`_type=3`、`_attribute=1`。
+- 其中 116 筆為 `_rev=2`，證明 LINE 會原地更新舊 row，不能只依 `rowid > cursor`。
+- 收回後原 message ID 仍存在，可直接查總帳 execution IDs；正文則已清除。
+
+collector 只重新檢查 `recall_watch_seconds` 期間內、曾發布成訂單的 message IDs，預設三十天。只有下列條件全部成立才發布 `cancel_signal(cancel_reason=line_unsent)`：
+
+1. metadata 同時為 `UNSENT=true`、event type 20、message type 3、attribute 1。
+2. 當前 revision 大於總帳保存的發布時 revision。
+3. 總帳仍有該 message ID 的已發布 execution ID。
+4. 同一 recall event ID 尚未處理。
+
+資料庫沒有在已驗證欄位中保存可靠的「按下收回」時間：收回樣本的 `_createdTime` 與 `_deliveredTime` 都仍是原訊息時間且完全相同。系統因此分開保存：
+
+- `message_time`：原訊息時間。
+- `recall_detected_at`：collector 實際看到 UNSENT 的時間。
+- `recall_observation_window_started_at`：上一次成功檢查時間；在線時可將收回時間限制在約一個輪詢週期內。
+- `recall_time_source=database_poll_detection`：明確表示這不是 LINE 官方精確收回時間。
+
+不得把 `_chat._lastUpdatedTime` 或目前 DB 檔案修改時間冒充單一訊息的收回時間。離線期間發生的收回只能確定在重新連線時已發生。
+
+## 8. 引用／收回撤單規格
 
 只有同時符合下列條件才發布 `cancel_signal`：
 
@@ -173,6 +201,7 @@ Shadow mode 使用相同 DB、身分綁定、parser、幾何驗證與總帳，�
 - 寫出 delete 後保持 `COMMAND_SENT`，不能前移 Hub cursor。
 - MT5 掛單連續消失 4 秒後才成為 `MT5_CONFIRMED`；EA／券商拒絕則進 `FAILED_RETRY`。
 - 不可回退成「同方向」、「最近一單」或「最接近價格」。
+- 收回與文字回覆共用相同 MT5 狀態機；若已成交，結果為 `ALREADY_FILLED`，不得平倉。
 
 ## 9. 安全要求
 

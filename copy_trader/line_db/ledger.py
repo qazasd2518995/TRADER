@@ -94,6 +94,20 @@ class LineMessageLedger:
                     published_at REAL NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS line_recalls (
+                    event_id TEXT PRIMARY KEY,
+                    database_id TEXT NOT NULL,
+                    chat_id TEXT NOT NULL,
+                    message_id TEXT NOT NULL,
+                    target_execution_ids_json TEXT NOT NULL,
+                    observed_revision INTEGER NOT NULL,
+                    original_message_time_ms INTEGER NOT NULL,
+                    observation_window_started_at REAL,
+                    detected_at REAL NOT NULL,
+                    state TEXT NOT NULL,
+                    hub_sequence INTEGER
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_line_execution_message
                     ON line_executions(database_id, chat_id, message_id, publish_state);
                 """
@@ -230,6 +244,29 @@ class LineMessageLedger:
             published_only=True,
         )
 
+    def execution_signals(self, execution_ids: Iterable[str]) -> list[dict[str, Any]]:
+        ids = list(dict.fromkeys(str(value) for value in execution_ids if str(value)))
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        with self._lock:
+            rows = self._connection.execute(
+                f"""
+                SELECT execution_id, signal_json
+                  FROM line_executions
+                 WHERE execution_id IN ({placeholders})
+                """,
+                ids,
+            ).fetchall()
+        by_id = {}
+        for row in rows:
+            try:
+                value = json.loads(str(row[1] or "{}"))
+            except json.JSONDecodeError:
+                value = {}
+            by_id[str(row[0])] = value if isinstance(value, dict) else {}
+        return [by_id[value] for value in ids if value in by_id]
+
     def record_cancel_published(
         self,
         message: LineDatabaseMessage,
@@ -239,6 +276,7 @@ class LineMessageLedger:
         target_execution_ids: Iterable[str],
         hub_response: dict[str, Any],
     ) -> None:
+        execution_ids = list(target_execution_ids)
         with self._lock, self._connection:
             self._connection.execute(
                 """
@@ -257,11 +295,140 @@ class LineMessageLedger:
                     message.chat.chat_id,
                     message.message_id,
                     target_message_id,
-                    _json(list(target_execution_ids)),
+                    _json(execution_ids),
                     _hub_sequence(hub_response),
                     time.time(),
                 ),
             )
+            self._connection.executemany(
+                """
+                UPDATE line_executions
+                   SET publish_state='cancel_requested'
+                 WHERE execution_id=? AND publish_state='published'
+                """,
+                ((execution_id,) for execution_id in execution_ids),
+            )
+
+    def watched_messages(
+        self,
+        database_id: str,
+        chat_id: str,
+        *,
+        created_after_ms: int,
+        include_shadow: bool = False,
+        limit: int = 5000,
+    ) -> list[dict[str, Any]]:
+        shadow_clause = (
+            "OR (e.publish_state='parsed' AND m.parse_status='shadow_accepted')"
+            if include_shadow
+            else ""
+        )
+        with self._lock:
+            rows = self._connection.execute(
+                f"""
+                SELECT m.message_id, m.revision, m.created_time_ms
+                  FROM line_messages AS m
+                  JOIN line_executions AS e
+                    ON e.database_id=m.database_id
+                   AND e.chat_id=m.chat_id
+                   AND e.message_id=m.message_id
+                 WHERE m.database_id=? AND m.chat_id=?
+                   AND m.created_time_ms>=?
+                   AND (e.publish_state='published' {shadow_clause})
+                 GROUP BY m.message_id, m.revision, m.created_time_ms
+                 ORDER BY m.created_time_ms DESC
+                 LIMIT ?
+                """,
+                (
+                    database_id or "unknown-database",
+                    chat_id,
+                    max(0, int(created_after_ms)),
+                    max(1, min(int(limit), 10000)),
+                ),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def recall_recorded(self, event_id: str) -> bool:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT 1 FROM line_recalls WHERE event_id=?",
+                (event_id,),
+            ).fetchone()
+        return row is not None
+
+    def record_recall(
+        self,
+        *,
+        event_id: str,
+        database_id: str,
+        chat_id: str,
+        message_id: str,
+        target_execution_ids: Iterable[str],
+        observed_revision: int,
+        original_message_time_ms: int,
+        observation_window_started_at: float | None,
+        detected_at: float,
+        state: str,
+        hub_response: dict[str, Any] | None = None,
+    ) -> None:
+        execution_ids = list(target_execution_ids)
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO line_recalls(
+                    event_id, database_id, chat_id, message_id,
+                    target_execution_ids_json, observed_revision,
+                    original_message_time_ms, observation_window_started_at,
+                    detected_at, state, hub_sequence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_id) DO UPDATE SET
+                    observed_revision=excluded.observed_revision,
+                    detected_at=excluded.detected_at,
+                    state=excluded.state,
+                    hub_sequence=excluded.hub_sequence
+                """,
+                (
+                    event_id,
+                    database_id or "unknown-database",
+                    chat_id,
+                    message_id,
+                    _json(execution_ids),
+                    int(observed_revision or 0),
+                    int(original_message_time_ms or 0),
+                    observation_window_started_at,
+                    float(detected_at),
+                    state,
+                    _hub_sequence(hub_response or {}),
+                ),
+            )
+            final_state = "recalled_shadow" if state == "shadow" else "recall_cancel_requested"
+            self._connection.executemany(
+                "UPDATE line_executions SET publish_state=? WHERE execution_id=?",
+                ((final_state, execution_id) for execution_id in execution_ids),
+            )
+            self._connection.execute(
+                """
+                UPDATE line_messages
+                   SET revision=?, parse_status=?, updated_at=?
+                 WHERE database_id=? AND chat_id=? AND message_id=?
+                """,
+                (
+                    int(observed_revision or 0),
+                    "recalled_shadow" if state == "shadow" else "recalled_cancel_published",
+                    time.time(),
+                    database_id or "unknown-database",
+                    chat_id,
+                    message_id,
+                ),
+            )
+
+    def recall_record(self, event_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM line_recalls WHERE event_id=?",
+                (event_id,),
+            ).fetchone()
+        return dict(row) if row else None
 
     def message_record(self, database_id: str, chat_id: str, message_id: str) -> dict[str, Any] | None:
         """Small read-only helper used by diagnostics and tests."""
