@@ -1081,6 +1081,8 @@ class TradeManager:
                 self._check_trailing_sl()
                 # 先偵測成交(上面)，再對帳消失的掛單，避免把「剛成交」誤判成「被刪除」
                 self._check_vanished_orders()
+                # 掛單掛太久還沒進場就自動撤掉
+                self._check_unfilled_timeout()
 
                 # Periodically clean up finished orders to prevent memory growth
                 now = time.time()
@@ -1384,6 +1386,47 @@ class TradeManager:
                 f"signal_id={signal_id} | ticket={order.ticket} | 原因=在 MT5 端被刪除或撤銷 "
                 f"| 信號={order.signal} | 來源={order.source_window}"
             )
+
+    # 掛單掛了這麼久還沒成交就自動撤掉：進場價通常已經跑遠，這張限價單多半失去意義。
+    # 從「掛單實際掛出的時間」起算——認領既有單時 created_at 用券商 time_setup(已扣
+    # gmt_offset 對上 time.time())，所以會員端重啟後這個 4 小時仍然是連續的、不會重置。
+    UNFILLED_PENDING_TIMEOUT_SECONDS = 4 * 3600
+
+    def _check_unfilled_timeout(self):
+        """掛單逾時未成交就自動撤單——等同一次 LINE 撤單，只是由時間觸發。
+
+        只碰未成交的 PENDING/SENT 單；已成交部位由 cancel_pending_order 內部
+        擋掉(標 ALREADY_FILLED、永不送平倉)，就算 4 小時剛到又同時成交也不會誤平。
+        """
+        if self.UNFILLED_PENDING_TIMEOUT_SECONDS <= 0:
+            return
+        now = time.time()
+        due = []
+        with self._lock:
+            for signal_id, order in self.orders.items():
+                if order.status not in (OrderStatus.PENDING, OrderStatus.SENT):
+                    continue
+                age = now - order.created_at
+                if age < self.UNFILLED_PENDING_TIMEOUT_SECONDS:
+                    continue
+                # 只在「第一次」觸發時記 log/journal，之後每輪重試不再洗版
+                first = order.cancel_state is CancelState.NONE and not order.cancel_requested
+                due.append((signal_id, order, age, first))
+
+        for signal_id, order, age, first in due:
+            if first:
+                logger.info(
+                    "掛單逾時未成交（已掛 %.1f 小時 ≥ %.1f 小時）自動撤單：%s ticket=%s",
+                    age / 3600, self.UNFILLED_PENDING_TIMEOUT_SECONDS / 3600,
+                    signal_id, order.ticket,
+                )
+                self._write_journal(
+                    "ORDER_TIMEOUT_CANCEL",
+                    f"signal_id={signal_id} | ticket={order.ticket} | 原因=掛單逾時未成交自動撤單 "
+                    f"| 已掛 {age / 3600:.1f} 小時 | 信號={order.signal} | 來源={order.source_window}"
+                )
+            # cancel_pending_order 自帶節流與重試；ticket 還沒出現時回 False，下一輪會再試。
+            self.cancel_pending_order(signal_id, reason="unfilled_timeout_4h")
 
     # EA 每執行一筆指令就往 trade_results.txt 追加一行：
     #   2026.08.03 14:57 | sell | FAIL | 1.00 | XAUUSD | copy_1785758261661 | retcode:10016 | Invalid stops
