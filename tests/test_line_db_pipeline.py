@@ -397,6 +397,42 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(event["signal"]["stop_loss"], 4076.0)
         self.assertEqual(event["signal"]["take_profit"], [4065.0, 4060.0, 4055.0])
 
+    def test_yuyu_malformed_take_profit_is_repaired_and_published(self):
+        # 2026-08-27 17:56/18:15 真實掉單:第三個止盈 4595 被打成 460。
+        # 系統照 yuyu 固定間距把它外推補回 4595,整條管線仍要正常發布這一單。
+        malformed = "黃金 4580-4581多\nTp 4585 4590 460\nSl 4574\n個人建議不構成投資計畫🫶"
+        target = LineChatTarget(
+            "high_freq_yuyu",
+            "🈲禁言群🈲 Focus forex 焦點利潤",
+            "焦點利潤(yuyu)",
+            ("yuyu（yu__o822",),
+            parser_profile="yuyu_range_v1",
+        )
+        chat = ResolvedLineChat(target, "focus-chat-mid", "openchat")
+        trade = message(
+            chat,
+            1,
+            "yuyu-typo-message",
+            malformed,
+            sender_id="yuyu-sender-id",
+            sender_name="yuyu（yu__o822",
+        )
+        source = QueueSource([trade])
+        publisher = RecordingPublisher()
+        ledger = LineMessageLedger()
+
+        self.assertEqual(CentralSignalCollector(source, publisher, ledger).run_cycle(), 1)
+        self.assertEqual(len(publisher.payloads), 1)
+        signal = publisher.payloads[0]["signal"]
+        self.assertEqual(signal["direction"], "buy")
+        self.assertEqual(signal["entry_price"], 4580.0)
+        self.assertEqual(signal["stop_loss"], 4574.0)
+        self.assertEqual(signal["take_profit"], [4585.0, 4590.0, 4595.0])
+        # 帳上留可稽核的修復狀態,方便事後對照原文,不做靜默改動。
+        recorded = ledger.message_record("unknown-database", "focus-chat-mid", "yuyu-typo-message")
+        self.assertIsNotNone(recorded)
+        self.assertEqual(recorded["parse_status"], "accepted_tp_repaired")
+
     def test_ocr_aliases_and_multiple_orders_are_not_auto_executed(self):
         ocr = SIGNAL_TEXT.replace("止損", "止隕").replace("止盈", "止嬴")
         multiple = SIGNAL_TEXT + "\nBuy：4920\n止損：4900\n止盈：4940"

@@ -257,10 +257,21 @@ class CentralSignalCollector:
             target.max_trade_age_seconds > 0
             and age_seconds > target.max_trade_age_seconds
         )
+        repaired = result.reason == "tp_repaired_from_spacing"
+        if repaired:
+            # 訊號原本幾何不成立(某個止盈打錯位數)，靠固定間距外推補回來後才發布。
+            # 記成可辨識的狀態並留 warning，方便事後對照原文稽核，不做靜默修改。
+            logger.warning(
+                "repaired malformed TP source=%s message=%s -> %s",
+                target.display_name,
+                message.message_id,
+                signal,
+            )
+        base_status = "accepted_tp_repaired" if repaired else result.status
         parse_status = (
             "rejected_stale_backlog"
             if stale
-            else "shadow_accepted" if self.shadow_mode else result.status
+            else "shadow_accepted" if self.shadow_mode else base_status
         )
         self.ledger.record_message(
             message,
