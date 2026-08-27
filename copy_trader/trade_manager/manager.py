@@ -8,7 +8,7 @@ import re
 import time
 import threading
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any, Optional, List, Dict, Tuple
 from pathlib import Path
@@ -347,7 +347,7 @@ class TradeManager:
                 current.cancel_sent_at = time.time()
                 current.cancel_attempts += 1
                 current.cancel_error = ""
-        logger.info("LINE 引用撤單已送出 pending-delete：%s ticket=%s", signal_id, ticket)
+        logger.info("精確撤單已送出 pending-delete：%s ticket=%s", signal_id, ticket)
         self._write_journal(
             "LINE_REPLY_CANCEL_SENT",
             f"signal_id={signal_id} | ticket={ticket} | 原因={reason}",
@@ -500,6 +500,74 @@ class TradeManager:
         with self._lock:
             return list(self.orders.values())
 
+    def source_risk_snapshot(self, source_window: str) -> Dict[str, Any]:
+        """Return live exposure and today's realised result for one source.
+
+        ``closed_trades.json`` may contain several partial-close rows for one
+        position and repeats the position's net profit on each row.  Count each
+        position once; summing raw rows would multiply both P/L and trade count.
+        The day boundary follows the broker's GMT offset because that is the
+        clock encoded in the EA's timestamps.
+        """
+        active_statuses = {
+            OrderStatus.PENDING,
+            OrderStatus.SENT,
+            OrderStatus.FILLED,
+            OrderStatus.PARTIAL_CLOSED,
+        }
+        with self._lock:
+            active = sum(
+                1 for order in self.orders.values()
+                if order.source_window == source_window and order.status in active_statuses
+            )
+            sources = dict(self._signal_sources)
+
+        account = self._read_json_file(self.mt5_files_dir / "account_info.json") or {}
+        try:
+            broker_offset = int(account.get("gmt_offset") or 0)
+        except (TypeError, ValueError):
+            broker_offset = 0
+        broker_now = time.time() + broker_offset
+        broker_day = datetime.fromtimestamp(broker_now, timezone.utc).strftime("%Y-%m-%d")
+
+        closed = self._read_json_file(self.mt5_files_dir / "closed_trades.json") or {}
+        positions: Dict[str, float] = {}
+        for raw in (closed.get("trades") or []):
+            if not isinstance(raw, dict):
+                continue
+            try:
+                closed_at = float(raw.get("close_timestamp") or 0)
+            except (TypeError, ValueError):
+                continue
+            if (
+                not closed_at
+                or datetime.fromtimestamp(closed_at, timezone.utc).strftime("%Y-%m-%d") != broker_day
+            ):
+                continue
+            comment = str(raw.get("comment") or "")
+            signal_id = comment[5:] if comment.startswith("copy_") else comment
+            position_id = str(raw.get("position_id") or raw.get("ticket") or signal_id)
+            source = (
+                sources.get(signal_id)
+                or sources.get(position_id)
+                or sources.get(str(raw.get("ticket") or ""))
+                or ""
+            )
+            if source != source_window or position_id in positions:
+                continue
+            try:
+                positions[position_id] = float(raw.get("profit") or 0.0)
+            except (TypeError, ValueError):
+                positions[position_id] = 0.0
+
+        return {
+            "source": source_window,
+            "active_orders": active,
+            "daily_trades": len(positions),
+            "daily_profit": round(sum(positions.values()), 2),
+            "broker_day": broker_day,
+        }
+
     def profile_for(self, source_window: str = "") -> dict:
         """把某個來源的下單設定解析成完整的一份（沒設定的欄位回退全域值）。
 
@@ -538,6 +606,11 @@ class TradeManager:
             "lots": [float(x) for x in lots if float(x) > 0]
                     or self.martingale_source_lots.get(source_window, [])
                     or [],
+            # 0 代表不限。這三個限制由會員端在真正寫 MT5 指令前執行；
+            # 尤其是自動產生的第三來源，不能只靠中央端節流。
+            "max_active_orders": int(_num("max_active_orders", 0)),
+            "max_daily_trades": int(_num("max_daily_trades", 0)),
+            "max_daily_loss": _num("max_daily_loss", 0.0),
         }
 
     def is_source_enabled(self, source_window: str = "") -> bool:
@@ -850,6 +923,10 @@ class TradeManager:
             "comment": f"copy_{signal_id}",
             "trade_id": signal_id
         }
+
+        pending_order_type = str(getattr(signal, "pending_order_type", "") or "").strip().lower()
+        if pending_order_type:
+            command["pending_order_type"] = pending_order_type
 
         # Only include SL/TP if they have values (EA can't handle null)
         if signal.stop_loss is not None:

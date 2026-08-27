@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 # sources 用的是訊號來源的「顯示名稱」, 必須跟中央機發布時的 source 欄位一致。
 HIGH_FREQ = "焦點利潤(yuyu)"      # 對外稱「高頻交易」
 MID_FREQ = "黃金報單🈲言群"        # 對外稱「中頻交易」
+ULTRA_HIGH_FREQ = "超高頻交易"     # 市場資料模型；不是 LINE 聊天室
 
 TIERS: Dict[str, Dict[str, Any]] = {
     "trial": {
@@ -67,7 +68,7 @@ TIERS: Dict[str, Dict[str, Any]] = {
     },
     "flagship": {
         "label": "旗艦版",
-        "sources": [MID_FREQ, HIGH_FREQ],
+        "sources": [MID_FREQ, HIGH_FREQ, ULTRA_HIGH_FREQ],
         "max_lot": None,
         "martingale": True,
         "partial_close": True,

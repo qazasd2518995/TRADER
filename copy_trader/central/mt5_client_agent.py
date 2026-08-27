@@ -98,6 +98,7 @@ def _parsed_signal_from_payload(payload: Dict) -> ParsedSignal:
         direction=str(payload.get("direction") or ""),
         entry_price=payload.get("entry_price"),
         is_market_order=bool(payload.get("is_market_order")),
+        pending_order_type=str(payload.get("pending_order_type") or ""),
         stop_loss=payload.get("stop_loss"),
         take_profit=list(payload.get("take_profit") or []),
         lot_size=payload.get("lot_size"),
@@ -220,6 +221,59 @@ class MT5ClientAgent:
         self.state["updated_at"] = time.time()
         _save_state(self.state_file, self.state)
 
+    def _source_accept_count_today(self, source: str) -> int:
+        day = time.strftime("%Y-%m-%d", time.gmtime())
+        all_counts = self.state.setdefault("source_daily_accepts", {})
+        bucket = all_counts.setdefault(day, {})
+        for old_day in list(all_counts):
+            if old_day != day:
+                all_counts.pop(old_day, None)
+        try:
+            value = bucket.get(source) or []
+            return len(value) if isinstance(value, list) else int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    def _record_source_accept(self, source: str, signal_id: str) -> None:
+        day = time.strftime("%Y-%m-%d", time.gmtime())
+        all_counts = self.state.setdefault("source_daily_accepts", {})
+        bucket = all_counts.setdefault(day, {})
+        value = bucket.get(source)
+        if not isinstance(value, list):
+            try:
+                value = [f"legacy_{index}" for index in range(int(value or 0))]
+            except (TypeError, ValueError):
+                value = []
+        if signal_id not in value:
+            value.append(signal_id)
+        bucket[source] = value[-200:]
+        _save_state(self.state_file, self.state)
+
+    def _source_risk_allows(self, source: str) -> tuple[bool, str]:
+        # Lightweight test/legacy managers do not expose the new profile API.
+        # Their previous behaviour remains unlimited.
+        if not hasattr(self.trade_manager, "profile_for"):
+            return True, ""
+        profile = self.trade_manager.profile_for(source)
+        max_active = int(profile.get("max_active_orders") or 0)
+        max_daily = int(profile.get("max_daily_trades") or 0)
+        max_loss = float(profile.get("max_daily_loss") or 0.0)
+        if not any((max_active, max_daily, max_loss)):
+            return True, ""
+
+        snapshot = self.trade_manager.source_risk_snapshot(source)
+        if max_active and int(snapshot.get("active_orders") or 0) >= max_active:
+            return False, f"同來源活動中訂單已達 {max_active} 張"
+
+        accepted = self._source_accept_count_today(source)
+        if max_daily and max(accepted, int(snapshot.get("daily_trades") or 0)) >= max_daily:
+            return False, f"同來源今日實單上限 {max_daily} 張"
+
+        daily_profit = float(snapshot.get("daily_profit") or 0.0)
+        if max_loss and daily_profit <= -max_loss:
+            return False, f"同來源今日已虧損 {abs(daily_profit):.2f}，達停損額 {max_loss:.2f}"
+        return True, ""
+
     def run_cycle(self) -> int:
         count = 0
         records = self.hub.signals_after(self.last_seq)
@@ -242,11 +296,11 @@ class MT5ClientAgent:
                             reason=f"{cancel_reason}:{item.get('line_message_id') or seq}",
                         )
                         if not ready:
-                            logger.info("LINE 撤單等待 MT5 確認，保留 Hub seq=%s 下輪重試", seq)
+                            logger.info("精確撤單等待 MT5 確認，保留 Hub seq=%s 下輪重試", seq)
                             return count
                         handled += 1
                     logger.info(
-                        "收到 LINE 撤單 seq=%s reason=%s target_message=%s → 已處理 %s/%s 個指定 ID",
+                        "收到精確撤單 seq=%s reason=%s target_message=%s → 已處理 %s/%s 個指定 ID",
                         seq,
                         cancel_reason,
                         item.get("target_line_message_id") or "?",
@@ -283,6 +337,36 @@ class MT5ClientAgent:
                 logger.info("來源「%s」已停用，略過 seq=%s", source, seq)
                 self._mark_seq(seq)
                 continue
+            # 模型來源明確宣告 limit，不能因網路延遲或券商報價差讓它變成
+            # stop 單。過期或本地價格已穿越時直接略過；EA 端仍有第二道防線。
+            if signal.pending_order_type == "limit":
+                try:
+                    expires_at = float(item.get("expires_at") or 0)
+                except (TypeError, ValueError):
+                    expires_at = 0.0
+                if expires_at and time.time() >= expires_at:
+                    logger.info("限價訊號已過期，略過 seq=%s source=%s", seq, source)
+                    self._mark_seq(seq)
+                    continue
+                local_price = self.trade_manager._get_current_price()
+                crossed = (
+                    local_price is None
+                    or (signal.direction == "buy" and float(signal.entry_price) >= local_price)
+                    or (signal.direction == "sell" and float(signal.entry_price) <= local_price)
+                )
+                if crossed:
+                    logger.info(
+                        "限價訊號在本地券商已穿價或無即時價，略過 seq=%s source=%s entry=%s local=%s",
+                        seq, source, signal.entry_price, local_price,
+                    )
+                    self._mark_seq(seq)
+                    continue
+
+            allowed, risk_reason = self._source_risk_allows(source)
+            if not allowed:
+                logger.warning("來源「%s」風控阻擋 seq=%s：%s", source, seq, risk_reason)
+                self._mark_seq(seq)
+                continue
             signal_id = str(item.get("execution_id") or f"copy_hub_{seq}")
             signal_id = self.trade_manager.submit_signal(
                 signal,
@@ -294,6 +378,7 @@ class MT5ClientAgent:
             if order is not None and order.status == OrderStatus.FAILED:
                 raise RuntimeError(f"failed to write MT5 command for hub seq={seq}")
             logger.info("submitted hub seq=%s as local signal %s: %s", seq, signal_id, signal)
+            self._record_source_accept(source, signal_id)
             self._mark_seq(seq)
             count += 1
         # A member may be unable to see every source in the raw Hub page. Move

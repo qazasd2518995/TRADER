@@ -21,6 +21,9 @@ class ParsedSignal:
     direction: str = ""
     entry_price: Optional[float] = None
     is_market_order: bool = False
+    # 空字串沿用 EA 依價格判斷的舊行為；"limit" 明確禁止被轉成 stop 單。
+    # 第三來源只做回踩掛單，因此必須把訂單語意一路帶到 MT5。
+    pending_order_type: str = ""
     stop_loss: Optional[float] = None
     take_profit: List[float] = field(default_factory=list)
     lot_size: Optional[float] = None

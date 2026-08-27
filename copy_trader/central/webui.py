@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 
-from copy_trader.central.membership import HIGH_FREQ, MID_FREQ, MIN_PASSWORD_LENGTH
+from copy_trader.central.membership import HIGH_FREQ, MID_FREQ, MIN_PASSWORD_LENGTH, ULTRA_HIGH_FREQ
 from typing import Any
 
 CLIENT_FIELDS = """
@@ -47,7 +47,7 @@ CLIENT_FIELDS = """
         <h3>訊號來源設定</h3>
         <div id="sourceSettings"></div>
         <input type="hidden" id="source_profiles" />
-        <p class="hint">每個 LINE 群組可以各自設定。選「均注」= 每筆固定手數、不進關卡；選「馬丁」= 逐關加碼，各群層級獨立計算，互不影響。沒有列出來的來源會套用上方的全域設定。</p>
+        <p class="hint">每個來源可以各自設定。選「均注」= 每筆固定手數、不進關卡；選「馬丁」= 逐關加碼，各來源層級獨立計算，互不影響。0 代表該項風控不限；超高頻交易預設停用、0.01 均注、同時一張、每日 12 張、每日虧損 25。</p>
       </div>
       <div class="field-group">
         <h3>其他策略（EA 自動下單）</h3>
@@ -72,6 +72,20 @@ CENTRAL_FIELDS = """
           <span class="hint" id="lineDatabaseResult"></span>
         </div>
         <p class="hint">金鑰不會存進設定或送到瀏覽器。macOS 從 Keychain 讀取；Windows 從目前使用者的 Credential Manager 讀取。第一次設定請依 docs/windows-line-database.md 操作。</p>
+      </div>
+      <div class="field-group">
+        <h3>第三來源：超高頻交易</h3>
+        <div class="field-grid">
+          <label>中央 MT5 Files 路徑<input id="market_mt5_files_dir" placeholder="可留空自動偵測；必須掛新版 MT5 bridge" /></label>
+          <label class="switch">啟用實單訊號<input id="ultra_strategy_enabled" type="checkbox" /></label>
+          <label>每日最多訊號<input id="ultra_max_signals_per_day" type="number" min="1" max="96" /></label>
+          <label>訊號冷卻（秒）<input id="ultra_cooldown_seconds" type="number" min="60" /></label>
+          <label>未成交撤單（秒）<input id="ultra_pending_expiry_seconds" type="number" min="120" /></label>
+          <label>最大 spread（美元）<input id="ultra_max_spread" type="number" step="0.01" min="0.05" /></label>
+          <label>最小 H1 ATR<input id="ultra_min_h1_atr" type="number" step="0.1" min="0.1" /></label>
+          <label>最大 H1 ATR<input id="ultra_max_h1_atr" type="number" step="0.1" min="1" /></label>
+        </div>
+        <p class="hint">這是獨立的市場資料模型，不讀 LINE、不使用乘或 yuyu 的名稱／訊息 ID。開啟後發布的都是可實際掛單事件，不是 shadow；會員端仍需在「訊號來源設定」親自開啟「超高頻交易」。</p>
       </div>
       <div class="field-group">
         <h3>訊號發布</h3>
@@ -894,6 +908,7 @@ main { max-width: 1560px; margin: 0 auto; padding: 22px 28px 72px; }
 .flat-note p { margin: 4px 0 0; font-size: 12.5px; color: var(--muted); max-width: 30ch; }
 
 /* 每群下單設定表 */
+#sourceSettings { overflow-x: auto; }
 .src-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .src-table th {
   text-align: left; font-size: 11px; font-weight: 600; letter-spacing: .06em;
@@ -1931,6 +1946,7 @@ const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) => (
 const SOURCE_ALIAS = {
   __HIGH_FREQ_SOURCE_JSON__: "高頻交易",
   __MID_FREQ_SOURCE_JSON__: "中頻交易",
+  __ULTRA_HIGH_FREQ_SOURCE_JSON__: "超高頻交易",
 };
 const srcName = (s) => SOURCE_ALIAS[s] || (s || "未標記來源");
 
@@ -1942,7 +1958,10 @@ const MID_SOURCE  = Object.keys(SOURCE_ALIAS).find((k) => SOURCE_ALIAS[k] === "�
 
 function ids() {
   return ROLE === "central"
-    ? ["line_database_path", "line_keychain_service", "line_chats", "hub_url", "host", "port", "token", "interval", "shadow_mode", "cloudflare_tunnel", "cloudflared_path", "auto_start"]
+    ? ["line_database_path", "line_keychain_service", "line_chats", "market_mt5_files_dir",
+       "ultra_strategy_enabled", "ultra_max_signals_per_day", "ultra_cooldown_seconds",
+       "ultra_pending_expiry_seconds", "ultra_max_spread", "ultra_min_h1_atr", "ultra_max_h1_atr",
+       "hub_url", "host", "port", "token", "interval", "shadow_mode", "cloudflare_tunnel", "cloudflared_path", "auto_start"]
     // 會員端刻意不含 hub_url / token：那兩個不該讓會員看到，也不該由前端回送
     // （token 是管理權限的通行證，送到瀏覽器等於直接把付費牆拆了）
     : ["mt5_files_dir", "interval", "auto_start", "default_lot_size", "use_martingale",
@@ -2793,6 +2812,7 @@ function renderSourceSettings(rows) {
   box.innerHTML =
     '<table class="src-table"><thead><tr>' +
       "<th>訊號來源</th><th>跟單</th><th>模式</th><th>基礎手數</th><th>馬丁倍數</th><th>關卡數</th><th>多 TP 處理</th>" +
+      "<th>同時單數</th><th>每日單數</th><th>每日虧損額</th>" +
     "</tr></thead><tbody>" +
     rows.map((r) => '' +
       '<tr data-source-row="' + esc(r.source) + '">' +
@@ -2811,6 +2831,9 @@ function renderSourceSettings(rows) {
           '<option value="partial"' + (r.tp_mode === "partial" ? " selected" : "") + ">分批平倉</option>" +
           '<option value="breakeven"' + (r.tp_mode === "breakeven" ? " selected" : "") + ">保本移損</option>" +
         "</select></td>" +
+        '<td><input type="number" class="sp-active" step="1" min="0" value="' + r.max_active_orders + '" title="0 = 不限" /></td>' +
+        '<td><input type="number" class="sp-daily" step="1" min="0" value="' + r.max_daily_trades + '" title="0 = 不限" /></td>' +
+        '<td><input type="number" class="sp-loss" step="1" min="0" value="' + r.max_daily_loss + '" title="帳戶幣別；0 = 不限" /></td>' +
       "</tr>").join("") +
     "</tbody></table>" +
     '<div class="src-add">' +
@@ -2847,7 +2870,10 @@ function addSourceRow() {
     '<td><input type="number" class="sp-mult" step="0.1" min="1" value="2" /></td>' +
     '<td><input type="number" class="sp-max" step="1" min="1" max="12" value="5" /></td>' +
     '<td><select class="sp-tpmode"><option value="partial">分批平倉</option>' +
-      '<option value="breakeven" selected>保本移損</option></select></td>';
+      '<option value="breakeven" selected>保本移損</option></select></td>' +
+    '<td><input type="number" class="sp-active" step="1" min="0" value="0" title="0 = 不限" /></td>' +
+    '<td><input type="number" class="sp-daily" step="1" min="0" value="0" title="0 = 不限" /></td>' +
+    '<td><input type="number" class="sp-loss" step="1" min="0" value="0" title="0 = 不限" /></td>';
   document.querySelector(".src-table tbody").appendChild(tr);
   input.value = "";
   syncSourceProfiles();
@@ -2866,6 +2892,9 @@ function syncSourceProfiles() {
       mode,
       base_lot: parseFloat(row.querySelector(".sp-base").value) || 0.01,
       tp_mode: row.querySelector(".sp-tpmode").value,
+      max_active_orders: parseInt(row.querySelector(".sp-active").value, 10) || 0,
+      max_daily_trades: parseInt(row.querySelector(".sp-daily").value, 10) || 0,
+      max_daily_loss: parseFloat(row.querySelector(".sp-loss").value) || 0,
     };
     if (martingale) {
       entry.multiplier = parseFloat(row.querySelector(".sp-mult").value) || 2;
@@ -4434,6 +4463,7 @@ def render(state: Any) -> str:
         .replace("__EXTRA_BUTTON__", extra_button)
         .replace("__HIGH_FREQ_SOURCE_JSON__", json.dumps(HIGH_FREQ, ensure_ascii=False))
         .replace("__MID_FREQ_SOURCE_JSON__", json.dumps(MID_FREQ, ensure_ascii=False))
+        .replace("__ULTRA_HIGH_FREQ_SOURCE_JSON__", json.dumps(ULTRA_HIGH_FREQ, ensure_ascii=False))
         .replace("__TAB1__", "訊號發布" if is_central else "訊號跟單")
         .replace("__PWMIN__", str(MIN_PASSWORD_LENGTH))
     )

@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from copy_trader.config import DATA_DIR, _instance_name
-from copy_trader.central.membership import MIN_PASSWORD_LENGTH
+from copy_trader.central.membership import MIN_PASSWORD_LENGTH, ULTRA_HIGH_FREQ
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +137,17 @@ class LauncherState:
                 "token": secrets.token_urlsafe(24),
                 "interval": "1.0",
                 "shadow_mode": "false",
+                # 第三來源的行情由中央機自己的 MT5 bridge 提供。策略開關預設
+                # 關閉，避免升級既有部署時在未確認 broker/路徑前突然發布實單。
+                "market_mt5_files_dir": "",
+                "ultra_strategy_enabled": "false",
+                "ultra_max_signals_per_day": "12",
+                "ultra_cooldown_seconds": "900",
+                "ultra_pending_expiry_seconds": "1200",
+                "ultra_max_spread": "1.20",
+                "ultra_min_h1_atr": "4.0",
+                "ultra_max_h1_atr": "60.0",
+                "ultra_max_market_age_seconds": "90",
                 "cloudflare_tunnel": "true",
                 "cloudflared_path": "",
                 "auto_start": "false",
@@ -163,7 +174,17 @@ class LauncherState:
             "martingale_lots": "",
             "partial_close_ratios": "0.5,0.3,0.2",
             # 每個訊號來源各自的下單模式，存成 JSON 字串（設定檔全部是字串型別）
-            "source_profiles": "{}",
+            "source_profiles": json.dumps({
+                ULTRA_HIGH_FREQ: {
+                    "enabled": False,
+                    "mode": "flat",
+                    "base_lot": 0.01,
+                    "tp_mode": "breakeven",
+                    "max_active_orders": 1,
+                    "max_daily_trades": 12,
+                    "max_daily_loss": 25.0,
+                }
+            }, ensure_ascii=False),
             # 同一個 MT5 帳戶裡，另外掛的、自己會下單的 EA（例如趨勢線策略）——
             # magic number -> 顯示名稱，純粹讓報表認出「這是誰下的」，不控制下單。
             # 20260503 是目前這台機器上「趨勢追蹤_EA_NR」的預設魔術編號。
@@ -190,6 +211,25 @@ class LauncherState:
             if changed:
                 data["line_chats"] = migrated
                 logger.info("已將既有中央 LINE DB 預設升級為中頻／yuyu 嚴格解析設定")
+        else:
+            # 升級舊會員端時，第三來源一定先以 0.01 均注、明確停用加入。
+            # 使用者必須親自在來源表打開；不會因為升級就突然多出實單。
+            try:
+                profiles = json.loads(str(data.get("source_profiles") or "{}"))
+                if not isinstance(profiles, dict):
+                    profiles = {}
+            except (TypeError, ValueError):
+                profiles = {}
+            profiles.setdefault(ULTRA_HIGH_FREQ, {
+                "enabled": False,
+                "mode": "flat",
+                "base_lot": 0.01,
+                "tp_mode": "breakeven",
+                "max_active_orders": 1,
+                "max_daily_trades": 12,
+                "max_daily_loss": 25.0,
+            })
+            data["source_profiles"] = json.dumps(profiles, ensure_ascii=False)
         return data
 
     def save_settings(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -554,19 +594,6 @@ class LauncherState:
             interval = max(0.2, float(self.settings.get("interval") or 1.0))
             remote_hub = str(self.settings.get("hub_url") or "").strip().rstrip("/")
 
-            source = build_line_database_source(
-                database_path=str(self.settings.get("line_database_path") or ""),
-                keychain_service=str(self.settings.get("line_keychain_service") or "line-db-research"),
-                line_chats=self.settings.get("line_chats"),
-                state_path=DATA_DIR / "line_db_cursor.json",
-            )
-            line_status = source.status()
-            logger.info(
-                "LINE 資料庫已連線：integrity=%s，聊天室=%s",
-                line_status.get("integrity_check"),
-                ", ".join(chat["display_name"] for chat in line_status.get("chats", [])),
-            )
-
             if remote_hub:
                 # 雲端 Hub 模式：不在本機開 Hub，直接把訊號發到雲端（例如 Fly.io）。
                 # 會員端 Hub URL 也填同一個雲端網址。
@@ -605,24 +632,85 @@ class LauncherState:
                 logger.info("Hub 管理頁面：%s/?token=%s", local_url, token)
                 self._start_cloudflare_tunnel(port)
 
+            publisher = HubPublisher(publish_url, token)
+            from copy_trader.central.ultra_strategy import UltraStrategyConfig, UltraStrategyEngine
+            from copy_trader.central.stats import resolve_mt5_dir
             from copy_trader.line_db.ledger import LineMessageLedger
 
-            collector = CentralSignalCollector(
-                source,
-                HubPublisher(publish_url, token),
-                LineMessageLedger(DATA_DIR / "line_message_ledger.sqlite3"),
-                shadow_mode=_truthy(self.settings.get("shadow_mode")),
+            ultra = UltraStrategyEngine(
+                str(self.settings.get("market_mt5_files_dir") or ""),
+                publisher,
+                DATA_DIR / "ultra_strategy_state.json",
+                UltraStrategyConfig.from_settings(self.settings),
             )
+            logger.info(
+                "第三來源「%s」：%s（實單訊號；中央 MT5=%s）",
+                ULTRA_HIGH_FREQ,
+                "已啟用" if ultra.config.enabled else "未啟用",
+                ultra.mt5_dir,
+            )
+            # LINE 與市場模型共用 Hub，但不是同一條資料 pipeline。LINE DB
+            # 尚未登入、資料庫暫時鎖住或金鑰錯誤時，模型仍應照常維護掛單與撤單；
+            # collector 在背景每十秒重試初始化，不阻擋第三來源。
+            collector = None
+            next_line_init_at = 0.0
             self.status = "運行中"
             self.service_started_at = time.time()
 
             while not self.stop_event.is_set():
+                if collector is None and time.monotonic() >= next_line_init_at:
+                    try:
+                        source = build_line_database_source(
+                            database_path=str(self.settings.get("line_database_path") or ""),
+                            keychain_service=str(
+                                self.settings.get("line_keychain_service") or "line-db-research"
+                            ),
+                            line_chats=self.settings.get("line_chats"),
+                            state_path=DATA_DIR / "line_db_cursor.json",
+                        )
+                        line_status = source.status()
+                        collector = CentralSignalCollector(
+                            source,
+                            publisher,
+                            LineMessageLedger(DATA_DIR / "line_message_ledger.sqlite3"),
+                            shadow_mode=_truthy(self.settings.get("shadow_mode")),
+                        )
+                        logger.info(
+                            "LINE 資料庫已連線：integrity=%s，聊天室=%s",
+                            line_status.get("integrity_check"),
+                            ", ".join(
+                                chat["display_name"] for chat in line_status.get("chats", [])
+                            ),
+                        )
+                    except Exception as exc:
+                        next_line_init_at = time.monotonic() + 10.0
+                        logger.warning("LINE pipeline 尚未就緒，10 秒後重試；第三來源不受影響：%s", exc)
+                if collector is not None:
+                    try:
+                        published = collector.run_cycle()
+                        if published:
+                            logger.info("本輪發布 %s 筆訊號", published)
+                    except Exception as exc:
+                        logger.exception("中央擷取錯誤：%s", exc)
                 try:
-                    published = collector.run_cycle()
-                    if published:
-                        logger.info("本輪發布 %s 筆訊號", published)
+                    # 策略的故障不能拖垮 LINE 訊號；LINE 的故障也不能讓既有
+                    # 超高頻掛單失去逾時撤單機會，因此兩條 pipeline 分開執行。
+                    live_config = UltraStrategyConfig.from_settings(self.settings)
+                    if live_config != ultra.config:
+                        ultra.config = live_config
+                        ultra.mt5_dir = resolve_mt5_dir(
+                            str(self.settings.get("market_mt5_files_dir") or "")
+                        )
+                        logger.info(
+                            "超高頻設定已即時更新：%s / MT5=%s",
+                            "已啟用實單" if live_config.enabled else "已停用新訊號",
+                            ultra.mt5_dir,
+                        )
+                    strategy_events = ultra.run_cycle()
+                    if strategy_events:
+                        logger.info("本輪發布 %s 筆超高頻事件", strategy_events)
                 except Exception as exc:
-                    logger.exception("中央擷取錯誤：%s", exc)
+                    logger.exception("超高頻策略錯誤：%s", exc)
                 self.stop_event.wait(interval)
         except Exception as exc:
             logger.exception("中央訊號中心啟動失敗：%s", exc)
