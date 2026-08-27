@@ -358,12 +358,17 @@ class CentralSignalCollector:
                     metadata = metadata_by_id.get(message_id)
                     if metadata is None or not metadata.unsent:
                         continue
-                    # The historical samples show a normal row at rev=1 and
-                    # an in-place UNSENT transition at rev=2. Requiring a
-                    # revision increase prevents treating an already-unsent
-                    # row as a new cancellation event.
-                    if int(metadata.revision or 0) <= int(row["revision"] or 0):
-                        continue
+                    # 不要求 revision 增加。原本假設收回時 _rev 會從 1 跳到 2
+                    # （macOS 版 LINE 的行為），但 Windows 版 LINE 26.3 收回是
+                    # 「就地把 _text 清空、_contentMetadata 設 UNSENT，_rev 停在 1」
+                    # —— 那個 `_rev 要變大` 的閘門於是永遠擋掉 Windows 的收回，
+                    # 導致 yuyu「發錯→收回→重發」時舊掛單留成幽靈單
+                    # （2026-08-27 實測：msg ...800 收回後 unsent=True 但 rev=1，
+                    # 被這行 skip 掉）。
+                    #
+                    # 冪等性不靠 revision：下面的 recall_recorded() 記錄過就跳過，
+                    # target_execution_ids 又保證只撤真的發布過訂單的訊息。所以
+                    # 拿掉這個閘門既修好 Windows、對 macOS 也無害（rev=2 一樣過）。
                     recall_event_id = line_event_id(chat.chat_id, message_id, "recall")
                     if self.ledger.recall_recorded(recall_event_id):
                         continue

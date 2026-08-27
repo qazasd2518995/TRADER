@@ -536,6 +536,85 @@ class CollectorTests(unittest.TestCase):
         recall_record = ledger.recall_record(recall_event["event_id"])
         self.assertEqual(recall_record["state"], "published")
 
+    def test_windows_unsent_without_revision_bump_still_cancels(self):
+        # Windows LINE 26.3 收回訊息時就地清空 _text、把 _contentMetadata 設成
+        # UNSENT，但 _rev 停在 1（不像 macOS 版會跳到 2）。舊碼要求 revision 增加,
+        # 會永遠擋掉這種收回 —— 2026-08-27 yuyu「發錯→收回→重發」時,舊的 4605
+        # 掛單就這樣留成幽靈單。這個測試釘住「revision 沒變也要撤單」。
+        trade = message(self.chat, 16, "recalled-message", SIGNAL_TEXT)
+        source = RecallSource(self.chat, [trade])
+        source.provider.metadata[trade.message_id] = LineMessageMetadata(
+            message_id=trade.message_id,
+            revision=1,
+            status=1,
+            message_type=1,
+            reaction_status="",
+            text_sha256="normal",
+            created_time_ms=trade.created_time_ms,
+            attribute=0,
+            event_type="",
+            unsent=False,
+        )
+        publisher = RecordingPublisher()
+        ledger = LineMessageLedger()
+        current_time = [time.time()]
+        collector = CentralSignalCollector(
+            source, publisher, ledger, clock=lambda: current_time[0]
+        )
+        self.assertEqual(collector.run_cycle(), 1)
+
+        # 收回：unsent=True，但 revision 仍是 1（Windows 版的實際行為）
+        source.provider.metadata[trade.message_id] = LineMessageMetadata(
+            message_id=trade.message_id,
+            revision=1,
+            status=1,
+            message_type=3,
+            reaction_status="",
+            text_sha256="recalled-empty",
+            created_time_ms=trade.created_time_ms,
+            attribute=1,
+            event_type="20",
+            unsent=True,
+        )
+        current_time[0] += 1
+
+        # ★ 修好之後：revision 沒變也要偵測到收回並發撤單
+        self.assertEqual(collector.run_cycle(), 1)
+        self.assertEqual(len(publisher.payloads), 2)
+        trade_event, recall_event = publisher.payloads
+        self.assertEqual(recall_event["type"], "cancel_signal")
+        self.assertEqual(recall_event["cancel_reason"], "line_unsent")
+        self.assertEqual(recall_event["target_execution_ids"], [trade_event["execution_id"]])
+        self.assertEqual(recall_event["line_revision"], 1)
+
+        # 冪等：再輪一次不會重複發撤單（靠 recall_recorded，不靠 revision）
+        self.assertEqual(collector.run_cycle(), 0)
+        self.assertEqual(len(publisher.payloads), 2)
+
+    def test_normal_message_never_triggers_false_recall(self):
+        # 防呆：一則正常、從未收回的訊號，不管輪詢幾次都不該被誤判成收回。
+        trade = message(self.chat, 16, "normal-message", SIGNAL_TEXT)
+        source = RecallSource(self.chat, [trade])
+        source.provider.metadata[trade.message_id] = LineMessageMetadata(
+            message_id=trade.message_id,
+            revision=1,
+            status=1,
+            message_type=1,
+            reaction_status="",
+            text_sha256="normal",
+            created_time_ms=trade.created_time_ms,
+            attribute=0,
+            event_type="",
+            unsent=False,
+        )
+        publisher = RecordingPublisher()
+        collector = CentralSignalCollector(source, publisher, LineMessageLedger())
+        self.assertEqual(collector.run_cycle(), 1)
+        # 又輪三次，unsent 一直是 False → 不該有任何撤單
+        for _ in range(3):
+            self.assertEqual(collector.run_cycle(), 0)
+        self.assertEqual(len(publisher.payloads), 1)  # 只有原本那筆 trade
+
 
 if __name__ == "__main__":
     unittest.main()
