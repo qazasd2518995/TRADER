@@ -5,11 +5,11 @@
 ## 架構
 
 ```text
-LINE 加密 DB（唯讀）
-  → 穩定 chat ID／sender ID + 每聊天室 rowid 游標
-  → 已發布訊息 revision／UNSENT 收回監看
-  → 來源專屬 strict parser + backlog 安全閥
-  → LINE message／execution 總帳
+LINE 加密 DB（唯讀）                         中央 MT5 已收 K 線／bid-ask
+  → 穩定 chat ID／sender ID                    → 超高頻規則引擎
+  → revision／UNSENT 監看                     → 獨立 source／execution ID
+  → strict parser + LINE 總帳                  → 未成交逾時精確撤單
+                    ↘                         ↙
   → Hub（event_id 精確冪等）
   → 會員端（execution_id 精確下單）
   → MT5 File Bridge EA（撤單須對帳確認）
@@ -58,6 +58,9 @@ Windows 會從目前使用者的 Credential Manager 讀取同名 target，並支
 
 完整資料契約、平台邊界與驗收條件見 [LINE 本機資料庫串接規格](docs/line-database-spec.md)。
 
+第三來源「超高頻交易」與兩個 LINE 來源完全分離，預設不啟用；規則、實單雙重開關、
+逐時回測方法與目前尚未證明正期望的結果，見 [超高頻交易第三來源規格](docs/ultra-high-frequency-strategy.md)。
+
 ## 測試
 
 ```bash
@@ -72,5 +75,6 @@ python -m unittest discover -s tests -v
 - 中央／Hub 架構：[docs/central-signal-system.md](docs/central-signal-system.md)
 - Windows LINE DB 設定：[docs/windows-line-database.md](docs/windows-line-database.md)
 - LINE DB 串接規格：[docs/line-database-spec.md](docs/line-database-spec.md)
+- 超高頻第三來源：[docs/ultra-high-frequency-strategy.md](docs/ultra-high-frequency-strategy.md)
 - Fly.io Hub：[docs/cloud-hub-deploy.md](docs/cloud-hub-deploy.md)
 - MT5 bridge：`mt5_ea/MT5_File_Bridge_Enhanced.mq5`

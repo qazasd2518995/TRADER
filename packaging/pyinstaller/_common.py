@@ -22,6 +22,7 @@ _CLIENT = [
 
 _CENTRAL = [
     "copy_trader.central.signal_collector",
+    "copy_trader.central.ultra_strategy",
     "copy_trader.signal_parser.regex_parser",
     "copy_trader.signal_parser.strict_parser",   # signal_collector 在頂部就 import
     "copy_trader.line_db.discovery",

@@ -209,6 +209,7 @@ collector 只重新檢查 `recall_watch_seconds` 期間內、曾發布成訂單�
 
 - `黃金報單🈲言群` = 乘／中頻。
 - `焦點利潤(yuyu)` = yuyu／高頻。
+- `超高頻交易` = 獨立市場資料模型，不屬於 LINE collector，也不得帶 LINE identity。
 - collector 的 `source`、會員方案的 `sources` 與會員端 `source_profiles` 必須使用完全相同的值。
 - Hub 過濾來源後仍須回傳原始掃描 cursor；會員端只有在本批可見事件全數成功處理後才能前移到該 cursor，避免低方案會員被連續高頻事件卡住。
 

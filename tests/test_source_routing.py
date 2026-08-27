@@ -7,6 +7,7 @@ import unittest
 from copy_trader.central.membership import (
     HIGH_FREQ,
     MID_FREQ,
+    ULTRA_HIGH_FREQ,
     filter_signals_for,
     tier_entitlements,
 )
@@ -66,12 +67,14 @@ class SourceRoutingTests(unittest.TestCase):
 
         basic = tier_entitlements("basic")["sources"]
         advanced = tier_entitlements("advanced")["sources"]
+        flagship = tier_entitlements("flagship")["sources"]
 
         self.assertEqual([item["source"] for item in filter_signals_for(records, basic)], [MID_FREQ])
         self.assertEqual(
             [item["source"] for item in filter_signals_for(records, advanced)],
             [MID_FREQ, HIGH_FREQ],
         )
+        self.assertEqual(flagship, [MID_FREQ, HIGH_FREQ, ULTRA_HIGH_FREQ])
 
     def test_hub_client_retains_filtered_page_cursor(self):
         client = HubClient("https://hub.invalid")
@@ -122,7 +125,9 @@ class SourceRoutingTests(unittest.TestCase):
 
         self.assertIn(f'"{MID_FREQ}": "中頻交易"', html)
         self.assertIn(f'"{HIGH_FREQ}": "高頻交易"', html)
+        self.assertIn(f'"{ULTRA_HIGH_FREQ}": "超高頻交易"', html)
         self.assertNotIn("__HIGH_FREQ_SOURCE_JSON__", html)
+        self.assertNotIn("__ULTRA_HIGH_FREQ_SOURCE_JSON__", html)
 
 
 if __name__ == "__main__":

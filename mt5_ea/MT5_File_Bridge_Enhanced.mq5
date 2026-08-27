@@ -3,8 +3,8 @@
 //|   Enhanced file-based bridge for Python-MT5 integration         |
 //|   Supports buy/sell/modify/close commands & full state export   |
 //+------------------------------------------------------------------+
-#property copyright "Artan Ahmadi - Enhanced v4.1"
-#property version   "4.10"
+#property copyright "Artan Ahmadi - Enhanced v4.2"
+#property version   "4.20"
 
 input string TradingSymbol = "XAUUSD";
 input int    WriteIntervalSec = 1;
@@ -76,6 +76,7 @@ struct TradeCommand
    double   stop_loss;    // Stop loss price
    double   take_profit;  // Take profit price
    double   price;        // Entry price (0 = market order, >0 = pending order)
+   string   pending_order_type; // "limit" = crossed price must be rejected, never changed to stop
    string   comment;      // Order comment
    int      magic_number; // Magic number
    string   trade_id;     // Unique trade ID (added)
@@ -96,7 +97,7 @@ bool IsTradeAllowedFunc()
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   Print("Enhanced MT5 File Bridge v4.1 started for symbol: ", TradingSymbol);
+   Print("Enhanced MT5 File Bridge v4.2 started for symbol: ", TradingSymbol);
    Print("Auto trading enabled: ", IsTradeAllowedFunc());
    Print("Default lot size: ", DoubleToString(DefaultLotSize,2));
    EventSetTimer(1);
@@ -230,8 +231,8 @@ void WriteSymbolInfo(string sym)
    j+="\"volume_step\":"     + DoubleToString(SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP), 2) + ",";
    j+="\"tick_size\":"       + DoubleToString(SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE), 8) + ",";
    j+="\"tick_value\":"      + DoubleToString(SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE), 5) + ",";
-   j+="\"stops_level\":0,";
-   j+="\"freeze_level\":0,";
+   j+="\"stops_level\":" + IntegerToString((int)SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL)) + ",";
+   j+="\"freeze_level\":" + IntegerToString((int)SymbolInfoInteger(sym, SYMBOL_TRADE_FREEZE_LEVEL)) + ",";
    j+="\"swap_type\":0,";
    j+="\"swap_long\":"       + DoubleToString(SymbolInfoDouble(sym, SYMBOL_SWAP_LONG), 5) + ",";
    j+="\"swap_short\":"      + DoubleToString(SymbolInfoDouble(sym, SYMBOL_SWAP_SHORT), 5) + ",";
@@ -833,6 +834,7 @@ bool ParseTradeCommand(string json, TradeCommand &cmd)
    cmd.ticket = ExtractLongValue(json, "ticket");
    cmd.close_volume = ExtractDoubleValue(json, "close_volume");
    cmd.price = ExtractDoubleValue(json, "price");
+   cmd.pending_order_type = ExtractStringValue(json, "pending_order_type");
 
    if(cmd.action != "buy" && cmd.action != "sell" && cmd.action != "modify" && cmd.action != "close" && cmd.action != "delete")
       return false;
@@ -888,6 +890,11 @@ bool ExecuteBuySellCommand(TradeCommand &cmd, long &retcode, string &detail)
       else
       {
          double entry = NormalizeDouble(cmd.price, digits);
+         if(cmd.pending_order_type == "limit" && entry >= market_price)
+         {
+            detail = "buy limit crossed before execution";
+            return false;
+         }
          req.action = TRADE_ACTION_PENDING;
          if(entry < market_price)
             req.type = ORDER_TYPE_BUY_LIMIT;
@@ -924,6 +931,11 @@ bool ExecuteBuySellCommand(TradeCommand &cmd, long &retcode, string &detail)
       else
       {
          double entry = NormalizeDouble(cmd.price, digits);
+         if(cmd.pending_order_type == "limit" && entry <= market_price)
+         {
+            detail = "sell limit crossed before execution";
+            return false;
+         }
          req.action = TRADE_ACTION_PENDING;
          if(entry > market_price)
             req.type = ORDER_TYPE_SELL_LIMIT;
