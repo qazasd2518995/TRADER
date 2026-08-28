@@ -35,7 +35,6 @@ CLIENT_FIELDS = """
       <div class="field-group">
         <h3>下單與馬丁</h3>
         <div class="field-grid">
-          <label>基礎手數<input id="default_lot_size" placeholder="0.01" /></label>
           <label class="switch">啟用馬丁格爾<input id="use_martingale" type="checkbox" /></label>
           <label>馬丁倍數<input id="martingale_multiplier" placeholder="2.0（每層 × 倍數）" /></label>
           <label>馬丁最大層數<input id="martingale_max_level" placeholder="5（5 關最大 base×16）" /></label>
@@ -1964,7 +1963,9 @@ function ids() {
        "hub_url", "host", "port", "token", "interval", "shadow_mode", "cloudflare_tunnel", "cloudflared_path", "auto_start"]
     // 會員端刻意不含 hub_url / token：那兩個不該讓會員看到，也不該由前端回送
     // （token 是管理權限的通行證，送到瀏覽器等於直接把付費牆拆了）
-    : ["mt5_files_dir", "interval", "auto_start", "default_lot_size", "use_martingale",
+    // 基礎手數已移除:每個訊號來源在下方各自設定手數(sp-base),不再有全域下單手數,
+    // 免得跟來源手數打架。未設定的來源後端仍以 default_lot_size(內建 0.01)保底。
+    : ["mt5_files_dir", "interval", "auto_start", "use_martingale",
        "martingale_multiplier", "martingale_max_level", "martingale_lots", "partial_close_ratios",
        "source_profiles", "ea_sources"];
 }
