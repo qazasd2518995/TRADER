@@ -1121,6 +1121,42 @@ tbody tr:hover { background: var(--sunk); }
 .save-status.is-ok      { color: var(--win); }
 .save-status.is-err     { color: var(--loss); font-weight: 600; }
 
+/* ── 會員權益：方案比較表(跟官網一致)+ 聯絡 + 頁尾免責 ───────────── */
+.benefits-card { padding: 0; overflow: hidden; }
+.cmp-scroll { overflow-x: auto; }
+.cmp-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 640px; }
+.cmp-table th, .cmp-table td { padding: 12px 14px; border-bottom: 1px solid var(--hair); text-align: center; vertical-align: middle; }
+.cmp-table thead th { position: sticky; top: 0; background: var(--card); z-index: 1; }
+.cmp-table .cmp-feat { text-align: left; }
+.cmp-table th.cmp-feat b, .cmp-table td .cmp-feat b { display: block; font-weight: 650; color: var(--ink); }
+.cmp-feat b { display: block; font-weight: 650; color: var(--ink); }
+.cmp-feat span { display: block; margin-top: 2px; font-size: 11.5px; color: var(--muted); font-weight: 400; }
+.cmp-plan b { display: block; font-size: 14px; color: var(--ink); }
+.cmp-plan span { display: block; margin-top: 2px; font-size: 11px; color: var(--muted); }
+.cmp-plan .cmp-you { display: inline-block; margin-top: 5px; padding: 1px 8px; border-radius: 999px; font-size: 10.5px; font-style: normal; background: var(--gold); color: #1a1400; font-weight: 700; }
+.cmp-table td b { font-weight: 600; color: var(--ink-2); }
+.cmp-table td small { display: block; margin-top: 2px; font-size: 11px; color: var(--muted); }
+.cmp-table .is-cur { background: rgba(212, 160, 23, .07); }
+.cmp-table thead .is-cur { background: rgba(212, 160, 23, .13); }
+.cmp-table tbody tr:hover td { background: rgba(255,255,255,.02); }
+.mk { display: inline-block; font-size: 15px; line-height: 1; }
+.mk--y { color: var(--win); font-weight: 700; }
+.mk--n { color: var(--muted); }
+.cmp-note { margin: 0; padding: 12px 16px; font-size: 11.5px; color: var(--muted); border-top: 1px solid var(--hair); }
+.benefits-ig { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  padding: 16px; border-top: 1px solid var(--hair); background: linear-gradient(180deg, transparent, rgba(212,160,23,.05)); }
+.benefits-ig .bi-h { margin: 0; font-weight: 650; color: var(--ink); }
+.benefits-ig .bi-b { margin: 3px 0 0; font-size: 12.5px; color: var(--muted); }
+
+.app-foot { margin: 26px 0 12px; padding-top: 18px; border-top: 1px solid var(--hair); color: var(--muted); }
+.app-foot .foot-tag { margin: 0 0 10px; font-size: 12.5px; }
+.foot-legal summary { cursor: pointer; font-size: 12.5px; color: var(--ink-2); user-select: none; }
+.foot-legal .legal-body { margin-top: 10px; display: grid; gap: 8px; }
+.foot-legal .legal-body p { margin: 0; font-size: 11.5px; line-height: 1.6; color: var(--muted); }
+.foot-legal .legal-body b { color: var(--ink-2); }
+.app-foot .foot-copy { margin: 12px 0 0; font-size: 11.5px; }
+.app-foot .foot-copy b { color: var(--gold); }
+
 .notice {
   display: flex; gap: 10px; align-items: flex-start;
   padding: 12px 15px; border-radius: 10px; margin-bottom: 14px;
@@ -1454,7 +1490,7 @@ body.auth-locked > *:not(#authGate) { display: none; }
     <a href="#secChart"    data-nav="secChart">圖表分析</a>
     <a href="#secPerf"     data-nav="secPerf">報表中心</a>
     <a href="#secTrades"   data-nav="secTrades">歷史訂單</a>
-    <a href="#secEnt"      data-nav="secEnt">會員權益</a>
+    <a href="#secBenefits" data-nav="secBenefits">會員權益</a>
   </nav>
   <div class="rail-state">
     <span class="auth-badge client-only" id="authBadge" hidden>
@@ -1748,6 +1784,23 @@ body.auth-locked > *:not(#authGate) { display: none; }
       </div>
     </div>
 
+  <!-- ⑦ 會員權益：跟官網一致的方案比較表 + 聯絡方式 -->
+  <div class="section-head" id="secBenefits">
+    <h2>會員權益</h2>
+    <p>不同等級能用的功能一項一項對給你看。你目前的方案會標亮；想解鎖更多，私訊我們升級。</p>
+  </div>
+  <div class="card benefits-card">
+    <div class="cmp-scroll"><table class="cmp-table" id="benefitsTable"></table></div>
+    <p class="cmp-note">所有方案價格皆以美金（USD）計價；本公司保留方案內容與價格調整之權利。交易涉及風險，請詳閱頁尾免責聲明。</p>
+    <div class="benefits-ig">
+      <div>
+        <p class="bi-h">需要升級方案，或任何服務？</p>
+        <p class="bi-b">直接私訊我們的 Instagram，幫你開通、續期、解答問題。</p>
+      </div>
+      <a class="btn btn-go" href="https://instagram.com/goldyoung0927" target="_blank" rel="noopener noreferrer">IG @goldyoung0927</a>
+    </div>
+  </div>
+
   </div><!-- /client-only -->
 
 </div><!-- /viewSignals -->
@@ -1899,6 +1952,25 @@ body.auth-locked > *:not(#authGate) { display: none; }
       <button class="btn" id="closeSettings">收起</button>
     </div>
   </section>
+
+  <!-- 頁尾免責聲明：跟官網一致，會員端每一頁底部都在。 -->
+  <footer class="app-foot client-only" id="appFoot">
+    <p class="foot-tag">XAUUSD 黃金訊號自動跟單。專業團隊發訊號，系統幫你解析、控風險、下單。</p>
+    <details class="foot-legal">
+      <summary>免責聲明（點開閱讀完整條款）</summary>
+      <div class="legal-body">
+        <p><b>非投資建議。</b>本系統所提供之一切內容，純屬技術研究與資訊分享，不構成任何投資建議、財務建議、招攬或買賣要約。本公司並非證券投資顧問事業、期貨顧問事業或任何形式之受監理金融機構，不提供個別化投資推薦，亦不代客操作或代為管理資金。</p>
+        <p><b>交易風險。</b>外匯及貴金屬保證金交易屬高槓桿商品，具有高度風險，可能導致您損失全部本金甚至超過本金，並不適合所有投資人。在決定參與交易前，請確實評估自身投資目的、經驗程度與風險承受能力，必要時應諮詢獨立且合格的專業顧問。</p>
+        <p><b>馬丁格爾策略之特殊風險。</b>本系統支援之馬丁格爾（Martingale）加碼策略，在連續虧損時會逐關放大部位，於行情單邊延伸時可能在極短時間內造成重大虧損，或因保證金不足而遭強制平倉。系統提供之最大層數、每層手數與每日虧損上限僅為風險控制工具，並非任何形式之損失保證。</p>
+        <p><b>過往績效不代表未來表現。</b>任何績效數據、勝率、報酬率、回撤或交易紀錄，均可能為示範資料、歷史回測或特定期間之結果，不保證未來可重現，亦不代表個別使用者之實際結果。</p>
+        <p><b>訊號來源為獨立第三方。</b>本系統負責訊號之擷取、解析與訂單執行，對訊號內容本身之正確性、及時性、完整性或獲利能力，不作任何明示或默示之保證，亦不對依該訊號所生之任何損益負責。</p>
+        <p><b>本系統為訂單執行工具。</b>所有下單指令均在使用者自己的電腦上產生，並送往使用者自行開立之券商 MetaTrader 5 帳戶執行。本公司不經手、不保管、不轉移使用者之任何資金。</p>
+        <p><b>技術性中斷風險。</b>網路或電力中斷、作業系統或 MetaTrader 5 異常、券商伺服器延遲、報價跳空、流動性不足或滑價等，均可能導致訂單延遲、未成交、部分成交或以非預期價格成交，本公司對此類損失不負賠償責任。</p>
+        <p><b>使用者責任。</b>所有交易決策、參數設定、資金配置與風險承擔，均由使用者自行判斷並自負盈虧。使用本系統即表示您已充分理解上述風險，並同意自行承擔一切交易結果。</p>
+      </div>
+    </details>
+    <p class="foot-copy">需要任何服務請私訊 IG <b>@goldyoung0927</b>。交易涉及風險，使用本系統即表示您已理解並同意自負盈虧。</p>
+  </footer>
 
   </div><!-- /shell-main -->
   </div><!-- /shell -->
@@ -3941,10 +4013,61 @@ function tickExp() {
 function startExpTicker() { tickExp(); if (!__expTimer) __expTimer = setInterval(tickExp, 1000); }
 function stopExpTicker() { if (__expTimer) { clearInterval(__expTimer); __expTimer = null; } }
 
+/* 會員權益方案比較表 —— 內容跟官網一模一樣(13 項功能 × 四個方案),依會員目前等級標亮。
+   每格:"y"=有、"n"=無、字串=單行文字、[主, 副]=兩行文字。 */
+const BENEFIT_COLS = [
+  { key: "trial",    name: "體驗版", en: "FREE",    price: "US$0" },
+  { key: "basic",    name: "基礎版", en: "PLUS",    price: "US$49" },
+  { key: "advanced", name: "進階版", en: "PRO",     price: "US$99" },
+  { key: "flagship", name: "旗艦版", en: "PREMIUM", price: "US$149" },
+];
+const BENEFIT_ROWS = [
+  ["使用策略", "能跟哪些頻率的策略", ["中頻策略", "每日 1 筆訊號"], ["中頻策略", "完整跟單"], ["中頻 + 高頻策略", "完整跟單"], ["低頻 + 中頻 + 高頻策略", "完整跟單"]],
+  ["每日跟單限制", "每天最多跟幾筆中頻訊號", "每日最多 1 筆", "不限次數", "不限次數", "不限次數"],
+  ["馬丁設定", "馬丁的倍數與層數能不能自己設", "n", "n", ["基礎馬丁", "倍數、最大層數限制"], ["完整馬丁", "倍數、層數、最大風險控制"]],
+  ["手數設定", "每筆跟單的手數能調到多細", ["基礎範圍", "有限制"], ["自己設", "標準範圍"], ["自己設", "+ 分批平倉"], ["自己設", "+ 分批平倉 + 動態自動調整手數"]],
+  ["績效報表", "今天 / 這週 / 這個月的報表", "y", "y", "y", "y"],
+  ["各頻率勝率", "各頻率的勝率與績效分開看", "n", "n", "y", "y"],
+  ["每日虧損上限", "每天最多虧多少，金額或比例", "y", "y", "y", "y"],
+  ["手機跟單通知", "手機收跟單訊號與系統通知", "n", "y", "y", "y"],
+  ["分批止盈", "分批止盈的比例與條件", "n", "n", "y", "y"],
+  ["本金比例自動調整手數", "手數跟著本金比例自動調整", "n", "n", "n", "y"],
+  ["非開盤時間自動暫停計時", "非開盤時段自動暫停計時", "y", "y", "y", "y"],
+  ["自動排程", "每天自動開始 / 停止的時間", "n", "單一排程", "多組排程", "多組進階排程"],
+  ["真人分析建議", "每月真人幫你看報表、給調整建議", "n", "n", "n", ["每月提供", "真人訊息分析與調整建議"]],
+];
+function benefitCell(cell) {
+  if (cell === "y") return '<span class="mk mk--y" title="有">✓</span>';
+  if (cell === "n") return '<span class="mk mk--n" title="無">—</span>';
+  if (Array.isArray(cell)) return "<b>" + esc(cell[0]) + "</b>" + (cell[1] ? "<small>" + esc(cell[1]) + "</small>" : "");
+  return "<b>" + esc(cell) + "</b>";
+}
+function renderBenefits(a) {
+  const table = $("benefitsTable");
+  if (!table) return;
+  const cur = (a && a.logged_in) ? BENEFIT_COLS.findIndex((c) => c.key === String(a.tier || "").toLowerCase()) : -1;
+  let head = '<thead><tr><th class="cmp-feat"></th>';
+  BENEFIT_COLS.forEach((c, i) => {
+    head += '<th class="cmp-plan' + (i === cur ? " is-cur" : "") + '">' +
+      "<b>" + esc(c.name) + "</b><span>" + esc(c.en) + " · " + esc(c.price) + "</span>" +
+      (i === cur ? '<em class="cmp-you">你的方案</em>' : "") + "</th>";
+  });
+  head += "</tr></thead>";
+  let body = "<tbody>";
+  BENEFIT_ROWS.forEach((row) => {
+    body += '<tr><th scope="row" class="cmp-feat"><b>' + esc(row[0]) + "</b><span>" + esc(row[1]) + "</span></th>";
+    for (let i = 0; i < 4; i++) body += '<td class="' + (i === cur ? "is-cur" : "") + '">' + benefitCell(row[i + 2]) + "</td>";
+    body += "</tr>";
+  });
+  body += "</tbody>";
+  table.innerHTML = head + body;
+}
+
 function paintAuth(snap) {
   if (!IS_CLIENT) return;
   const a = snap.auth || { logged_in: false };
   paintSide(a);
+  renderBenefits(a);
   const gate = $("authGate");
   const locked = !a.logged_in;
   gate.classList.toggle("is-on", locked);
