@@ -1107,7 +1107,13 @@ tbody tr:hover { background: var(--sunk); }
 .hint { margin: 14px 0 0; font-size: 12.5px; color: var(--muted); }
 .inline-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
 .inline-actions .hint { margin: 0; }
-.settings-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--hair); }
+.settings-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--hair); }
+/* 自動儲存狀態:一眼看出「有沒有存到、生不生效」，取代原本要自己記得按儲存的心智負擔 */
+.save-status { margin-right: auto; font-size: 13px; color: var(--muted); min-height: 18px; transition: color .2s; }
+.save-status.is-pending { color: var(--gold); }
+.save-status.is-saving  { color: var(--muted); }
+.save-status.is-ok      { color: var(--win); }
+.save-status.is-err     { color: var(--loss); font-weight: 600; }
 
 .notice {
   display: flex; gap: 10px; align-items: flex-start;
@@ -1877,11 +1883,13 @@ body.auth-locked > *:not(#authGate) { display: none; }
   <section class="card settings" id="settings" hidden style="margin-top:14px">
     <div class="section-head" style="margin:0 0 16px">
       <h2>設定</h2>
-      <p>改完按「儲存設定」，或直接按上方的啟動鍵一併套用</p>
+      <p>改任何設定都會<b>自動儲存</b>，不用記得按儲存；狀態顯示在下方。</p>
     </div>
     __FIELDS__
     <div class="settings-actions">
-      <button class="btn btn-go" id="save">儲存設定</button>
+      <span class="save-status" id="saveStatus"></span>
+      <button class="btn central-only" id="restartApply" hidden>重新啟動並套用</button>
+      <button class="btn" id="save">立即儲存</button>
       <button class="btn" id="closeSettings">收起</button>
     </div>
   </section>
@@ -2859,8 +2867,8 @@ function addSourceRow() {
     '<td><input type="number" class="sp-base" step="0.01" min="0.01" value="0.01" /></td>' +
     '<td><input type="number" class="sp-mult" step="0.1" min="1" value="2" /></td>' +
     '<td><input type="number" class="sp-max" step="1" min="1" max="12" value="5" /></td>' +
-    '<td><select class="sp-tpmode"><option value="partial">分批平倉</option>' +
-      '<option value="breakeven" selected>保本移損</option></select></td>' +
+    '<td><select class="sp-tpmode"><option value="partial" selected>分批平倉</option>' +
+      '<option value="breakeven">保本移損</option></select></td>' +
     '<td><input type="number" class="sp-active" step="1" min="0" value="0" title="0 = 不限" /></td>' +
     '<td><input type="number" class="sp-daily" step="1" min="0" value="0" title="0 = 不限" /></td>' +
     '<td><input type="number" class="sp-loss" step="1" min="0" value="0" title="0 = 不限" /></td>';
@@ -4350,25 +4358,62 @@ if (!IS_CLIENT) {
 
 $("start").onclick = () => post("/api/start", collect()).then(refreshStatus).catch((e) => alert(e.message));
 $("stop").onclick = () => post("/api/stop").then(refreshStatus).catch((e) => alert(e.message));
-$("save").onclick = (evt) => {
-  // 純文字 JSON 欄位打錯字後端會直接當沒設定（回退全域），不是報錯——
-  // 存檔前先擋一次，不然使用者不會發現自己輸入的東西被默默丟掉了。
+// ── 自動儲存 ────────────────────────────────────────────────────────
+// 改任何設定就自動存,不用記得按儲存,也不用猜要不要停止/重啟。存完直接告訴你:
+// 會員端 → 即時生效(不用停、不用重啟);訊號中心 → 需重新啟動才生效(給一顆重啟鈕)。
+let __saveTimer = null, __saveSeq = 0;
+function setSaveStatus(text, kind) {
+  const el = $("saveStatus");
+  if (el) { el.textContent = text || ""; el.className = "save-status" + (kind ? " is-" + kind : ""); }
+}
+function validateSettingsInputs() {
+  // 純文字 JSON 欄位(訊號中心才有)打錯字會被後端默默丟掉,存前先擋一次。
   const eaField = $("ea_sources");
   if (eaField && eaField.value.trim()) {
     try {
-      const parsed = JSON.parse(eaField.value);
-      if (typeof parsed !== "object" || Array.isArray(parsed) || parsed === null) throw new Error("需要是物件");
+      const p = JSON.parse(eaField.value);
+      if (typeof p !== "object" || Array.isArray(p) || p === null) throw new Error("需要是物件");
     } catch (e) {
-      alert("「其他策略」欄位不是合法的 JSON，例如 {\"20260503\": \"趨勢線策略\"}\n\n" + e.message);
-      return;
+      setSaveStatus("「其他策略」JSON 格式錯誤,尚未儲存：" + e.message, "err");
+      return false;
     }
   }
-  post("/api/settings", collect()).then(() => {
-    const btn = evt.target;
-    btn.textContent = "已儲存";
-    setTimeout(() => { btn.textContent = "儲存設定"; }, 1400);
-  }).catch((e) => alert(e.message));
-};
+  return true;
+}
+function doSaveSettings() {
+  if (!validateSettingsInputs()) return Promise.reject(new Error("invalid"));
+  const seq = ++__saveSeq;
+  setSaveStatus("儲存中…", "saving");
+  return post("/api/settings", collect()).then(() => {
+    if (seq !== __saveSeq) return;                 // 有更新的儲存蓋過來,別覆寫狀態
+    const running = !!(S.status && S.status.running);
+    if (IS_CLIENT) {
+      setSaveStatus(running ? "✓ 已自動儲存 · 即時生效（不用停止或重啟）" : "✓ 已自動儲存（開始跟單後套用）", "ok");
+      if ($("restartApply")) $("restartApply").hidden = true;
+    } else {
+      setSaveStatus(running ? "✓ 已自動儲存 —— 需重新啟動才生效" : "✓ 已自動儲存", "ok");
+      if ($("restartApply")) $("restartApply").hidden = !running;
+    }
+  }).catch((e) => { if (seq === __saveSeq) setSaveStatus("✗ 儲存失敗：" + e.message, "err"); throw e; });
+}
+function autoSaveSoon() {
+  clearTimeout(__saveTimer);
+  setSaveStatus("有變更，自動儲存中…", "pending");
+  __saveTimer = setTimeout(() => { doSaveSettings().catch(() => {}); }, 600);
+}
+// 設定面板內任何輸入/勾選/下拉改動 → 自動儲存。來源表格的 syncSourceProfiles 會先在
+// 內層跑完(事件冒泡),加上 600ms debounce,collect() 一定讀到最新的 source_profiles。
+// 程式化 populate 欄位不會觸發 input/change,所以每秒刷新狀態不會誤觸自動儲存。
+["input", "change"].forEach((ev) => $("settings").addEventListener(ev, autoSaveSoon));
+$("save").onclick = () => { clearTimeout(__saveTimer); doSaveSettings().catch((e) => setSaveStatus("✗ " + e.message, "err")); };
+if ($("restartApply")) {
+  $("restartApply").onclick = () => {
+    setSaveStatus("重新啟動中…", "saving");
+    post("/api/stop").then(() => post("/api/start", collect())).then(refreshStatus)
+      .then(() => { setSaveStatus("✓ 已重新啟動，設定生效", "ok"); $("restartApply").hidden = true; })
+      .catch((e) => setSaveStatus("✗ 重啟失敗：" + e.message, "err"));
+  };
+}
 const toggle = $("toggleSettings");
 toggle.onclick = () => {
   const panel = $("settings");
