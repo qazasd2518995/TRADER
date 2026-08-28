@@ -2919,8 +2919,13 @@ function renderSourceSettings(rows) {
       '<button type="button" class="btn" id="addSource">新增來源</button>' +
     "</div>";
 
-  box.addEventListener("change", syncSourceProfiles);
-  box.addEventListener("input", syncSourceProfiles);
+  // box 是持久元素(每次只換 innerHTML),事件監聽器只綁一次,否則每次重繪都疊加、
+  // syncSourceProfiles 會被同一個事件呼叫好幾次(記憶體與重複觸發)。用委派 + 旗標守門。
+  if (!box.dataset.bound) {
+    box.addEventListener("change", syncSourceProfiles);
+    box.addEventListener("input", syncSourceProfiles);
+    box.dataset.bound = "1";
+  }
   $("addSource").onclick = addSourceRow;
   $("newSourceName").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); addSourceRow(); } };
   syncSourceProfiles();
