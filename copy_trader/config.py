@@ -68,11 +68,24 @@ def _read_json_dict(path: Path) -> dict:
         return {}
 
 
+def _price_is_live(data: dict) -> bool:
+    """Bridge 價格檔有實際報價(bid/ask 不為 0)才算數——避開換代號後殘留、bid=0 的舊檔。"""
+    try:
+        return float(data.get("bid") or 0) > 0 or float(data.get("ask") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def detect_mt5_symbol(mt5_files_dir: str) -> str:
-    """Infer the broker-specific gold symbol from bridge files."""
+    """從 bridge 檔案推斷這家券商的黃金代號; 查不到回空字串(讓上層保留設定值)。
+
+    第一來源是 symbol_info.json 的 symbol —— 那是「當前掛著的 EA」寫的,最可信,
+    換券商/換代號都會跟著變。退而求其次才掃 *_price.json,且優先取「有實際報價」
+    的最新檔,免得抓到換代號後沒人再更新、bid=0 的殘檔。
+    """
     directory = Path(mt5_files_dir or "")
     if not directory.is_dir():
-        return DEFAULT_SYMBOL
+        return ""
     symbol = str(_read_json_dict(directory / "symbol_info.json").get("symbol") or "").strip()
     if _is_valid_symbol_name(symbol):
         return symbol
@@ -80,14 +93,19 @@ def detect_mt5_symbol(mt5_files_dir: str) -> str:
         price_files = sorted(directory.glob("*_price.json"), key=lambda item: item.stat().st_mtime, reverse=True)
     except OSError:
         price_files = []
-    for path in price_files:
-        symbol = str(_read_json_dict(path).get("symbol") or "").strip()
-        if _is_valid_symbol_name(symbol):
-            return symbol
-        inferred = path.name.removesuffix("_price.json")
-        if _is_valid_symbol_name(inferred):
-            return inferred
-    return DEFAULT_SYMBOL
+    # 第一輪只認有實際報價的檔; 都沒有再放寬(EA 剛啟動、市場休市等情況)。
+    for require_live in (True, False):
+        for path in price_files:
+            data = _read_json_dict(path)
+            if require_live and not _price_is_live(data):
+                continue
+            symbol = str(data.get("symbol") or "").strip()
+            if _is_valid_symbol_name(symbol):
+                return symbol
+            inferred = path.name.removesuffix("_price.json")
+            if _is_valid_symbol_name(inferred):
+                return inferred
+    return ""
 
 
 def _find_mt5_files_dir() -> str:
@@ -149,12 +167,16 @@ class Config:
 
     def _resolve_symbol_name(self, configured_symbol: str) -> str:
         configured = (configured_symbol or "").strip()
-        detected = detect_mt5_symbol(self.mt5_files_dir)
-        if configured and (Path(self.mt5_files_dir) / f"{configured}_price.json").exists():
-            return configured
-        if configured and configured != detected:
-            logger.info("Resolved MT5 symbol from %s to %s based on broker files", configured, detected)
-        return detected or configured or DEFAULT_SYMBOL
+        detected = detect_mt5_symbol(self.mt5_files_dir)   # "" = 券商檔案裡查不到
+        # 券商檔案(symbol_info.json / 有效報價檔)是當前掛著的 EA 寫的,最可信。
+        # 查得到具體代號就以它為準 —— 換券商、換代號都跟得上,也不會被設定檔殘留的
+        # 舊代號 + 舊價格檔卡死(先前 XAUUSD.s 跨券商沿用、每單被拒的那個雷)。
+        if _is_valid_symbol_name(detected):
+            if configured and configured != detected:
+                logger.info("依券商檔案把 MT5 代號從 %s 更新為 %s", configured, detected)
+            return detected
+        # 券商檔案還沒出現(EA 未啟動/空目錄)時,保留使用者設定,別蓋成預設。
+        return configured or DEFAULT_SYMBOL
 
 
 def save_config(config: Config, path: Path = CONFIG_FILE) -> None:

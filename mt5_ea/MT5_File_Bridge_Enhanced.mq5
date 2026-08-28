@@ -3,10 +3,13 @@
 //|   Enhanced file-based bridge for Python-MT5 integration         |
 //|   Supports buy/sell/modify/close commands & full state export   |
 //+------------------------------------------------------------------+
-#property copyright "Artan Ahmadi - Enhanced v4.2"
-#property version   "4.20"
+#property copyright "Artan Ahmadi - Enhanced v4.3"
+#property version   "4.30"
 
-input string TradingSymbol = "XAUUSD";
+// 交易品種預設「自動」：EA 掛在哪張圖表就用那個品種，自動對應各券商
+// (XAUUSD / XAUUSD.s / GOLD ...)，會員不用改。留空或 "AUTO" = 自動；
+// 只有想指定成另一個「這家券商真的有」的代號時才填。
+input string TradingSymbol = "";
 input int    WriteIntervalSec = 1;
 input double DefaultLotSize = 0.01;
 input bool   EnableTrading = true;
@@ -65,6 +68,9 @@ string   g_hub_url      = "";
 string   g_hub_token    = "";
 int      g_hub_interval = 3;
 
+// 實際交易/報價用的券商代號。OnInit 決定：預設用圖表品種，自動對應各券商。
+string   g_sym          = "";
+
 //+------------------------------------------------------------------+
 //| Trade command structure                                          |
 //+------------------------------------------------------------------+
@@ -93,17 +99,36 @@ bool IsTradeAllowedFunc()
 }
 
 //+------------------------------------------------------------------+
+//| 決定實際要用的券商黃金代號                                        |
+//| 一律以「EA 掛的這張圖表」的品種為準，自動對應各券商               |
+//| (XAUUSD / XAUUSD.s / GOLD ...)。只有當 TradingSymbol 明確填了     |
+//| 另一個、且這家券商真的有的代號時，才用它覆蓋。                    |
+//+------------------------------------------------------------------+
+string ResolveTradeSymbol()
+{
+   string chart = Symbol();
+   string want  = TradingSymbol;
+   if(want != "" && want != "AUTO" && want != "auto" &&
+      want != chart && SymbolSelect(want, true))
+      return want;                 // 會員明確指定了別的、且券商有 → 用它
+   SymbolSelect(chart, true);       // 確保主商品在 Market Watch 裡
+   return chart;                    // 預設：跟著圖表走
+}
+
+//+------------------------------------------------------------------+
 //| OnInit                                                           |
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   Print("Enhanced MT5 File Bridge v4.2 started for symbol: ", TradingSymbol);
+   g_sym = ResolveTradeSymbol();
+   Print("Enhanced MT5 File Bridge v4.3 started. 交易品種=", g_sym,
+         "（圖表=", Symbol(), " / 參數TradingSymbol=", (TradingSymbol=="" ? "AUTO" : TradingSymbol), "）");
    Print("Auto trading enabled: ", IsTradeAllowedFunc());
    Print("Default lot size: ", DoubleToString(DefaultLotSize,2));
    EventSetTimer(1);
 
    // Write static symbol info at startup
-   WriteSymbolInfo(TradingSymbol);
+   WriteSymbolInfo(g_sym);
 
    LoadHubConfig();
 
@@ -134,21 +159,21 @@ void OnTimer()
    if(TimeCurrent() - last_tick_write >= 1)           { WriteTickData(); last_tick_write = TimeCurrent(); }
    if(TimeCurrent() - last_orders_write >= 2)         { WritePendingOrders(); last_orders_write = TimeCurrent(); }
    if(TimeCurrent() - last_orderbook_write >= 2)      { WriteOrderBook(); last_orderbook_write = TimeCurrent(); }
-   if(TimeCurrent() - last_rates_write >= 10)         { WriteRatesM1(TradingSymbol, ChartBarCount); last_rates_write = TimeCurrent(); }
+   if(TimeCurrent() - last_rates_write >= 10)         { WriteRatesM1(g_sym, ChartBarCount); last_rates_write = TimeCurrent(); }
 
    // 多週期 K 線 + 自選報價。週期越大、重算越沒意義，所以間隔拉開；
    // 全部加起來平均每秒不到一次寫檔，比原本的 tick 檔還輕。
    if(ExportChartData)
    {
-      if(TimeCurrent() - last_rates_m5  >= 15)  { WriteRates(TradingSymbol, PERIOD_M5,  ChartBarCount, "rates_M5.json");  last_rates_m5  = TimeCurrent(); }
-      if(TimeCurrent() - last_rates_m15 >= 30)  { WriteRates(TradingSymbol, PERIOD_M15, ChartBarCount, "rates_M15.json"); last_rates_m15 = TimeCurrent(); }
-      if(TimeCurrent() - last_rates_h1  >= 60)  { WriteRates(TradingSymbol, PERIOD_H1,  ChartBarCount, "rates_H1.json");  last_rates_h1  = TimeCurrent(); }
-      if(TimeCurrent() - last_rates_h4  >= 180) { WriteRates(TradingSymbol, PERIOD_H4,  ChartBarCount, "rates_H4.json");  last_rates_h4  = TimeCurrent(); }
-      if(TimeCurrent() - last_rates_d1  >= 300) { WriteRates(TradingSymbol, PERIOD_D1,  ChartBarCount, "rates_D1.json");  last_rates_d1  = TimeCurrent(); }
+      if(TimeCurrent() - last_rates_m5  >= 15)  { WriteRates(g_sym, PERIOD_M5,  ChartBarCount, "rates_M5.json");  last_rates_m5  = TimeCurrent(); }
+      if(TimeCurrent() - last_rates_m15 >= 30)  { WriteRates(g_sym, PERIOD_M15, ChartBarCount, "rates_M15.json"); last_rates_m15 = TimeCurrent(); }
+      if(TimeCurrent() - last_rates_h1  >= 60)  { WriteRates(g_sym, PERIOD_H1,  ChartBarCount, "rates_H1.json");  last_rates_h1  = TimeCurrent(); }
+      if(TimeCurrent() - last_rates_h4  >= 180) { WriteRates(g_sym, PERIOD_H4,  ChartBarCount, "rates_H4.json");  last_rates_h4  = TimeCurrent(); }
+      if(TimeCurrent() - last_rates_d1  >= 300) { WriteRates(g_sym, PERIOD_D1,  ChartBarCount, "rates_D1.json");  last_rates_d1  = TimeCurrent(); }
       if(TimeCurrent() - last_watchlist >= 3)   { WriteWatchlist(); last_watchlist = TimeCurrent(); }
    }
    // re-dump symbol specs every 1h (in case of broker changes)
-   if(TimeCurrent() - last_symbolinfo_write >= 3600)  { WriteSymbolInfo(TradingSymbol); last_symbolinfo_write = TimeCurrent(); }
+   if(TimeCurrent() - last_symbolinfo_write >= 3600)  { WriteSymbolInfo(g_sym); last_symbolinfo_write = TimeCurrent(); }
 
    // Command processor
    if(EnableTrading && IsTradeAllowedFunc())
@@ -167,13 +192,13 @@ void OnTimer()
 //+------------------------------------------------------------------+
 void WritePriceData()
 {
-   double bid = SymbolInfoDouble(TradingSymbol, SYMBOL_BID);
-   double ask = SymbolInfoDouble(TradingSymbol, SYMBOL_ASK);
-   long   volume = SymbolInfoInteger(TradingSymbol, SYMBOL_VOLUME);
+   double bid = SymbolInfoDouble(g_sym, SYMBOL_BID);
+   double ask = SymbolInfoDouble(g_sym, SYMBOL_ASK);
+   long   volume = SymbolInfoInteger(g_sym, SYMBOL_VOLUME);
    datetime t = TimeCurrent();
 
    string json = "{";
-   json += "\"symbol\":\"" + TradingSymbol + "\",";
+   json += "\"symbol\":\"" + g_sym + "\",";
    json += "\"bid\":" + DoubleToString(bid, 5) + ",";
    json += "\"ask\":" + DoubleToString(ask, 5) + ",";
    json += "\"volume\":" + IntegerToString(volume) + ",";
@@ -181,7 +206,7 @@ void WritePriceData()
    json += "\"server_time\":\"" + TimeToString(t) + "\"";
    json += "}";
 
-   int handle = FileOpen(TradingSymbol + "_price.json", FILE_WRITE|FILE_TXT|FILE_ANSI);
+   int handle = FileOpen(g_sym + "_price.json", FILE_WRITE|FILE_TXT|FILE_ANSI);
    if(handle != INVALID_HANDLE)
    {
       FileWrite(handle, json);
@@ -195,13 +220,13 @@ void WritePriceData()
 void WriteTickData()
 {
    MqlTick tick;
-   if(!SymbolInfoTick(TradingSymbol, tick)) return;
+   if(!SymbolInfoTick(g_sym, tick)) return;
 
    double spread = 0.0;
    if(tick.ask > 0 && tick.bid > 0) spread = tick.ask - tick.bid;
 
    string json = "{";
-   json += "\"symbol\":\""+TradingSymbol+"\",";
+   json += "\"symbol\":\""+g_sym+"\",";
    json += "\"bid\":"+DoubleToString(tick.bid, 5)+",";
    json += "\"ask\":"+DoubleToString(tick.ask, 5)+",";
    json += "\"last\":"+DoubleToString(tick.last, 5)+",";
@@ -212,7 +237,7 @@ void WriteTickData()
    json += "\"flags\":"+IntegerToString((int)tick.flags);
    json += "}";
 
-   int h = FileOpen(TradingSymbol + "_tick.json", FILE_WRITE|FILE_TXT|FILE_ANSI);
+   int h = FileOpen(g_sym + "_tick.json", FILE_WRITE|FILE_TXT|FILE_ANSI);
    if(h!=INVALID_HANDLE){ FileWrite(h, json); FileClose(h); }
 }
 
@@ -543,10 +568,10 @@ void WritePendingOrders()
 //+------------------------------------------------------------------+
 void WriteOrderBook()
 {
-   if(!MarketBookAdd(TradingSymbol)) return;
+   if(!MarketBookAdd(g_sym)) return;
 
    MqlBookInfo bi[];
-   if(MarketBookGet(TradingSymbol, bi))
+   if(MarketBookGet(g_sym, bi))
    {
       string j = "{\"timestamp\":"+IntegerToString(TimeCurrent())+",\"levels\":[";
       for(int i=0;i<ArraySize(bi);i++)
@@ -557,11 +582,11 @@ void WriteOrderBook()
            +",\"volume\":"+DoubleToString(bi[i].volume,2)+"}";
       }
       j+="]}";
-      int h=FileOpen(TradingSymbol + "_orderbook.json", FILE_WRITE|FILE_TXT|FILE_ANSI);
+      int h=FileOpen(g_sym + "_orderbook.json", FILE_WRITE|FILE_TXT|FILE_ANSI);
       if(h!=INVALID_HANDLE){ FileWrite(h, j); FileClose(h); }
    }
 
-   MarketBookRelease(TradingSymbol);
+   MarketBookRelease(g_sym);
 }
 
 //+------------------------------------------------------------------+
@@ -636,7 +661,7 @@ void WriteWatchlist()
 
    string all[];
    ArrayResize(all, n+1);
-   all[0] = TradingSymbol;              // 主商品永遠排第一
+   all[0] = g_sym;              // 主商品永遠排第一
    for(int i=0;i<n;i++) all[i+1] = parts[i];
 
    string j = "{\"server_time\":"+IntegerToString((long)TimeCurrent())+",\"items\":[";
@@ -647,7 +672,7 @@ void WriteWatchlist()
       string want = all[i];
       StringTrimLeft(want); StringTrimRight(want);
       if(want == "") continue;
-      if(i > 0 && want == TradingSymbol) continue;   // 別重複列主商品
+      if(i > 0 && want == g_sym) continue;   // 別重複列主商品
 
       string sym = ResolveSymbol(want);
       if(sym == "") continue;
@@ -842,7 +867,9 @@ bool ParseTradeCommand(string json, TradeCommand &cmd)
    if(cmd.action == "buy" || cmd.action == "sell")
    {
       if(cmd.lot_size <= 0) cmd.lot_size = DefaultLotSize;
-      if(cmd.symbol == "")  cmd.symbol = TradingSymbol;
+      // 一律用 EA 端解析到的券商代號(如 XAUUSD.s)下單，會員端送來的 "XAUUSD"
+      // 只是通用代號、在別家券商不存在，照送會被拒單。
+      cmd.symbol = g_sym;
       if(cmd.trade_id == "") cmd.trade_id = IntegerToString(TimeCurrent());
    }
 
