@@ -897,6 +897,12 @@ main { max-width: 1560px; margin: 0 auto; padding: 22px 28px 72px; }
 }
 .src-table input[disabled], .src-table select[disabled] { opacity: .4; cursor: not-allowed; }
 .src-table input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--gold-mark); }
+/* 分批比例輸入 + 最低手數提示,擠在「多 TP 處理」那一格裡 */
+.sp-tp-cell { min-width: 128px; }
+.src-table .sp-ratios { margin-top: 5px; width: 100%; min-width: 88px; text-align: center; letter-spacing: .03em; }
+.sp-ratio-note { display: block; margin-top: 3px; font-size: 11px; line-height: 1.3; }
+.sp-ratio-note.is-bad { color: var(--loss); font-weight: 600; }
+.sp-ratio-note.is-ok  { color: var(--muted); }
 .src-name { font-weight: 600; white-space: nowrap; }
 .src-meta { font-size: 11px; color: var(--muted); font-weight: 400; }
 .src-add { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
@@ -2825,10 +2831,12 @@ function renderSourceSettings(rows) {
         '<td><input type="number" class="sp-base" step="0.01" min="0.01" value="' + r.base_lot + '" /></td>' +
         '<td><input type="number" class="sp-mult" step="0.1" min="1" value="' + r.multiplier + '" /></td>' +
         '<td><input type="number" class="sp-max" step="1" min="1" max="12" value="' + r.max_level + '" /></td>' +
-        '<td><select class="sp-tpmode">' +
+        '<td class="sp-tp-cell"><select class="sp-tpmode">' +
           '<option value="partial"' + (r.tp_mode === "partial" ? " selected" : "") + ">分批平倉</option>" +
           '<option value="breakeven"' + (r.tp_mode === "breakeven" ? " selected" : "") + ">保本移損</option>" +
-        "</select></td>" +
+        "</select>" +
+        '<input type="text" class="sp-ratios" value="' + ratiosToText(r.partial_ratios) + '" title="三個止盈的分批比例，例 50/30/20（佔原始手數）" />' +
+        '<span class="sp-ratio-note"></span></td>' +
         '<td><input type="number" class="sp-active" step="1" min="0" value="' + r.max_active_orders + '" title="0 = 不限" /></td>' +
         '<td><input type="number" class="sp-daily" step="1" min="0" value="' + r.max_daily_trades + '" title="0 = 不限" /></td>' +
         '<td><input type="number" class="sp-loss" step="1" min="0" value="' + r.max_daily_loss + '" title="帳戶幣別；0 = 不限" /></td>' +
@@ -2867,14 +2875,80 @@ function addSourceRow() {
     '<td><input type="number" class="sp-base" step="0.01" min="0.01" value="0.01" /></td>' +
     '<td><input type="number" class="sp-mult" step="0.1" min="1" value="2" /></td>' +
     '<td><input type="number" class="sp-max" step="1" min="1" max="12" value="5" /></td>' +
-    '<td><select class="sp-tpmode"><option value="partial" selected>分批平倉</option>' +
-      '<option value="breakeven">保本移損</option></select></td>' +
+    '<td class="sp-tp-cell"><select class="sp-tpmode"><option value="partial" selected>分批平倉</option>' +
+      '<option value="breakeven">保本移損</option></select>' +
+      '<input type="text" class="sp-ratios" value="50/30/20" title="三個止盈的分批比例，例 50/30/20（佔原始手數）" />' +
+      '<span class="sp-ratio-note"></span></td>' +
     '<td><input type="number" class="sp-active" step="1" min="0" value="0" title="0 = 不限" /></td>' +
     '<td><input type="number" class="sp-daily" step="1" min="0" value="0" title="0 = 不限" /></td>' +
     '<td><input type="number" class="sp-loss" step="1" min="0" value="0" title="0 = 不限" /></td>';
   document.querySelector(".src-table tbody").appendChild(tr);
   input.value = "";
   syncSourceProfiles();
+}
+
+/* ── 分批比例與最低手數 ────────────────────────────────────────────
+   分批平倉會把一筆單依比例拆成三段(前兩段各自的比例 + 尾段=剩下的),每一段送到
+   MT5 都必須 ≥ 0.01 手(券商最低)。所以比例越極端、手數就要越大,這裡照後端
+   _plan_partial_chunks 的算法(3 個止盈=2 個中間關+尾段)算出「這個比例的最低手數」。 */
+// 用 toFixed(2) 而非 Math.round(x*100)/100 —— 前者才跟後端 Python round(x,2) 一致
+// (Math.round 會把 0.015 進成 0.02,後端是 0.01,害預設 50/30/20 的最低手數算錯)。
+// 名字跟上面既有的 round2(馬丁階梯用)區隔開,不要互相覆蓋。
+function pround2(x) { return Number(x.toFixed(2)); }
+function ratiosToText(arr) {
+  if (!Array.isArray(arr) || arr.length < 2) return "50/30/20";
+  return arr.map((r) => Math.round(r * 100)).join("/");
+}
+function parseRatios(text) {
+  const parts = String(text || "").replace(/，/g, ",").split(/[\/,\s]+/).map((s) => s.trim()).filter(Boolean);
+  const nums = parts.map(Number);
+  if (nums.length < 2 || nums.some((n) => !isFinite(n) || n <= 0)) return null;
+  const sum = nums.reduce((a, b) => a + b, 0);
+  // 允許用百分比(和≈100)或小數(和≈1)輸入,一律正規化成和=1 的小數比例
+  const norm = nums.map((n) => n / sum);
+  return norm;
+}
+function partialPlanValid(v, ratios) {
+  v = pround2(v);
+  if (v < 0.02) return false;
+  const intermediate = 2;              // 三個止盈 → 2 個中間關 + 尾段
+  let allocated = 0;
+  for (let i = 0; i < intermediate; i++) {
+    if (i >= ratios.length) return false;
+    const chunk = pround2(v * ratios[i]);
+    if (chunk < 0.01) return false;
+    allocated = pround2(allocated + chunk);
+  }
+  return pround2(v - allocated) >= 0.01;   // 尾段也要 ≥ 0.01
+}
+function minLotForRatios(ratios) {
+  for (let c = 2; c <= 2000; c++) { const v = c / 100; if (partialPlanValid(v, ratios)) return v; }
+  return null;
+}
+/* 檢查每個「分批平倉」來源的手數夠不夠拆;回傳錯誤字串陣列(空=全部 OK)。 */
+function validateSourceLots() {
+  const errors = [];
+  for (const row of document.querySelectorAll("[data-source-row]")) {
+    const note = row.querySelector(".sp-ratio-note");
+    if (row.querySelector(".sp-tpmode").value !== "partial") { if (note) note.textContent = ""; continue; }
+    const name = row.dataset.sourceRow;
+    const base = parseFloat(row.querySelector(".sp-base").value) || 0;
+    const ratios = parseRatios(row.querySelector(".sp-ratios").value);
+    if (!ratios) {
+      if (note) { note.textContent = "比例格式錯誤"; note.className = "sp-ratio-note is-bad"; }
+      errors.push(`「${srcName(name)}」的分批比例格式不對，請填像 50/30/20`);
+      continue;
+    }
+    const need = minLotForRatios(ratios);
+    if (need && base < need) {
+      if (note) { note.textContent = `需 ≥ ${need} 手`; note.className = "sp-ratio-note is-bad"; }
+      errors.push(`「${srcName(name)}」分批比例 ${ratiosToText(ratios)} 每段都要 ≥ 0.01 手，最低需 ${need} 手，目前只有 ${base || 0} 手`);
+    } else if (note) {
+      note.textContent = need ? `最低 ${need} 手 ✓` : "";
+      note.className = "sp-ratio-note is-ok";
+    }
+  }
+  return errors;
 }
 
 function syncSourceProfiles() {
@@ -2885,6 +2959,10 @@ function syncSourceProfiles() {
     // 均注沒有倍數與關卡可言，把欄位鎖住比留著讓人填了沒作用好
     row.querySelector(".sp-mult").disabled = !martingale;
     row.querySelector(".sp-max").disabled = !martingale;
+    // 分批比例只有「分批平倉」用得到，保本移損就把它藏起來免得誤會
+    const partial = row.querySelector(".sp-tpmode").value === "partial";
+    const ratioInput = row.querySelector(".sp-ratios");
+    if (ratioInput) ratioInput.style.display = partial ? "" : "none";
     const entry = {
       enabled: row.querySelector(".sp-enabled").checked,
       mode,
@@ -2894,6 +2972,8 @@ function syncSourceProfiles() {
       max_daily_trades: parseInt(row.querySelector(".sp-daily").value, 10) || 0,
       max_daily_loss: parseFloat(row.querySelector(".sp-loss").value) || 0,
     };
+    const ratios = ratioInput ? parseRatios(ratioInput.value) : null;
+    if (ratios) entry.partial_ratios = ratios;
     if (martingale) {
       entry.multiplier = parseFloat(row.querySelector(".sp-mult").value) || 2;
       entry.max_level = parseInt(row.querySelector(".sp-max").value, 10) || 5;
@@ -2901,6 +2981,7 @@ function syncSourceProfiles() {
     out[row.dataset.sourceRow] = entry;
   }
   $("source_profiles").value = JSON.stringify(out);
+  validateSourceLots();   // 更新每列的最低手數提示(紅/綠)
 }
 
 /* -------------------------------------------------------------- painting */
@@ -4382,6 +4463,14 @@ function validateSettingsInputs() {
 }
 function doSaveSettings() {
   if (!validateSettingsInputs()) return Promise.reject(new Error("invalid"));
+  // 分批平倉手數不夠拆就擋下來,不存 —— 免得存了才發現分批默默失效。
+  if (IS_CLIENT) {
+    const lotErrors = validateSourceLots();
+    if (lotErrors.length) {
+      setSaveStatus("✗ 未儲存：" + lotErrors[0], "err");
+      return Promise.reject(new Error("lot"));
+    }
+  }
   const seq = ++__saveSeq;
   setSaveStatus("儲存中…", "saving");
   return post("/api/settings", collect()).then(() => {

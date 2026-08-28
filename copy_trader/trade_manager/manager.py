@@ -594,12 +594,27 @@ class TradeManager:
         tp_mode = str(raw.get("tp_mode") or "").strip().lower()
         if tp_mode not in ("partial", "breakeven"):
             tp_mode = "partial"
+        # 每個來源可各自設分批比例(佔原始手數);沒給或不合法就用全域預設 [0.5,0.3,0.2]。
+        partial_ratios = self.partial_close_ratios
+        raw_ratios = raw.get("partial_ratios")
+        if isinstance(raw_ratios, list):
+            parsed = []
+            for x in raw_ratios:
+                try:
+                    f = float(x)
+                except (TypeError, ValueError):
+                    f = 0.0
+                if f > 0:
+                    parsed.append(f)
+            if len(parsed) >= 2:
+                partial_ratios = parsed
         return {
             "source": source_window,
             "configured": bool(raw),
             "enabled": bool(raw.get("enabled", True)),
             "mode": mode,
             "tp_mode": tp_mode,
+            "partial_ratios": [float(x) for x in partial_ratios],
             "base_lot": _num("base_lot", self.default_lot_size),
             "multiplier": _num("multiplier", self.martingale_multiplier),
             "max_level": int(_num("max_level", self.martingale_max_level)),
@@ -902,7 +917,9 @@ class TradeManager:
             )
         else:
             # 分批計畫以「原始手數」為基準；空計畫=手數不足以乾淨分割 → 退回整包在 TP1 平。
-            partial_plan = self._plan_partial_chunks(lot_size, tps)
+            # 用該來源自訂的分批比例(profile_for 已回退到全域預設)。
+            source_ratios = self.profile_for(order.source_window).get("partial_ratios")
+            partial_plan = self._plan_partial_chunks(lot_size, tps, source_ratios)
             if partial_plan:
                 # 多 TP + 可分割：MT5 TP 設在最後一關(當尾段的安全網),中間關由 _check_partial_tp_hits 處理。
                 mt5_tp = tps[-1]
@@ -1658,7 +1675,8 @@ class TradeManager:
                 if hit:
                     self._execute_partial_close(order)
 
-    def _plan_partial_chunks(self, volume: float, tps: List[float]) -> List[float]:
+    def _plan_partial_chunks(self, volume: float, tps: List[float],
+                             ratios: Optional[List[float]] = None) -> List[float]:
         """
         預先算好「中間各 TP(除了最後一關)」要平的手數,比例以【原始成交量】為基準。
 
@@ -1672,6 +1690,7 @@ class TradeManager:
         """
         volume = round(volume or 0.0, 2)
         tps = tps or []
+        ratios = ratios or self.partial_close_ratios      # 沒給就用全域比例
         num_intermediate = len(tps) - 1
         if num_intermediate < 1 or volume < 0.02:
             return []
@@ -1679,10 +1698,10 @@ class TradeManager:
         chunks: List[float] = []
         allocated = 0.0
         for i in range(num_intermediate):
-            if i >= len(self.partial_close_ratios):
-                # 中間關比原始比例表還多 → 無法規劃乾淨分割
+            if i >= len(ratios):
+                # 中間關比比例表還多 → 無法規劃乾淨分割
                 return []
-            chunk = round(volume * self.partial_close_ratios[i], 2)
+            chunk = round(volume * ratios[i], 2)
             if chunk < 0.01:
                 return []
             chunks.append(chunk)
