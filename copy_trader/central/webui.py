@@ -360,6 +360,8 @@ body[data-role="client"]:not(.auth-locked) .shell {
 }
 .side-feats li.is-off { color: var(--muted); }
 .side-feats li .val { margin-left: auto; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+/* 鎖住的功能把「需XX版」標成金色，當作升級誘因 */
+.side-feats li .val--lock { color: var(--gold); font-family: inherit; font-weight: 600; letter-spacing: .02em; }
 
 .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--muted); }
 .dot--on { background: var(--win); box-shadow: 0 0 0 3px var(--win-wash); }
@@ -1479,6 +1481,8 @@ body.auth-locked > *:not(#authGate) { display: none; }
     <span class="chip is-off" id="chipService"><span class="dot"></span><span>載入中</span></span>
     <span class="chip is-off client-only" id="chipMt5"><span class="dot"></span><span>MT5</span></span>
     <span class="chip is-off" id="chipHub"><span class="dot"></span><span>Hub</span></span>
+    <!-- 掛單即時狀態，讓會員一眼看到有沒有單在等進場 -->
+    <a href="#secPending" class="chip is-off client-only" id="chipPending"><span class="dot"></span><span>掛單</span></a>
   </div>
   <div class="rail-actions">
     <button class="btn btn-go" id="start"><span class="client-only">開始跟單</span><span class="central-only">開始發布</span></button>
@@ -1953,6 +1957,7 @@ const srcName = (s) => SOURCE_ALIAS[s] || (s || "未標記來源");
    避免把群組名寫死在兩個地方。 */
 const HIGH_SOURCE = Object.keys(SOURCE_ALIAS).find((k) => SOURCE_ALIAS[k] === "高頻交易") || "";
 const MID_SOURCE  = Object.keys(SOURCE_ALIAS).find((k) => SOURCE_ALIAS[k] === "中頻交易") || "";
+const ULTRA_SOURCE = Object.keys(SOURCE_ALIAS).find((k) => SOURCE_ALIAS[k] === "超高頻交易") || "";
 
 
 function ids() {
@@ -2625,16 +2630,25 @@ function cancelStateTag(p) {
   if (state === "failed_retry") return '<span class="tag tag-warn">撤單重試中</span>';
   return '<span class="muted">—</span>';
 }
+function paintPendingChip(n, running) {
+  const chip = $("chipPending");
+  if (!chip) return;
+  chip.className = "chip " + (!running ? "is-off" : n ? "is-warn" : "is-live");
+  chip.lastElementChild.textContent = !running ? "掛單 —" : n ? ("待成交 " + n + " 筆") : "無待成交";
+}
 function renderPending(pending, running) {
   const box = $("pending");
-  $("pendingSummary").textContent = pending.length
-    ? pending.length + " 筆等待進場 · 撤單只依 LINE 引用關係"
-    : (running ? "沒有等待中的掛單 · 撤單只依 LINE 引用關係" : "服務未啟動");
+  const n = pending.length;
+  // 狀態一句話帶過(不重複撤單規則);規則只在下方空狀態講一次。
+  $("pendingSummary").textContent = n
+    ? n + " 筆等待進場"
+    : (running ? "沒有等待中的掛單" : "服務未啟動");
+  paintPendingChip(n, running);
 
-  if (!pending.length) {
+  if (!n) {
     box.innerHTML = '<div class="empty"><b>' +
-      (running ? "沒有等待中的掛單" : "服務未啟動，看不到掛單") + "</b>" +
-      (running ? "撤單只接受 LINE 回覆／引用指定的原始報單" : "按上方「開始跟單」後，等待進場的單會出現在這裡") + "</div>";
+      (running ? "目前沒有單在等進場" : "服務未啟動，看不到掛單") + "</b>" +
+      (running ? "撤單依 LINE 引用回覆指定的原始報單，或掛單逾 4 小時未成交自動撤" : "按上方「開始跟單」後，等待進場的單會出現在這裡") + "</div>";
     return;
   }
   const rows = pending.map((p) => {
@@ -3798,46 +3812,70 @@ function paintSide(a) {
 
   const exp = Number(a.expires_at || 0);
   const wrap = $("sideMeterWrap");
+  window.__memberExpAt = exp;                 // 給每秒倒數用
   if (exp) {
     const d = new Date(exp * 1000);
     const pad = (n) => String(n).padStart(2, "0");
-    $("sideExp").textContent = `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())}`;
-
-    const days = Math.floor((exp * 1000 - Date.now()) / 86400000);
-    const soon = days <= 7;
+    // 到期「日期＋時間」都顯示，配合下面的天時分秒倒數
+    $("sideExp").textContent =
+      `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    const days = (exp * 1000 - Date.now()) / 86400000;
     wrap.hidden = false;
     $("sideMeter").style.width = Math.max(0, Math.min(100, (days / TIER_FULL_DAYS) * 100)) + "%";
-    wrap.classList.toggle("is-soon", soon);
-    const left = $("sideLeft");
-    left.textContent = days >= 0 ? `還剩 ${days} 天` : "已到期，請聯繫管理員續期";
-    left.classList.toggle("is-soon", soon);
+    wrap.classList.toggle("is-soon", days <= 7);
+    startExpTicker();                          // 啟動/重啟每秒倒數
   } else {
     $("sideExp").textContent = "無期限";
     wrap.hidden = true;
     $("sideLeft").textContent = "";
+    stopExpTicker();
   }
 
   const e = a.entitlements || {};
   const srcs = Array.isArray(e.sources) ? e.sources : [];
-  const has = (name) => srcs.indexOf(name) !== -1;
+  const has = (name) => !!name && srcs.indexOf(name) !== -1;
   const maxLot = e.max_lot;
+  const TIER_LABEL = { trial: "體驗版", basic: "基礎版", advanced: "進階版", flagship: "旗艦版" };
 
+  // 一律列出「全部」功能。會員沒有的鎖起來、標出需要的等級，讓低階會員看見上面有什麼可以解鎖。
   const rows = [
-    { label: "中頻訊號跟單", on: has(MID_SOURCE) },
-    { label: "高頻訊號跟單", on: has(HIGH_SOURCE) },
-    { label: "跟單手數上限", on: true,
+    { label: "中頻訊號跟單",  on: has(MID_SOURCE),   need: "trial" },
+    { label: "高頻訊號跟單",  on: has(HIGH_SOURCE),  need: "advanced" },
+    { label: "超高頻訊號跟單", on: has(ULTRA_SOURCE), need: "flagship" },
+    { label: "跟單手數上限",  on: true, need: "trial",
       value: maxLot == null ? "不限" : lots(maxLot) + " 手" },
-    { label: "馬丁策略設定", on: !!e.martingale },
-    { label: "分批止盈設定", on: !!e.partial_close },
+    { label: "馬丁策略設定",  on: !!e.martingale,    need: "flagship" },
+    { label: "分批止盈設定",  on: !!e.partial_close, need: "flagship" },
   ];
 
   $("sideEnt").innerHTML = rows.map((r) => `
     <li class="${r.on ? "" : "is-off"}">
       ${r.on ? '<i class="dot dot--on"></i>' : '<i class="lockmark"></i>'}
       <span>${esc(r.label)}</span>
-      ${r.value ? `<span class="val">${esc(r.value)}</span>` : ""}
+      ${r.on
+        ? (r.value ? `<span class="val">${esc(r.value)}</span>` : "")
+        : `<span class="val val--lock">需${esc(TIER_LABEL[r.need] || "更高等級")}</span>`}
     </li>`).join("");
 }
+
+/* 到期倒數：天時分秒，每秒跳一次。expires_at 存在 window.__memberExpAt，
+   paintSide 每次刷新會更新它，這裡只管把它算成人看得懂的字。 */
+let __expTimer = null;
+function tickExp() {
+  const left = $("sideLeft");
+  if (!left) return;
+  const exp = Number(window.__memberExpAt || 0);
+  if (!exp) { left.textContent = ""; return; }
+  let r = Math.floor(exp - Date.now() / 1000);
+  if (r <= 0) { left.textContent = "已到期，請聯繫管理員續期"; left.classList.add("is-soon"); return; }
+  const d = Math.floor(r / 86400); r -= d * 86400;
+  const h = Math.floor(r / 3600);  r -= h * 3600;
+  const m = Math.floor(r / 60);    const s = r - m * 60;
+  left.textContent = `還剩 ${d} 天 ${h} 時 ${m} 分 ${s} 秒`;
+  left.classList.toggle("is-soon", (exp - Date.now() / 1000) <= 7 * 86400);
+}
+function startExpTicker() { tickExp(); if (!__expTimer) __expTimer = setInterval(tickExp, 1000); }
+function stopExpTicker() { if (__expTimer) { clearInterval(__expTimer); __expTimer = null; } }
 
 function paintAuth(snap) {
   if (!IS_CLIENT) return;
