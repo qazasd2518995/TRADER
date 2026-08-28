@@ -33,20 +33,10 @@ CLIENT_FIELDS = """
         </div>
       </div>
       <div class="field-group">
-        <h3>下單與馬丁</h3>
-        <div class="field-grid">
-          <label class="switch">啟用馬丁格爾<input id="use_martingale" type="checkbox" /></label>
-          <label>馬丁倍數<input id="martingale_multiplier" placeholder="2.0（每層 × 倍數）" /></label>
-          <label>馬丁最大層數<input id="martingale_max_level" placeholder="5（5 關最大 base×16）" /></label>
-          <label>每層自訂手數<input id="martingale_lots" placeholder="留空=用倍數；例 0.01,0.02,0.04,0.08" /></label>
-          <label>多 TP 分批平倉<input id="partial_close_ratios" placeholder="例 0.5,0.3,0.2" /></label>
-        </div>
-      </div>
-      <div class="field-group">
         <h3>訊號來源設定</h3>
         <div id="sourceSettings"></div>
         <input type="hidden" id="source_profiles" />
-        <p class="hint">每個來源可以各自設定。選「均注」= 每筆固定手數、不進關卡；選「馬丁」= 逐關加碼，各來源層級獨立計算，互不影響。0 代表該項風控不限；超高頻交易預設停用、0.01 均注、同時一張、每日 12 張、每日虧損 25。</p>
+        <p class="hint">手數、馬丁、分批平倉全部在這張表裡「每個來源各自設定」，不再有全域設定，免得兩邊打架。選「均注」= 每筆固定手數、不進關卡；選「馬丁」= 逐關加碼(基礎手數 × 倍數)，各來源層級獨立、互不影響。多 TP 選「分批平倉」= 到每個止盈分批出場、「保本移損」= first TP 後把停損移到成本。0 代表該項風控不限；超高頻交易預設停用、0.01 均注、同時一張、每日 12 張、每日虧損 25。</p>
       </div>
       <div class="field-group">
         <h3>其他策略（EA 自動下單）</h3>
@@ -1968,11 +1958,10 @@ function ids() {
        "hub_url", "host", "port", "token", "interval", "shadow_mode", "cloudflare_tunnel", "cloudflared_path", "auto_start"]
     // 會員端刻意不含 hub_url / token：那兩個不該讓會員看到，也不該由前端回送
     // （token 是管理權限的通行證，送到瀏覽器等於直接把付費牆拆了）
-    // 基礎手數已移除:每個訊號來源在下方各自設定手數(sp-base),不再有全域下單手數,
-    // 免得跟來源手數打架。未設定的來源後端仍以 default_lot_size(內建 0.01)保底。
-    : ["mt5_files_dir", "interval", "auto_start", "use_martingale",
-       "martingale_multiplier", "martingale_max_level", "martingale_lots", "partial_close_ratios",
-       "source_profiles", "ea_sources"];
+    // 下單/馬丁/分批全部移到「訊號來源設定」表格,每個來源各自設定,不再有全域欄位
+    // (免得兩處打架)。後端仍保留這些值當「未個別設定來源」的內建預設:
+    // default_lot_size 0.01、multiplier 2、max_level、partial_close_ratios 0.5/0.3/0.2。
+    : ["mt5_files_dir", "interval", "auto_start", "source_profiles", "ea_sources"];
 }
 function collect() {
   const out = {};
@@ -2833,7 +2822,7 @@ function renderSourceSettings(rows) {
       '<tr data-source-row="' + esc(r.source) + '">' +
         '<td><div class="src-name">' + esc(srcName(r.source)) + "</div>" +
           '<div class="src-meta">已成交 ' + r.trades + " 筆" +
-          (r.configured ? "" : " · 目前套用全域設定") + "</div></td>" +
+          (r.configured ? "" : " · 尚未個別設定（用預設）") + "</div></td>" +
         '<td><input type="checkbox" class="sp-enabled"' + (r.enabled ? " checked" : "") + " /></td>" +
         '<td><select class="sp-mode">' +
           '<option value="martingale"' + (r.mode === "martingale" ? " selected" : "") + ">馬丁</option>" +
