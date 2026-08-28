@@ -900,9 +900,10 @@ main { max-width: 1560px; margin: 0 auto; padding: 22px 28px 72px; }
 /* 分批比例輸入 + 最低手數提示,直向堆在「多 TP 處理」那一格裡,不外溢到隔壁欄 */
 .sp-tp-cell { min-width: 130px; }
 .src-table .sp-ratios { display: block; margin-top: 5px; width: 100%; min-width: 0; box-sizing: border-box; text-align: center; letter-spacing: .03em; }
-.sp-ratio-note { display: block; margin-top: 3px; font-size: 11px; line-height: 1.3; white-space: nowrap; }
-.sp-ratio-note.is-bad { color: var(--loss); font-weight: 600; }
-.sp-ratio-note.is-ok  { color: var(--muted); }
+.sp-ratio-note { display: block; margin-top: 3px; font-size: 11px; line-height: 1.35; max-width: 150px; }
+.sp-ratio-note.is-bad  { color: var(--loss); font-weight: 600; }
+.sp-ratio-note.is-warn { color: var(--gold); }
+.sp-ratio-note.is-ok   { color: var(--muted); }
 .src-name { font-weight: 600; white-space: nowrap; }
 .src-meta { font-size: 11px; color: var(--muted); font-weight: 400; }
 .src-add { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
@@ -2995,12 +2996,31 @@ function minLotForRatios(ratios) {
   for (let c = 2; c <= 2000; c++) { const v = c / 100; if (partialPlanValid(v, ratios)) return v; }
   return null;
 }
-/* 檢查每個「分批平倉」來源的手數夠不夠拆;回傳錯誤字串陣列(空=全部 OK)。 */
+/* 實際拆出來的三段手數(照後端算法:前兩段按比例、尾段=剩下的);拆不出就回 null。 */
+function partialSplit(v, ratios) {
+  v = pround2(v);
+  if (v < 0.02 || !ratios || ratios.length < 2) return null;
+  const c0 = pround2(v * ratios[0]);
+  const c1 = pround2(v * ratios[1]);
+  const tail = pround2(v - c0 - c1);
+  if (c0 < 0.01 || c1 < 0.01 || tail < 0.01) return null;
+  return [c0, c1, tail];
+}
+/* 實際各段佔比跟設定比例差距都 ≤ 8 個百分點,才算「真的照比例分」;
+   否則就是手數太小、被 0.01 最小手數四捨五入拉平了(例如 0.03 的 50/30/20 → 0.01/0.01/0.01)。 */
+function ratioHonored(split, ratios) {
+  const total = split[0] + split[1] + split[2];
+  if (total <= 0) return false;
+  for (let i = 0; i < 3; i++) if (Math.abs(split[i] / total - ratios[i]) > 0.08) return false;
+  return true;
+}
+/* 檢查每個「分批平倉」來源:手數太小連三段都拆不出就擋存;拆得出但比例被拉平就提示
+   實際會怎麼拆(不擋);比例有照著分就綠勾。回傳擋存錯誤字串陣列(空=可儲存)。 */
 function validateSourceLots() {
   const errors = [];
   for (const row of document.querySelectorAll("[data-source-row]")) {
     const note = row.querySelector(".sp-ratio-note");
-    if (row.querySelector(".sp-tpmode").value !== "partial") { if (note) note.textContent = ""; continue; }
+    if (row.querySelector(".sp-tpmode").value !== "partial") { if (note) { note.textContent = ""; note.className = "sp-ratio-note"; } continue; }
     const name = row.dataset.sourceRow;
     const base = parseFloat(row.querySelector(".sp-base").value) || 0;
     const ratios = parseRatios(row.querySelector(".sp-ratios").value);
@@ -3009,13 +3029,23 @@ function validateSourceLots() {
       errors.push(`「${srcName(name)}」的分批比例格式不對，請填像 50/30/20`);
       continue;
     }
-    const need = minLotForRatios(ratios);
-    if (need && base < need) {
-      if (note) { note.textContent = `需 ≥ ${need} 手`; note.className = "sp-ratio-note is-bad"; }
-      errors.push(`「${srcName(name)}」分批比例 ${ratiosToText(ratios)} 每段都要 ≥ 0.01 手，最低需 ${need} 手，目前只有 ${base || 0} 手`);
-    } else if (note) {
-      note.textContent = need ? `最低 ${need} 手 ✓` : "";
+    const split = partialSplit(base, ratios);
+    if (!split) {
+      const need = minLotForRatios(ratios);
+      if (note) { note.textContent = `手數太小、分不出三段，至少要 ${need} 手`; note.className = "sp-ratio-note is-bad"; }
+      errors.push(`「${srcName(name)}」分批需要每段 ≥ 0.01 手，至少 ${need} 手，目前只有 ${base || 0} 手`);
+      continue;
+    }
+    const splitText = `分批 ${split[0]} / ${split[1]} / ${split[2]} 手`;
+    if (!note) continue;
+    if (ratioHonored(split, ratios)) {
+      note.textContent = splitText + " ✓";
       note.className = "sp-ratio-note is-ok";
+    } else {
+      // 能拆但被 0.01 最小手數拉平(例如 0.03 的 50/30/20 → 0.01/0.01/0.01)——
+      // 誠實顯示實際手數,不擋(仍是有效分批),提示手數小時比例會被拉平。
+      note.textContent = splitText + "（手數小，比例被 0.01 最小手數拉平，想更貼近就加大手數）";
+      note.className = "sp-ratio-note is-warn";
     }
   }
   return errors;
