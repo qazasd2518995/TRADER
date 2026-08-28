@@ -24,26 +24,10 @@ from typing import Any
 
 CLIENT_FIELDS = """
       <div class="field-group">
-        <h3>連線</h3>
-        <div class="field-grid">
-          <label>MT5 Files 路徑<input id="mt5_files_dir" placeholder="可留空自動偵測" /></label>
-          <label>輪詢秒數<input id="interval" placeholder="1.0" /></label>
-          <label class="switch">Shadow mode（只解析、不發布）<input id="shadow_mode" type="checkbox" /></label>
-          <label class="switch">開啟程式後自動開始<input id="auto_start" type="checkbox" /></label>
-        </div>
-      </div>
-      <div class="field-group">
         <h3>訊號來源設定</h3>
         <div id="sourceSettings"></div>
         <input type="hidden" id="source_profiles" />
-        <p class="hint">手數、馬丁、分批平倉全部在這張表裡「每個來源各自設定」，不再有全域設定，免得兩邊打架。選「均注」= 每筆固定手數、不進關卡；選「馬丁」= 逐關加碼(基礎手數 × 倍數)，各來源層級獨立、互不影響。多 TP 選「分批平倉」= 到每個止盈分批出場、「保本移損」= first TP 後把停損移到成本。0 代表該項風控不限；超高頻交易預設停用、0.01 均注、同時一張、每日 12 張、每日虧損 25。</p>
-      </div>
-      <div class="field-group">
-        <h3>其他策略（EA 自動下單）</h3>
-        <div class="field-grid">
-          <label>魔術編號 → 名稱<input id="ea_sources" placeholder='{"20260503": "趨勢線策略"}' /></label>
-        </div>
-        <p class="hint">同一個 MT5 帳戶裡，另外掛的、不靠訊號、自己判斷進出場的 EA（例如趨勢線策略）——填「魔術編號: 名稱」讓報表認出這是誰下的單，會併入下面的績效卡片與交易紀錄一起看。這裡純粹是標籤，不會控制那顆 EA 的手數或進出場，手數要調就直接改 MT5 裡 EA 的設定。魔術編號在 MT5 的 EA 輸入參數裡找（通常叫「魔術編號」或 Magic Number）。</p>
+        <p class="hint">手數、馬丁、分批平倉全部在這張表裡「每個來源各自設定」。選「均注」= 每筆固定手數、不進關卡；選「馬丁」= 逐關加碼(基礎手數 × 倍數)，各來源層級獨立、互不影響。多 TP 選「分批平倉」= 到每個止盈分批出場、「保本移損」= first TP 後把停損移到成本。0 代表該項風控不限。MT5 連線會自動偵測，開啟程式登入後就會自動開始跟單。</p>
       </div>
 """
 
@@ -1579,7 +1563,28 @@ body.auth-locked > *:not(#authGate) { display: none; }
   <!-- ① 頂部統計卡列。內容由 renderDashStats() 依實際資料產生。 -->
   <dl class="dash-stats" id="dashStats"></dl>
 
-  <!-- ② 篩選列：期間與來源。下方所有圖表與表格共用這一組。 -->
+  <!-- ② 掛單與持倉 —— 移到最上面，讓會員一進來就即時看到有沒有單在等進場、目前持倉。
+       這兩區是當下狀態，不吃下方的期間篩選。 -->
+  <div class="dash-grid dash-grid--2">
+    <section class="panel" id="secPending">
+      <div class="panel-head">
+        <h2>待成交掛單</h2>
+        <p class="spacer" id="pendingSummary">—</p>
+        <span class="tz-note" id="tzNotePending"></span>
+      </div>
+      <div class="panel-body panel-body--flush"><div id="pending"></div></div>
+    </section>
+
+    <section class="panel" id="secPositions">
+      <div class="panel-head">
+        <h2>目前持倉</h2>
+        <p class="spacer" id="posSummary">—</p>
+      </div>
+      <div class="panel-body panel-body--flush"><div id="positions"></div></div>
+    </section>
+  </div>
+
+  <!-- ③ 篩選列：期間與來源。下方所有圖表與表格共用這一組。 -->
     <div class="filters">
       <span class="label">期間</span>
       <div class="pillset" id="filterPeriod">
@@ -1708,26 +1713,6 @@ body.auth-locked > *:not(#authGate) { display: none; }
       <div class="table-scroll" id="records"></div>
     </div>
       </div>
-    </section>
-  </div>
-
-  <!-- ⑤ 掛單與持倉 -->
-  <div class="dash-grid dash-grid--2">
-    <section class="panel" id="secPending">
-      <div class="panel-head">
-        <h2>待成交掛單</h2>
-        <p class="spacer" id="pendingSummary">—</p>
-        <span class="tz-note" id="tzNotePending"></span>
-      </div>
-      <div class="panel-body panel-body--flush"><div id="pending"></div></div>
-    </section>
-
-    <section class="panel" id="secPositions">
-      <div class="panel-head">
-        <h2>目前持倉</h2>
-        <p class="spacer" id="posSummary">—</p>
-      </div>
-      <div class="panel-body panel-body--flush"><div id="positions"></div></div>
     </section>
   </div>
 
@@ -1958,10 +1943,10 @@ function ids() {
        "hub_url", "host", "port", "token", "interval", "shadow_mode", "cloudflare_tunnel", "cloudflared_path", "auto_start"]
     // 會員端刻意不含 hub_url / token：那兩個不該讓會員看到，也不該由前端回送
     // （token 是管理權限的通行證，送到瀏覽器等於直接把付費牆拆了）
-    // 下單/馬丁/分批全部移到「訊號來源設定」表格,每個來源各自設定,不再有全域欄位
-    // (免得兩處打架)。後端仍保留這些值當「未個別設定來源」的內建預設:
-    // default_lot_size 0.01、multiplier 2、max_level、partial_close_ratios 0.5/0.3/0.2。
-    : ["mt5_files_dir", "interval", "auto_start", "source_profiles", "ea_sources"];
+    // 會員端只剩「訊號來源設定」一個地方要填。連線(MT5路徑/輪詢/Shadow/自動開始)與
+    // 其他策略(EA)全移除,不給會員看:MT5 路徑自動偵測、auto_start 預設開、shadow 關,
+    // 這些值後端各自保留,不從前端回送(少送的欄位 save_settings 會保住)。
+    : ["source_profiles"];
 }
 function collect() {
   const out = {};
@@ -2680,7 +2665,8 @@ function renderPositions(positions, currency, ids) {
     ? positions.length + " 筆持倉中 · 浮動 <b class=\"" + toneClass(floating) + "\">" + money(floating, { signed: true }) + "</b>"
     : "目前沒有持倉";
   if (!positions.length) {
-    box.innerHTML = '<div class="empty"><b>目前沒有持倉</b>收到訊號並成交後會出現在這裡</div>';
+    // 上方 summary 已顯示「目前沒有持倉」,這裡不重複,只給提示。
+    box.innerHTML = '<div class="empty"><b>還沒有進行中的部位</b>收到訊號並成交後會出現在這裡</div>';
     return;
   }
   const rows = positions.map((p) => '' +
@@ -3827,10 +3813,10 @@ function paintSide(a) {
   const TIER_LABEL = { trial: "體驗版", basic: "基礎版", advanced: "進階版", flagship: "旗艦版" };
 
   // 一律列出「全部」功能。會員沒有的鎖起來、標出需要的等級，讓低階會員看見上面有什麼可以解鎖。
+  // 超高頻尚未完善,先不對外顯示;只列中頻/高頻兩個訊號源。
   const rows = [
     { label: "中頻訊號跟單",  on: has(MID_SOURCE),   need: "trial" },
     { label: "高頻訊號跟單",  on: has(HIGH_SOURCE),  need: "advanced" },
-    { label: "超高頻訊號跟單", on: has(ULTRA_SOURCE), need: "flagship" },
     { label: "跟單手數上限",  on: true, need: "trial",
       value: maxLot == null ? "不限" : lots(maxLot) + " 手" },
     { label: "馬丁策略設定",  on: !!e.martingale,    need: "flagship" },

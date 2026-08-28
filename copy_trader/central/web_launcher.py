@@ -166,7 +166,7 @@ class LauncherState:
             # save_settings() 濾掉（它只保留 defaults() 有的鍵）。
             "mt5_files_dir": "",
             "interval": "1.0",
-            "auto_start": "false",
+            "auto_start": "true",   # 會員端拿掉了開關,登入後自動開始跟單
             "default_lot_size": "0.01",
             "use_martingale": "true",
             "martingale_multiplier": "2.0",
