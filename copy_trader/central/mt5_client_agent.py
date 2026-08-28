@@ -258,7 +258,8 @@ class MT5ClientAgent:
         max_active = int(profile.get("max_active_orders") or 0)
         max_daily = int(profile.get("max_daily_trades") or 0)
         max_loss = float(profile.get("max_daily_loss") or 0.0)
-        if not any((max_active, max_daily, max_loss)):
+        max_profit = float(profile.get("max_daily_profit") or 0.0)
+        if not any((max_active, max_daily, max_loss, max_profit)):
             return True, ""
 
         snapshot = self.trade_manager.source_risk_snapshot(source)
@@ -271,7 +272,9 @@ class MT5ClientAgent:
 
         daily_profit = float(snapshot.get("daily_profit") or 0.0)
         if max_loss and daily_profit <= -max_loss:
-            return False, f"同來源今日已虧損 {abs(daily_profit):.2f}，達停損額 {max_loss:.2f}"
+            return False, f"同來源今日已虧損 {abs(daily_profit):.2f}，達每日止損 {max_loss:.2f}，今日停跟"
+        if max_profit and daily_profit >= max_profit:
+            return False, f"同來源今日已獲利 {daily_profit:.2f}，達每日止盈 {max_profit:.2f}，今日停跟"
         return True, ""
 
     def run_cycle(self) -> int:

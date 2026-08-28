@@ -884,7 +884,7 @@ main { max-width: 1560px; margin: 0 auto; padding: 22px 28px 72px; }
 
 /* 每群下單設定表 */
 #sourceSettings { overflow-x: auto; }
-.src-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.src-table { width: 100%; min-width: 680px; border-collapse: collapse; font-size: 13px; }
 .src-table th {
   text-align: left; font-size: 11px; font-weight: 600; letter-spacing: .06em;
   color: var(--muted); padding: 6px 10px; border-bottom: 1px solid var(--hair); white-space: nowrap;
@@ -897,10 +897,10 @@ main { max-width: 1560px; margin: 0 auto; padding: 22px 28px 72px; }
 }
 .src-table input[disabled], .src-table select[disabled] { opacity: .4; cursor: not-allowed; }
 .src-table input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--gold-mark); }
-/* 分批比例輸入 + 最低手數提示,擠在「多 TP 處理」那一格裡 */
-.sp-tp-cell { min-width: 128px; }
-.src-table .sp-ratios { margin-top: 5px; width: 100%; min-width: 88px; text-align: center; letter-spacing: .03em; }
-.sp-ratio-note { display: block; margin-top: 3px; font-size: 11px; line-height: 1.3; }
+/* 分批比例輸入 + 最低手數提示,直向堆在「多 TP 處理」那一格裡,不外溢到隔壁欄 */
+.sp-tp-cell { min-width: 130px; }
+.src-table .sp-ratios { display: block; margin-top: 5px; width: 100%; min-width: 0; box-sizing: border-box; text-align: center; letter-spacing: .03em; }
+.sp-ratio-note { display: block; margin-top: 3px; font-size: 11px; line-height: 1.3; white-space: nowrap; }
 .sp-ratio-note.is-bad { color: var(--loss); font-weight: 600; }
 .sp-ratio-note.is-ok  { color: var(--muted); }
 .src-name { font-weight: 600; white-space: nowrap; }
@@ -2888,7 +2888,7 @@ function renderSourceSettings(rows) {
   box.innerHTML =
     '<table class="src-table"><thead><tr>' +
       "<th>訊號來源</th><th>跟單</th><th>模式</th><th>基礎手數</th><th>馬丁倍數</th><th>關卡數</th><th>多 TP 處理</th>" +
-      "<th>同時單數</th><th>每日單數</th><th>每日虧損額</th>" +
+      "<th>每日止盈</th><th>每日止損</th>" +
     "</tr></thead><tbody>" +
     rows.map((r) => '' +
       '<tr data-source-row="' + esc(r.source) + '">' +
@@ -2909,9 +2909,8 @@ function renderSourceSettings(rows) {
         "</select>" +
         '<input type="text" class="sp-ratios" value="' + ratiosToText(r.partial_ratios) + '" title="三個止盈的分批比例，例 50/30/20（佔原始手數）" />' +
         '<span class="sp-ratio-note"></span></td>' +
-        '<td><input type="number" class="sp-active" step="1" min="0" value="' + r.max_active_orders + '" title="0 = 不限" /></td>' +
-        '<td><input type="number" class="sp-daily" step="1" min="0" value="' + r.max_daily_trades + '" title="0 = 不限" /></td>' +
-        '<td><input type="number" class="sp-loss" step="1" min="0" value="' + r.max_daily_loss + '" title="帳戶幣別；0 = 不限" /></td>' +
+        '<td><input type="number" class="sp-profit" step="1" min="0" value="' + (r.max_daily_profit || 0) + '" title="當日該來源獲利達此金額就今日停跟；0 = 不限" /></td>' +
+        '<td><input type="number" class="sp-loss" step="1" min="0" value="' + r.max_daily_loss + '" title="當日該來源虧損達此金額就今日停跟；0 = 不限" /></td>' +
       "</tr>").join("") +
     "</tbody></table>" +
     '<div class="src-add">' +
@@ -2951,8 +2950,7 @@ function addSourceRow() {
       '<option value="breakeven">保本移損</option></select>' +
       '<input type="text" class="sp-ratios" value="50/30/20" title="三個止盈的分批比例，例 50/30/20（佔原始手數）" />' +
       '<span class="sp-ratio-note"></span></td>' +
-    '<td><input type="number" class="sp-active" step="1" min="0" value="0" title="0 = 不限" /></td>' +
-    '<td><input type="number" class="sp-daily" step="1" min="0" value="0" title="0 = 不限" /></td>' +
+    '<td><input type="number" class="sp-profit" step="1" min="0" value="0" title="0 = 不限" /></td>' +
     '<td><input type="number" class="sp-loss" step="1" min="0" value="0" title="0 = 不限" /></td>';
   document.querySelector(".src-table tbody").appendChild(tr);
   input.value = "";
@@ -3040,9 +3038,8 @@ function syncSourceProfiles() {
       mode,
       base_lot: parseFloat(row.querySelector(".sp-base").value) || 0.01,
       tp_mode: row.querySelector(".sp-tpmode").value,
-      max_active_orders: parseInt(row.querySelector(".sp-active").value, 10) || 0,
-      max_daily_trades: parseInt(row.querySelector(".sp-daily").value, 10) || 0,
       max_daily_loss: parseFloat(row.querySelector(".sp-loss").value) || 0,
+      max_daily_profit: parseFloat(row.querySelector(".sp-profit").value) || 0,
     };
     const ratios = ratioInput ? parseRatios(ratioInput.value) : null;
     if (ratios) entry.partial_ratios = ratios;

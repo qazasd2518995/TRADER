@@ -621,11 +621,13 @@ class TradeManager:
             "lots": [float(x) for x in lots if float(x) > 0]
                     or self.martingale_source_lots.get(source_window, [])
                     or [],
-            # 0 代表不限。這三個限制由會員端在真正寫 MT5 指令前執行；
-            # 尤其是自動產生的第三來源，不能只靠中央端節流。
+            # 0 代表不限。這些限制由會員端在真正寫 MT5 指令前執行。
+            # 每日止盈 / 止損:該來源當日累積損益達到門檻就自動停跟(當天不再進場)。
+            # max_active_orders / max_daily_trades 保留欄位但面板已移除,未設就 0=不限。
             "max_active_orders": int(_num("max_active_orders", 0)),
             "max_daily_trades": int(_num("max_daily_trades", 0)),
             "max_daily_loss": _num("max_daily_loss", 0.0),
+            "max_daily_profit": _num("max_daily_profit", 0.0),
         }
 
     def is_source_enabled(self, source_window: str = "") -> bool:
