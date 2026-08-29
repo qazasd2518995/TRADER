@@ -62,8 +62,8 @@ TIERS: Dict[str, Dict[str, Any]] = {
         "label": "進階版",
         "sources": [MID_FREQ, HIGH_FREQ],
         "max_lot": None,          # None = 不限
-        "martingale": False,
-        "partial_close": False,
+        "martingale": True,       # 對齊官網/會員權益表:進階版(PRO)含馬丁與分批平倉
+        "partial_close": True,
         "default_days": 30,
     },
     "flagship": {

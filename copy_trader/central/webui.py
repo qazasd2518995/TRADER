@@ -3976,15 +3976,26 @@ function paintSide(a) {
   const maxLot = e.max_lot;
   const TIER_LABEL = { trial: "體驗版", basic: "基礎版", advanced: "進階版", flagship: "旗艦版" };
 
-  // 一律列出「全部」功能。會員沒有的鎖起來、標出需要的等級，讓低階會員看見上面有什麼可以解鎖。
-  // 超高頻尚未完善,先不對外顯示;只列中頻/高頻兩個訊號源。
+  // 完整列出方案所有功能(跟會員權益比較表一致)。會員沒有的鎖起來、標出需要的等級,
+  // 讓低階會員看見上面能解鎖什麼。訊號源/手數/馬丁/分批看後端授權;其餘依等級判定。
+  // 超高頻尚未完善,先不對外顯示。
+  const curIdx = TIER_ORDER.indexOf(String(a.tier || "").toLowerCase());
+  const atLeast = (t) => curIdx >= 0 && curIdx >= TIER_ORDER.indexOf(t);
   const rows = [
-    { label: "中頻訊號跟單",  on: has(MID_SOURCE),   need: "trial" },
-    { label: "高頻訊號跟單",  on: has(HIGH_SOURCE),  need: "advanced" },
-    { label: "跟單手數上限",  on: true, need: "trial",
+    { label: "中頻訊號跟單",       on: has(MID_SOURCE),   need: "trial" },
+    { label: "高頻訊號跟單",       on: has(HIGH_SOURCE),  need: "advanced" },
+    { label: "不限次數跟單",       on: atLeast("basic"),  need: "basic" },
+    { label: "跟單手數上限",       on: true, need: "trial",
       value: maxLot == null ? "不限" : lots(maxLot) + " 手" },
-    { label: "馬丁策略設定",  on: !!e.martingale,    need: "flagship" },
-    { label: "分批止盈設定",  on: !!e.partial_close, need: "flagship" },
+    { label: "馬丁策略設定",       on: !!e.martingale,    need: "advanced" },
+    { label: "分批止盈設定",       on: !!e.partial_close, need: "advanced" },
+    { label: "每日止盈 / 止損",    on: true, need: "trial" },
+    { label: "各頻率勝率分析",     on: atLeast("advanced"), need: "advanced" },
+    { label: "手機跟單通知",       on: atLeast("basic"),   need: "basic" },
+    { label: "非開盤自動暫停計時", on: true, need: "trial" },
+    { label: "本金比例自動調手數", on: atLeast("flagship"), need: "flagship" },
+    { label: "自動排程",           on: atLeast("basic"),   need: "basic" },
+    { label: "真人分析建議",       on: atLeast("flagship"), need: "flagship" },
   ];
 
   $("sideEnt").innerHTML = rows.map((r) => `
