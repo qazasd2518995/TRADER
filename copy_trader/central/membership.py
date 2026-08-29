@@ -48,6 +48,7 @@ TIERS: Dict[str, Dict[str, Any]] = {
         "max_lot": 0.01,
         "martingale": False,
         "partial_close": False,
+        "time_pause": False,
         "default_days": 7,
     },
     "basic": {
@@ -56,6 +57,7 @@ TIERS: Dict[str, Dict[str, Any]] = {
         "max_lot": 0.10,
         "martingale": False,
         "partial_close": False,
+        "time_pause": False,
         "default_days": 30,
     },
     "advanced": {
@@ -64,6 +66,9 @@ TIERS: Dict[str, Dict[str, Any]] = {
         "max_lot": None,          # None = 不限
         "martingale": True,       # 對齊官網/會員權益表:進階版(PRO)含馬丁與分批平倉
         "partial_close": True,
+        # 用量計時: 進階版(PRO)以上才有「非開盤/停止跟單自動暫停計時」。
+        # 方案時間變成一份「使用額度」, 只有黃金開盤且正在跟單時才會扣。
+        "time_pause": True,
         "default_days": 30,
     },
     "flagship": {
@@ -72,6 +77,7 @@ TIERS: Dict[str, Dict[str, Any]] = {
         "max_lot": None,
         "martingale": True,
         "partial_close": True,
+        "time_pause": True,
         "default_days": 30,
     },
 }
@@ -148,6 +154,7 @@ def tier_entitlements(tier: str) -> Dict[str, Any]:
         "max_lot": spec["max_lot"],
         "martingale": spec["martingale"],
         "partial_close": spec["partial_close"],
+        "time_pause": bool(spec.get("time_pause", False)),
     }
 
 
@@ -157,9 +164,47 @@ def tier_catalog() -> List[Dict[str, Any]]:
         {"key": k, "label": TIERS[k]["label"], "sources": list(TIERS[k]["sources"]),
          "max_lot": TIERS[k]["max_lot"], "martingale": TIERS[k]["martingale"],
          "partial_close": TIERS[k]["partial_close"],
+         "time_pause": bool(TIERS[k].get("time_pause", False)),
          "default_days": TIERS[k].get("default_days", 30)}
         for k in TIER_ORDER
     ]
+
+
+def tier_has_time_pause(tier: str) -> bool:
+    """這個等級是否採「用量計時」(非開盤/停止跟單暫停)。進階版以上為 True。"""
+    return bool((TIERS.get(tier) or {}).get("time_pause", False))
+
+
+# ── 黃金開盤時段 ────────────────────────────────────────────────────────────
+# 用量計時只在「黃金有開盤」時才扣。這裡用 UTC 週末視窗判斷,刻意取「一定關盤」
+# 的保守區間 (週五 21:00 UTC 收 ~ 週日 22:00 UTC 開),誤差一律偏向會員 (少扣一點)。
+# 現貨黃金實際收在週五 21:00~22:00 UTC(依 DST)、週日 21:00~22:00 UTC 開,
+# 取較早的收、較晚的開,落在灰色地帶的一兩小時算暫停,不會多扣會員的時間。
+# 每日 1 小時的券商維護休息刻意不算(各券商不一)——寧可少扣。
+def gold_market_open(now: Optional[float] = None) -> bool:
+    t = time.gmtime(time.time() if now is None else now)
+    wd = t.tm_wday        # 週一=0 … 週六=5, 週日=6
+    h = t.tm_hour
+    if wd == 5:                       # 週六整天關盤
+        return False
+    if wd == 6 and h < 22:            # 週日 22:00 UTC 前
+        return False
+    if wd == 4 and h >= 21:           # 週五 21:00 UTC 起
+        return False
+    return True
+
+
+# 用量扣款的兩個閥值。會員端每 ~1 秒輪詢一次 /signals, 且「只在跟單時」才輪詢。
+#
+# USAGE_WRITE_INTERVAL: 兩次「實際扣款並寫入」的最短間隔。沒到間隔的輪詢純讀不寫,
+#   把 per-second fsync 降成每 ~10 秒一次(呼應 last_seen_at 的節流考量)。
+# USAGE_CONSUME_CAP_SECONDS: 單次扣款上限。作用有二 ——
+#   (1) 停止跟單造成的長空窗, 恢復後第一筆最多只扣這麼多 → 等於「停止跟單=暫停」;
+#   (2) 擋掉網路卡頓/系統睡眠造成的大跳。
+#   取 30 秒: 大於寫入間隔(正常跟單每拍扣 ~10 秒, 不會被削到), 又遠小於任何真正的
+#   空窗(停止跟單/關機動輒數分鐘以上), 讓空窗的殘值可忽略。
+USAGE_WRITE_INTERVAL = 10.0
+USAGE_CONSUME_CAP_SECONDS = 30.0
 
 
 # ── 儲存 ────────────────────────────────────────────────────────────────────
@@ -211,9 +256,25 @@ class MemberStore:
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             self._conn.executescript(_SCHEMA)
+            self._migrate()
             # WAL: 讀寫不互相阻塞。單機單程序, 這樣最省事也最不容易卡。
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.commit()
+
+    def _migrate(self) -> None:
+        """加欄位式遷移。舊 db 沒有的欄位補上, 有的就跳過 —— 純附加, 不動既有資料。
+
+        usage_seconds_left: 進階版以上的「使用額度」(秒)。NULL = 尚未初始化,
+          第一次登入/輪詢時會從 expires_at 換算灌入。非進階版一律 NULL, 走舊的
+          expires_at 日曆制。
+        last_active_at: 上次「有在跟單且開盤」而扣時間的時間點, 用來算兩次輪詢的
+          間隔。與 last_seen_at(閒置斷線/最後上線顯示)分開, 語意才不會打架。
+        """
+        cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(members)")}
+        if "usage_seconds_left" not in cols:
+            self._conn.execute("ALTER TABLE members ADD COLUMN usage_seconds_left REAL")
+        if "last_active_at" not in cols:
+            self._conn.execute("ALTER TABLE members ADD COLUMN last_active_at REAL")
 
     def close(self) -> None:
         with self._lock:
@@ -223,6 +284,7 @@ class MemberStore:
     @staticmethod
     def _row_to_public(row: sqlite3.Row, *, include_session: bool = False) -> Dict[str, Any]:
         """轉成可以送出去的 dict。password_hash 永遠不出現在回傳值裡。"""
+        time_pause = tier_has_time_pause(row["tier"])
         d = {
             "username": row["username"],
             "tier": row["tier"],
@@ -235,7 +297,10 @@ class MemberStore:
             "session_device": row["session_device"],
             "session_started_at": row["session_started_at"],
             "online": bool(row["session_token"]),
-            "expired": _is_expired(row["expires_at"]),
+            "expired": _row_expired(row),
+            # 用量計時: 進階版以上, 方案時間是一份「使用額度」(秒), 只有開盤+跟單才扣。
+            "time_pause": time_pause,
+            "usage_seconds_left": row["usage_seconds_left"] if time_pause else None,
         }
         if include_session:
             d["session_token"] = row["session_token"]
@@ -245,6 +310,30 @@ class MemberStore:
         cur = self._conn.execute(
             "SELECT * FROM members WHERE username = ? COLLATE NOCASE", (username,))
         return cur.fetchone()
+
+    def _ensure_usage_locked(self, row: sqlite3.Row, now: float) -> Optional[float]:
+        """回傳 time_pause 會員目前的使用額度(秒); 需要時就地初始化並寫回。
+
+        必須在 self._lock 內呼叫。
+          * 非 time_pause 等級 → 回 None(不適用)。
+          * 已有額度 → 直接回。
+          * 額度為 NULL 但有 expires_at(舊帳號從日曆制轉來)→ 用剩餘日曆時間灌入。
+          * 額度為 NULL 且無 expires_at(永久帳號)→ 維持 None(永久, 不扣)。
+        """
+        if not tier_has_time_pause(row["tier"]):
+            return None
+        left = row["usage_seconds_left"]
+        if left is not None:
+            return float(left)
+        exp = row["expires_at"]
+        if exp is None:
+            return None      # 永久帳號: 不設額度
+        seeded = max(0.0, float(exp) - now)
+        self._conn.execute(
+            "UPDATE members SET usage_seconds_left = ?, expires_at = NULL WHERE id = ?",
+            (seeded, row["id"]))
+        self._conn.commit()
+        return seeded
 
     def _log_event(self, username: str, ok: bool, device: str, ip: str, detail: str) -> None:
         self._conn.execute(
@@ -269,9 +358,19 @@ class MemberStore:
             raise ValueError(f"未知等級: {tier}")
 
         plain = password or generate_password()
-        if expires_at is None and days is None:
+        if days is None and expires_at is None:
             days = TIERS[tier].get("default_days", 30)
-        if expires_at is None and days is not None:
+
+        # 進階版以上是「用量制」: 方案天數變成一份使用額度(秒), 只在開盤+跟單時扣,
+        # 不設日曆到期日。其他等級沿用日曆 expires_at。
+        usage_seconds_left: Optional[float] = None
+        if tier_has_time_pause(tier):
+            if days is not None:
+                usage_seconds_left = float(int(days) * 86400)
+            elif expires_at is not None:
+                usage_seconds_left = max(0.0, float(expires_at) - time.time())
+            expires_at = None      # 用量制不看日曆
+        elif expires_at is None and days is not None:
             expires_at = time.time() + int(days) * 86400
 
         with self._lock:
@@ -279,8 +378,10 @@ class MemberStore:
                 raise ValueError(f"帳號已存在: {username}")
             self._conn.execute(
                 "INSERT INTO members (username, password_hash, tier, expires_at,"
-                " status, note, created_at) VALUES (?,?,?,?,'active',?,?)",
-                (username, hash_password(plain), tier, expires_at, note or "", time.time()))
+                " usage_seconds_left, status, note, created_at)"
+                " VALUES (?,?,?,?,?,'active',?,?)",
+                (username, hash_password(plain), tier, expires_at, usage_seconds_left,
+                 note or "", time.time()))
             self._conn.commit()
             row = self._get_row(username)
 
@@ -332,16 +433,29 @@ class MemberStore:
         return self._row_to_public(row)
 
     def extend(self, username: str, days: int) -> Dict[str, Any]:
-        """續期。從「現在」和「原到期日」取較晚者往後加，避免早續期反而虧天數。"""
+        """續期。
+
+        用量制(進階版以上): 直接把天數加進使用額度(秒), 不看日曆。額度尚未初始化
+          的舊帳號先從剩餘日曆時間灌入再加。
+        日曆制(其他等級): 從「現在」和「原到期日」取較晚者往後加, 避免早續期反而虧天數。
+        """
+        now = time.time()
         with self._lock:
             row = self._get_row(username)
             if row is None:
                 raise ValueError(f"查無帳號: {username}")
-            base = max(time.time(), float(row["expires_at"] or 0))
-            new_exp = base + int(days) * 86400
-            self._conn.execute(
-                "UPDATE members SET expires_at = ? WHERE username = ? COLLATE NOCASE",
-                (new_exp, username))
+            if tier_has_time_pause(row["tier"]):
+                current = self._ensure_usage_locked(row, now) or 0.0
+                new_left = current + int(days) * 86400
+                self._conn.execute(
+                    "UPDATE members SET usage_seconds_left = ?, expires_at = NULL"
+                    " WHERE username = ? COLLATE NOCASE", (new_left, username))
+            else:
+                base = max(now, float(row["expires_at"] or 0))
+                new_exp = base + int(days) * 86400
+                self._conn.execute(
+                    "UPDATE members SET expires_at = ? WHERE username = ? COLLATE NOCASE",
+                    (new_exp, username))
             self._conn.commit()
             row = self._get_row(username)
         return self._row_to_public(row)
@@ -409,7 +523,7 @@ class MemberStore:
                 self._conn.commit()
                 return None, "suspended"
 
-            if _is_expired(row["expires_at"]):
+            if _row_expired(row):
                 self._log_event(username, False, device, ip, "expired")
                 self._conn.commit()
                 return None, "expired"
@@ -425,21 +539,34 @@ class MemberStore:
                             "kicked_previous" if kicked else "ok")
             self._conn.commit()
             row = self._get_row(username)
+            # 登入即初始化使用額度(舊帳號從剩餘日曆時間換算)。登入不扣時間。
+            usage_left = self._ensure_usage_locked(row, now)
+            row = self._get_row(row["username"])
 
         out = self._row_to_public(row)
         out["session_token"] = token
         out["entitlements"] = tier_entitlements(row["tier"])
         out["kicked_previous"] = kicked
+        if tier_has_time_pause(row["tier"]):
+            out["usage"] = {"time_pause": True, "seconds_left": usage_left,
+                            "market_open": gold_market_open(now), "consuming": False}
         return out, ""
 
-    def resolve_session(self, token: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    def resolve_session(self, token: str, *, consume: bool = False
+                        ) -> Tuple[Optional[Dict[str, Any]], str]:
         """把 session token 換成會員。每次呼叫都重新檢查期限與狀態。
 
         等級/期限/停權在後台一改，下一次輪詢就生效，不必等會員重新登入。
+
+        consume=True: 這一次呼叫代表「會員正在跟單」(只有 /signals 輪詢會傳, 而
+          會員端只在跟單時才輪詢 /signals)。對用量制會員, 會依「開盤與否」扣掉自上次
+          扣款以來的時間。非跟單的呼叫(/auth/me 續期)一律 consume=False, 只讀不扣。
         """
         if not token:
             return None, "no_token"
         now = time.time()
+        usage_block: Optional[Dict[str, Any]] = None
+        fresh_left: Optional[float] = None
         with self._lock:
             row = self._conn.execute(
                 "SELECT * FROM members WHERE session_token = ?", (token,)).fetchone()
@@ -448,7 +575,7 @@ class MemberStore:
                 return None, "session_invalid"
             if row["status"] != "active":
                 return None, "suspended"
-            if _is_expired(row["expires_at"]):
+            if _row_expired(row):
                 return None, "expired"
             last = float(row["last_seen_at"] or 0)
             if last and now - last > SESSION_IDLE_TIMEOUT:
@@ -456,6 +583,46 @@ class MemberStore:
                     "UPDATE members SET session_token = NULL WHERE id = ?", (row["id"],))
                 self._conn.commit()
                 return None, "session_expired"
+
+            # ── 用量計時(進階版以上)──────────────────────────────────────
+            if tier_has_time_pause(row["tier"]):
+                fresh_left = self._ensure_usage_locked(row, now)   # 可能寫入(初始化)
+                market = gold_market_open(now)
+                consuming = False
+                # fresh_left is None = 永久帳號, 不扣
+                if consume and fresh_left is not None:
+                    last_active = float(row["last_active_at"] or 0)
+                    if last_active <= 0:
+                        # 這個跟單時段的第一拍: 只記時間點, 不扣
+                        self._conn.execute(
+                            "UPDATE members SET last_active_at = ? WHERE id = ?",
+                            (now, row["id"]))
+                        self._conn.commit()
+                        consuming = market
+                    else:
+                        gap = now - last_active
+                        # 節流: 沒到寫入間隔就純讀不寫(省 fsync)
+                        if gap >= USAGE_WRITE_INTERVAL:
+                            billed = min(gap, USAGE_CONSUME_CAP_SECONDS) if market else 0.0
+                            fresh_left = max(0.0, fresh_left - billed)
+                            self._conn.execute(
+                                "UPDATE members SET usage_seconds_left = ?,"
+                                " last_active_at = ? WHERE id = ?",
+                                (fresh_left, now, row["id"]))
+                            self._conn.commit()
+                            consuming = market and billed > 0
+                            if fresh_left <= 0:
+                                # 額度用盡 → 立刻作廢 session, 會員端會被登出並提示續費
+                                self._conn.execute(
+                                    "UPDATE members SET session_token = NULL WHERE id = ?",
+                                    (row["id"],))
+                                self._conn.commit()
+                                return None, "expired"
+                        else:
+                            consuming = market
+                usage_block = {"time_pause": True, "seconds_left": fresh_left,
+                               "market_open": market, "consuming": consuming}
+
             # last_seen_at 節流。會員端每秒輪詢一次, 每次都寫就是每秒一次
             # fsync —— 實測單次 resolve 要 4ms, 百人上線就會把 Hub 那台
             # shared-cpu/網路磁碟的機器吃滿。節流之後 99% 的輪詢是純讀。
@@ -469,6 +636,9 @@ class MemberStore:
 
         member = self._row_to_public(row)
         member["entitlements"] = tier_entitlements(row["tier"])
+        if usage_block is not None:
+            member["usage"] = usage_block
+            member["usage_seconds_left"] = usage_block["seconds_left"]
         return member, ""
 
     def change_password(self, token: str, old_password: str,
@@ -496,7 +666,7 @@ class MemberStore:
                 return False, "session_invalid"
             if row["status"] != "active":
                 return False, "suspended"
-            if _is_expired(row["expires_at"]):
+            if _row_expired(row):
                 return False, "expired"
             if not verify_password(old_password, row["password_hash"]):
                 self._log_event(row["username"], False, row["session_device"], "",
@@ -532,6 +702,25 @@ def _is_expired(expires_at: Optional[float]) -> bool:
         return time.time() > float(expires_at)
     except (TypeError, ValueError):
         return True     # 壞掉的值當成過期, 寧可擋下也不要放行
+
+
+def _row_expired(row: sqlite3.Row) -> bool:
+    """依等級判斷是否到期。
+
+    進階版以上(用量制): 額度 usage_seconds_left 用完(<=0)才算到期。額度尚未
+    初始化(NULL)時暫以 expires_at 判斷 —— 登入/輪詢時會把它從 expires_at 補灌,
+    補灌前用日曆制擋一下,不會誤放行。
+    其他等級(日曆制): 沿用 expires_at。
+    """
+    if tier_has_time_pause(row["tier"]):
+        left = row["usage_seconds_left"]
+        if left is None:
+            return _is_expired(row["expires_at"])
+        try:
+            return float(left) <= 0
+        except (TypeError, ValueError):
+            return True
+    return _is_expired(row["expires_at"])
 
 
 def filter_signals_for(records: List[Dict[str, Any]],

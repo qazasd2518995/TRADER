@@ -52,7 +52,15 @@ def _call(hub: str, token: str, path: str,
         raise SystemExit(f"✗ 連不上 Hub：{e}")
 
 
-def _fmt_expiry(ts: Optional[float]) -> str:
+def _fmt_expiry(m: dict) -> str:
+    # 進階版以上是用量制:顯示剩餘「使用額度」(只在開盤+跟單時扣),不是日曆到期日。
+    if m.get("time_pause") and m.get("usage_seconds_left") is not None:
+        secs = float(m["usage_seconds_left"])
+        if secs <= 0:
+            return "額度用盡"
+        days = secs / 86400
+        return f"使用額度 {days:.1f} 天" if days >= 1 else f"使用額度 {secs / 3600:.0f} 小時"
+    ts = m.get("expires_at")
     if not ts:
         return "無期限"
     days = (float(ts) - time.time()) / 86400
@@ -71,7 +79,7 @@ def _print_members(members) -> None:
     for m in members:
         state = "停權" if m["status"] != "active" else ("過期" if m["expired"] else "正常")
         print(f"{m['username']:<16}{m['tier_label']:<10}{state:<8}"
-              f"{_fmt_expiry(m['expires_at']):<28}"
+              f"{_fmt_expiry(m):<28}"
               f"{'●' if m['online'] else '○':<6}{m['note']}")
     print(f"\n共 {len(members)} 位")
 
@@ -138,12 +146,12 @@ def main() -> None:
         print(f"  帳號    {r['username']}")
         print(f"  密碼    {r['password']}        ← 只會顯示這一次，請立刻給會員")
         print(f"  等級    {r['tier_label']}")
-        print(f"  到期    {_fmt_expiry(r['expires_at'])}")
+        print(f"  到期    {_fmt_expiry(r)}")
 
     elif args.cmd == "extend":
         r = _call(hub, tok, "/admin/members/extend",
                   {"username": args.username, "days": args.days})["result"]
-        print(f"✓ {r['username']} 已續期 {args.days} 天 → {_fmt_expiry(r['expires_at'])}")
+        print(f"✓ {r['username']} 已續期 {args.days} 天 → {_fmt_expiry(r)}")
 
     elif args.cmd == "tier":
         r = _call(hub, tok, "/admin/members/update",

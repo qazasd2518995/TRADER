@@ -31,6 +31,9 @@ class HubClient:
         # The Hub scans raw records before applying membership source filters.
         # This cursor may therefore be ahead of the last visible signal.
         self.last_cursor = 0
+        # 用量制會員(進階版以上): Hub 每次 /signals 回傳的剩餘額度/開盤狀態。
+        # web_launcher 讀這個給前端顯示倒數與「暫停中」。None = 尚未取得/不適用。
+        self.last_usage: Optional[Dict] = None
 
     def _request(self, path: str, retries: int = 2) -> Dict:
         """GET with 退避重試: 暫時性網路卡頓(timeout/連線斷)時自動重試, 避免單次抖動就放棄。"""
@@ -57,6 +60,8 @@ class HubClient:
         data = self._request(f"/signals?after={after}&limit={limit}")
         if not data.get("ok"):
             raise RuntimeError(data.get("error") or "hub_request_failed")
+        if "usage" in data:
+            self.last_usage = data.get("usage")     # None = 非用量制會員
         signals = list(data.get("signals") or [])
         fallback_cursor = max(
             [int(item.get("seq") or 0) for item in signals],

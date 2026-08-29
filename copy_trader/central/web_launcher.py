@@ -118,6 +118,9 @@ class LauncherState:
         self.auth: Optional[Dict[str, Any]] = None      # 已登入的會員資料
         self.auth_error = ""                            # 給前端顯示的最後一次失敗原因
         self.auth_checked_at = 0.0
+        # 用量制會員(進階版以上)的剩餘額度/開盤狀態, 由 Hub 每次輪詢回傳。
+        # 跟單中由 /signals 更新(最即時), 未跟單時由 /auth/me 更新。None=不適用。
+        self.usage: Optional[Dict[str, Any]] = None
         if self.role == "client":
             self._load_session()
 
@@ -364,6 +367,7 @@ class LauncherState:
         self.auth = body["member"]
         self.auth_error = ""
         self.auth_checked_at = time.time()
+        self.usage = self.auth.get("usage")     # 用量制會員的初始剩餘額度
         self._save_session()
         ent = self.auth.get("entitlements") or {}
         self._log(f"登入成功：{self.auth.get('username')}（{self.auth.get('tier_label')}）"
@@ -439,6 +443,10 @@ class LauncherState:
             member = body.get("member") or {}
             member["session_token"] = token          # /auth/me 不回 token
             self.auth = member
+            # 未跟單時, 剩餘額度/開盤狀態只能靠這條路徑更新(不扣, 純顯示)。
+            # 跟單中則由 /signals 更新, 更即時 —— 見 _run_client。
+            if not self.is_running():
+                self.usage = member.get("usage")
             self._save_session()
             return True
         code = str(body.get("error") or "session_invalid")
@@ -891,6 +899,10 @@ class LauncherState:
             while not self.stop_event.is_set():
                 try:
                     count = self.client_agent.run_cycle()
+                    # 跟單中: 用 /signals 回傳的即時額度/開盤狀態更新顯示。
+                    hub = getattr(self.client_agent, "hub", None)
+                    if hub is not None and getattr(hub, "last_usage", None) is not None:
+                        self.usage = hub.last_usage
                     if consecutive_fail > 0:
                         logger.info("Hub 連線已恢復（中斷 %d 次後）", consecutive_fail)
                         consecutive_fail = 0
@@ -1056,12 +1068,17 @@ class LauncherState:
         if not self.auth:
             return {"logged_in": False, "error": self.auth_error}
         a = self.auth
+        # 用量制會員: 剩餘額度(秒) + 是否開盤 + 目前是否正在扣時間。前端據此把
+        # 倒數改成「使用額度」並在非開盤/未跟單時顯示暫停。running 由前端另外知道。
+        usage = self.usage if isinstance(self.usage, dict) else None
         return {
             "logged_in": True,
             "username": a.get("username"),
             "tier": a.get("tier"),
             "tier_label": a.get("tier_label"),
             "expires_at": a.get("expires_at"),
+            "time_pause": bool(a.get("time_pause")),
+            "usage": usage,
             "entitlements": self.entitlements(),
             "error": "",
         }

@@ -165,10 +165,13 @@ class HubRequestHandler(BaseHTTPRequestHandler):
             return True
         return self.token in self._presented_tokens()
 
-    def _current_member(self) -> Optional[Dict[str, Any]]:
+    def _current_member(self, *, consume: bool = False) -> Optional[Dict[str, Any]]:
         """把 session token 換成會員；不是會員就回 None。
 
         每次都重新查 —— 等級/期限/停權在後台一改, 下一次輪詢就生效。
+
+        consume=True 只在 /signals 輪詢時傳(會員端只在跟單時才輪詢 /signals),
+        用量制會員會依此扣掉開盤時的跟單時間。其他呼叫一律不扣。
         """
         store = self.members
         if store is None:
@@ -176,7 +179,7 @@ class HubRequestHandler(BaseHTTPRequestHandler):
         for tok in self._presented_tokens():
             if tok == self.token:
                 continue        # 那是管理 token, 不是會員 session
-            member, _err = store.resolve_session(tok)
+            member, _err = store.resolve_session(tok, consume=consume)
             if member is not None:
                 return member
         return None
@@ -258,7 +261,9 @@ class HubRequestHandler(BaseHTTPRequestHandler):
             #
             # 這裡是整套收費機制唯一真正的閘門: 沒買的來源, 資料根本不會離開
             # 伺服器。會員端怎麼改都拿不到。
-            member = self._current_member()
+            # consume=True: 會員端只在「正在跟單」時才輪詢 /signals, 所以這一次
+            # 呼叫本身就代表跟單中。用量制會員在這裡依開盤與否扣使用額度。
+            member = self._current_member(consume=True)
             if member is None:
                 self._send_json(401, {"ok": False, "error": self._member_auth_error()})
                 return
@@ -274,6 +279,8 @@ class HubRequestHandler(BaseHTTPRequestHandler):
                 "cursor": max([int(r.get("seq") or 0) for r in records], default=after),
                 "signals": visible,
                 "filtered": len(records) - len(visible),
+                # 用量制會員: 剩餘使用額度 + 目前是否開盤(給會員端顯示倒數/暫停)。
+                "usage": member.get("usage"),
             })
             return
 

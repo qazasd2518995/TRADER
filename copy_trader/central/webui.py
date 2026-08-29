@@ -309,6 +309,16 @@ body[data-role="client"]:not(.auth-locked) .shell {
 .side-left { margin: 8px 0 0; font-size: 12px; color: var(--muted); }
 .side-left.is-soon { color: var(--loss); }
 
+/* 進階版以上:非開盤/未跟單自動暫停計時的狀態徽章。
+   計時中=綠、暫停=灰,一眼看出方案時間現在到底有沒有在扣。 */
+.side-pause {
+  margin: 8px 0 0; font-size: 11.5px; font-weight: 600;
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px; border-radius: 999px;
+}
+.side-pause.is-live { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.side-pause.is-paused { color: var(--muted); background: var(--sunk); }
+
 /* 區塊導覽 */
 .side-nav {
   padding: 16px 14px 14px;
@@ -1528,9 +1538,11 @@ body.auth-locked > *:not(#authGate) { display: none; }
 
     <div class="side-card">
       <p class="side-tier"><b id="sideTier">—</b><span>會員</span></p>
-      <p class="side-exp">方案到期日　<b id="sideExp">—</b></p>
+      <p class="side-exp"><span id="sideExpLabel">方案到期日</span>　<b id="sideExp">—</b></p>
       <div class="side-meter" id="sideMeterWrap" hidden><i id="sideMeter"></i></div>
       <p class="side-left" id="sideLeft"></p>
+      <!-- 進階版以上:非開盤/未跟單自動暫停計時的狀態列 -->
+      <p class="side-pause" id="sidePause" hidden></p>
     </div>
 
 
@@ -3949,25 +3961,66 @@ function paintSide(a) {
     up.querySelector(".side-up-h").textContent = soon ? "續期" : "升級方案";
   }
 
-  const exp = Number(a.expires_at || 0);
   const wrap = $("sideMeterWrap");
-  window.__memberExpAt = exp;                 // 給每秒倒數用
-  if (exp) {
-    const d = new Date(exp * 1000);
-    const pad = (n) => String(n).padStart(2, "0");
-    // 到期「日期＋時間」都顯示，配合下面的天時分秒倒數
-    $("sideExp").textContent =
-      `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-    const days = (exp * 1000 - Date.now()) / 86400000;
+  const lbl = $("sideExpLabel");
+  const pauseEl = $("sidePause");
+  const tp = !!a.time_pause;
+  const usage = (tp && a.usage && typeof a.usage === "object") ? a.usage : null;
+
+  if (usage && usage.seconds_left != null) {
+    // 用量制(進階版以上):方案時間是一份「使用額度」,只有開盤且跟單時才扣。
+    // 倒數顯示剩餘額度,非開盤/未跟單時凍結,不燒方案時間。
+    if (lbl) lbl.textContent = "使用額度";
+    window.__memberExpAt = 0;                  // 關掉日曆倒數分支
+    // 只有 Hub 回傳的額度真的變了才重設本地錨點, 否則節流(每 10 秒才寫一次)
+    // 會讓平滑的本地倒數每次輪詢就被拉回去、看起來卡住或倒退。
+    const newSecs = Number(usage.seconds_left);
+    if (!window.__usage || window.__usage.seconds_left !== newSecs
+        || window.__usage.market_open !== usage.market_open) {
+      window.__usage = { seconds_left: newSecs, market_open: !!usage.market_open };
+      window.__usageAt = Date.now();
+    }
+    const days = newSecs / 86400;
+    $("sideExp").textContent = days >= 1
+      ? "約 " + Math.floor(days) + " 天"
+      : "約 " + Math.max(0, Math.floor(newSecs / 3600)) + " 小時";
     wrap.hidden = false;
     $("sideMeter").style.width = Math.max(0, Math.min(100, (days / TIER_FULL_DAYS) * 100)) + "%";
-    wrap.classList.toggle("is-soon", days <= 7);
-    startExpTicker();                          // 啟動/重啟每秒倒數
-  } else {
+    wrap.classList.toggle("is-soon", days <= 3);
+    if (pauseEl) pauseEl.hidden = false;
+    startExpTicker();
+  } else if (tp && usage) {
+    // 進階版但無期限(額度 = null): 永久帳號, 不顯示倒數
+    if (lbl) lbl.textContent = "方案";
     $("sideExp").textContent = "無期限";
-    wrap.hidden = true;
-    $("sideLeft").textContent = "";
+    window.__memberExpAt = 0; window.__usage = null;
+    wrap.hidden = true; $("sideLeft").textContent = "";
+    if (pauseEl) pauseEl.hidden = true;
     stopExpTicker();
+  } else {
+    // 日曆制(體驗/基礎版):維持原本 expires_at 到期倒數,完全不受用量制影響。
+    if (lbl) lbl.textContent = "方案到期日";
+    window.__usage = null;
+    if (pauseEl) pauseEl.hidden = true;
+    const exp = Number(a.expires_at || 0);
+    window.__memberExpAt = exp;                 // 給每秒倒數用
+    if (exp) {
+      const d = new Date(exp * 1000);
+      const pad = (n) => String(n).padStart(2, "0");
+      // 到期「日期＋時間」都顯示，配合下面的天時分秒倒數
+      $("sideExp").textContent =
+        `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      const days = (exp * 1000 - Date.now()) / 86400000;
+      wrap.hidden = false;
+      $("sideMeter").style.width = Math.max(0, Math.min(100, (days / TIER_FULL_DAYS) * 100)) + "%";
+      wrap.classList.toggle("is-soon", days <= 7);
+      startExpTicker();                          // 啟動/重啟每秒倒數
+    } else {
+      $("sideExp").textContent = "無期限";
+      wrap.hidden = true;
+      $("sideLeft").textContent = "";
+      stopExpTicker();
+    }
   }
 
   const e = a.entitlements || {};
@@ -3992,7 +4045,7 @@ function paintSide(a) {
     { label: "每日止盈 / 止損",    on: true, need: "trial" },
     { label: "各頻率勝率分析",     on: atLeast("advanced"), need: "advanced" },
     { label: "手機跟單通知",       on: atLeast("basic"),   need: "basic" },
-    { label: "非開盤自動暫停計時", on: true, need: "trial" },
+    { label: "非開盤自動暫停計時", on: atLeast("advanced"), need: "advanced" },
     { label: "本金比例自動調手數", on: atLeast("flagship"), need: "flagship" },
     { label: "自動排程",           on: atLeast("basic"),   need: "basic" },
     { label: "真人分析建議",       on: atLeast("flagship"), need: "flagship" },
@@ -4011,17 +4064,48 @@ function paintSide(a) {
 /* 到期倒數：天時分秒，每秒跳一次。expires_at 存在 window.__memberExpAt，
    paintSide 每次刷新會更新它，這裡只管把它算成人看得懂的字。 */
 let __expTimer = null;
+function fmtDHMS(r) {
+  const d = Math.floor(r / 86400); r -= d * 86400;
+  const h = Math.floor(r / 3600);  r -= h * 3600;
+  const m = Math.floor(r / 60);    const s = r - m * 60;
+  return `${d} 天 ${h} 時 ${m} 分 ${s} 秒`;
+}
 function tickExp() {
   const left = $("sideLeft");
   if (!left) return;
+
+  // 用量制(進階版以上):倒數走「使用額度」,只有開盤+跟單時才本地遞減,其餘凍結。
+  const u = window.__usage;
+  if (u && u.seconds_left != null) {
+    const pauseEl = $("sidePause");
+    const following = !!(typeof S !== "undefined" && S.status && S.status.running);
+    const consuming = following && !!u.market_open;
+    let secs = Number(u.seconds_left);
+    if (consuming) secs -= (Date.now() - (window.__usageAt || Date.now())) / 1000;
+    secs = Math.max(0, Math.floor(secs));
+    if (secs <= 0) {
+      left.textContent = "使用額度已用完，請聯繫管理員續期";
+      left.classList.add("is-soon");
+      if (pauseEl) { pauseEl.hidden = false; pauseEl.className = "side-pause is-paused"; pauseEl.textContent = "⏸ 額度已用完"; }
+      return;
+    }
+    left.textContent = `還可使用 ${fmtDHMS(secs)}`;
+    left.classList.toggle("is-soon", Number(u.seconds_left) / 86400 <= 3);
+    if (pauseEl) {
+      pauseEl.hidden = false;
+      if (consuming) { pauseEl.className = "side-pause is-live"; pauseEl.textContent = "⏱ 計時中"; }
+      else if (!u.market_open) { pauseEl.className = "side-pause is-paused"; pauseEl.textContent = "⏸ 已暫停 · 非開盤"; }
+      else { pauseEl.className = "side-pause is-paused"; pauseEl.textContent = "⏸ 已暫停 · 未跟單"; }
+    }
+    return;
+  }
+
+  // 日曆制(體驗/基礎版):到期倒數,原本邏輯不變。
   const exp = Number(window.__memberExpAt || 0);
   if (!exp) { left.textContent = ""; return; }
   let r = Math.floor(exp - Date.now() / 1000);
   if (r <= 0) { left.textContent = "已到期，請聯繫管理員續期"; left.classList.add("is-soon"); return; }
-  const d = Math.floor(r / 86400); r -= d * 86400;
-  const h = Math.floor(r / 3600);  r -= h * 3600;
-  const m = Math.floor(r / 60);    const s = r - m * 60;
-  left.textContent = `還剩 ${d} 天 ${h} 時 ${m} 分 ${s} 秒`;
+  left.textContent = `還剩 ${fmtDHMS(r)}`;
   left.classList.toggle("is-soon", (exp - Date.now() / 1000) <= 7 * 86400);
 }
 function startExpTicker() { tickExp(); if (!__expTimer) __expTimer = setInterval(tickExp, 1000); }
@@ -4046,7 +4130,7 @@ const BENEFIT_ROWS = [
   ["手機跟單通知", "手機收跟單訊號與系統通知", "n", "y", "y", "y"],
   ["分批止盈", "分批止盈的比例與條件", "n", "n", "y", "y"],
   ["本金比例自動調整手數", "手數跟著本金比例自動調整", "n", "n", "n", "y"],
-  ["非開盤時間自動暫停計時", "非開盤時段自動暫停計時", "y", "y", "y", "y"],
+  ["非開盤自動暫停計時", "非開盤/停止跟單時方案時間自動暫停,只在開盤跟單時計算", "n", "n", "y", "y"],
   ["自動排程", "每天自動開始 / 停止的時間", "n", "單一排程", "多組排程", "多組進階排程"],
   ["真人分析建議", "每月真人幫你看報表、給調整建議", "n", "n", "n", ["每月提供", "真人訊息分析與調整建議"]],
 ];
@@ -4394,7 +4478,16 @@ async function adminPost(path, body) {
   return data;
 }
 
-function expiryText(ts) {
+function expiryText(m) {
+  // 進階版以上是用量制:顯示剩餘「使用額度」而非日曆到期日(expires_at 為 null)。
+  if (m && m.time_pause && m.usage_seconds_left != null) {
+    const secs = Number(m.usage_seconds_left);
+    const days = secs / 86400;
+    const show = days >= 1 ? `${days.toFixed(1)} 天` : `${Math.max(0, Math.floor(secs / 3600))} 小時`;
+    if (secs <= 0) return { text: "額度用盡", cls: "bad" };
+    return { text: `額度 ${show}`, cls: days <= 3 ? "warn" : "ok" };
+  }
+  const ts = m && m.expires_at;
   if (!ts) return { text: "無期限", cls: "ok" };
   const days = Math.floor((ts * 1000 - Date.now()) / 86400000);
   const stamp = new Date(ts * 1000).toLocaleDateString("zh-TW");
@@ -4427,7 +4520,7 @@ function renderMembers() {
     return;
   }
   $("mbrRows").innerHTML = rows.map((m) => {
-    const exp = expiryText(m.expires_at);
+    const exp = expiryText(m);
     const suspended = m.status !== "active";
     const state = suspended
       ? '<span class="mbr-state bad">停權</span>'
