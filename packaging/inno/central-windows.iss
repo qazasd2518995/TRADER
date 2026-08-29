@@ -1,7 +1,7 @@
 ; 版本由 build-release.py 用 /DMyAppVersion=x.y.z 帶進來；
 ; 直接用 ISCC 跑的話走下面的預設值。
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.1"
+  #define MyAppVersion "1.1.0"
 #endif
 
 [Setup]
@@ -12,7 +12,10 @@ DefaultDirName={autopf}\黃金訊號中心
 DefaultGroupName=黃金訊號中心
 OutputDir=..\..\dist\installers
 OutputBaseFilename=GoldCopyTrader-Signal-{#MyAppVersion}-Windows
-Compression=lzma2/ultra64
+; lzma2/max 而不是 ultra64：ultra64 用 64 MB 字典，但 32 位元的 ISCC.exe
+; 記憶體吃不消（實測 2026-08-30 在這台機器上「Out of memory」編不出來），
+; 而且整包 payload 才 21 MB —— 字典比資料還大，開再大也壓不出差別。
+Compression=lzma2/max
 SolidCompression=yes
 DisableProgramGroupPage=yes
 UninstallDisplayName=黃金訊號中心

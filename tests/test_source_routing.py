@@ -6,6 +6,7 @@ import unittest
 
 from copy_trader.central.membership import (
     HIGH_FREQ,
+    LOW_FREQ,
     MID_FREQ,
     ULTRA_HIGH_FREQ,
     filter_signals_for,
@@ -74,7 +75,7 @@ class SourceRoutingTests(unittest.TestCase):
             [item["source"] for item in filter_signals_for(records, advanced)],
             [MID_FREQ, HIGH_FREQ],
         )
-        self.assertEqual(flagship, [MID_FREQ, HIGH_FREQ, ULTRA_HIGH_FREQ])
+        self.assertEqual(flagship, [MID_FREQ, HIGH_FREQ, ULTRA_HIGH_FREQ, LOW_FREQ])
 
     def test_hub_client_retains_filtered_page_cursor(self):
         client = HubClient("https://hub.invalid")

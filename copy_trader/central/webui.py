@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import json
 
-from copy_trader.central.membership import HIGH_FREQ, MID_FREQ, MIN_PASSWORD_LENGTH, ULTRA_HIGH_FREQ
+from copy_trader.central.membership import (
+    HIGH_FREQ, LOW_FREQ, MID_FREQ, MIN_PASSWORD_LENGTH, SCHEDULE_LIMIT, ULTRA_HIGH_FREQ,
+)
 from typing import Any
 
 CLIENT_FIELDS = """
@@ -27,7 +29,14 @@ CLIENT_FIELDS = """
         <h3>訊號來源設定</h3>
         <div id="sourceSettings"></div>
         <input type="hidden" id="source_profiles" />
-        <p class="hint">手數、馬丁、分批平倉全部在這張表裡「每個來源各自設定」。選「均注」= 每筆固定手數、不進關卡；選「馬丁」= 逐關加碼(基礎手數 × 倍數)，各來源層級獨立、互不影響。多 TP 選「分批平倉」= <b>直接填每個止盈要平多少手</b>(例 0.01/0.01/0.01，每段最低 0.01 手，基礎手數會自動 = 三段總和)；選「保本移損」= first TP 後把停損移到成本。每日止盈 / 止損:該來源當日損益達到就今日停跟。0 代表不限。MT5 連線自動偵測，登入後自動開始跟單。</p>
+        <p class="hint">手數、馬丁、止盈處理全部在這張表裡「每個來源各自設定」。選「均注」= 每筆固定手數、不進關卡；選「馬丁」= 逐關加碼(基礎手數 × 倍數)，各來源層級獨立、互不影響。止盈處理選「分批平倉」= <b>直接填每個止盈要平多少手</b>(例 0.01/0.01/0.01，每段最低 0.01 手，基礎手數會自動 = 三段總和)；選「保本移損」= <b>價格觸及你設定的保本距離時，把停損移到進場價位</b>(例:填 3，進場後朝有利方向走 3 美元就保本)，手數整筆不動；距離填 0 = 不啟用，改成觸及第一個止盈才保本。多個止盈的訊號在保本之後還會逐關把停損往前推(觸及第二個止盈就推到第一個)。選「單一點位」= 止盈掛最近那一關就不再動。中頻訊號一單只有一個止盈，沒有東西可以分批，所以只給單一點位／保本移損。每日止盈 / 止損:該來源當日損益達到就今日停跟。0 代表不限。MT5 連線自動偵測，登入後自動開始跟單。</p>
+      </div>
+
+      <div class="field-group" id="scheduleGroup">
+        <h3>自動排程</h3>
+        <div id="scheduleBox"></div>
+        <input type="hidden" id="auto_schedules" />
+        <p class="hint" id="scheduleHint"></p>
       </div>
 """
 
@@ -298,16 +307,49 @@ body[data-role="client"]:not(.auth-locked) .shell {
 .side-exp { margin: 10px 0 0; font-size: 12px; color: var(--muted); }
 .side-exp b { color: var(--ink-2); font-weight: 600; font-family: var(--mono); }
 
-/* 到期進度條。剩不到 7 天轉紅 —— 這是會員最需要提早知道的一件事。 */
-.side-meter { height: 4px; border-radius: 999px; background: var(--sunk); margin-top: 12px; overflow: hidden; }
+/* 到期進度條的四段警示色。依「還剩幾天」升級：
+     >14 天 金色 · 8~14 天 琥珀 · 4~7 天 橘 · 1~3 天 紅(會脈動) · 到期 實心紅
+   用剩餘天數而不是百分比當門檻：會員在意的是「還能用幾天」。用百分比的話，
+   一年方案剩 30 天會被算成 8% 而爆紅，7 天試用第一天卻是 100% 全綠 —— 兩邊都錯。
+   條長本來就已經表達比例了。
+   刻意不用綠色當「充足」：這一頁的綠色專門表示獲利，拿去講時間會讀成兩件事。 */
+:root {
+  --lv-mid:  #C98A1E;   /* 琥珀 */
+  --lv-warn: #C4551B;   /* 橘 */
+  --lv-crit: #C21F35;   /* 紅 */
+}
+[data-theme="dark"] { --lv-mid: #E8B04B; --lv-warn: #F0813C; --lv-crit: #E23B4E; }
+
+.side-meter {
+  height: 6px; border-radius: 999px; background: var(--sunk);
+  margin-top: 12px; overflow: hidden;
+}
 .side-meter i {
   display: block; height: 100%; border-radius: 999px;
   background: linear-gradient(90deg, var(--gold), var(--gold-lit));
-  transition: width .6s cubic-bezier(.2,.7,.3,1);
+  transition: width .6s cubic-bezier(.2,.7,.3,1), background-color .4s;
 }
-.side-meter.is-soon i { background: var(--loss); }
+.side-meter.lv-mid  i { background: linear-gradient(90deg, var(--lv-mid),  var(--gold-hi)); }
+.side-meter.lv-warn i { background: linear-gradient(90deg, var(--lv-warn), var(--lv-mid)); }
+.side-meter.lv-crit i { background: linear-gradient(90deg, var(--lv-crit), var(--lv-warn)); }
+.side-meter.lv-out  i { background: var(--lv-crit); }
+/* 額度用完時條長是 0，空軌道跟「還沒載入」長得一樣。把軌道本身染紅，
+   一眼就分得出是「用完了」而不是「沒資料」。 */
+.side-meter.lv-out { background: color-mix(in srgb, var(--lv-crit) 26%, var(--sunk)); }
+/* 只有「危急」才動。整天都在閃的介面，會員三天後就自動忽略它了。 */
+.side-meter.lv-crit { animation: meterPulse 1.9s ease-in-out infinite; }
+@keyframes meterPulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--lv-crit) 55%, transparent); }
+  50%      { box-shadow: 0 0 0 5px color-mix(in srgb, var(--lv-crit) 0%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) { .side-meter.lv-crit { animation: none; } }
+
 .side-left { margin: 8px 0 0; font-size: 12px; color: var(--muted); }
-.side-left.is-soon { color: var(--loss); }
+/* 數字本身也跟著變色 —— 只有一條 6px 的細線在變色，滑過去不一定看得到 */
+.side-exp b.lv-mid,  .side-left.lv-mid  { color: var(--lv-mid); }
+.side-exp b.lv-warn, .side-left.lv-warn { color: var(--lv-warn); }
+.side-exp b.lv-crit, .side-left.lv-crit,
+.side-exp b.lv-out,  .side-left.lv-out  { color: var(--lv-crit); font-weight: 700; }
 
 /* 進階版以上:非開盤/未跟單自動暫停計時的狀態徽章。
    計時中=綠、暫停=灰,一眼看出方案時間現在到底有沒有在扣。 */
@@ -908,7 +950,7 @@ main { max-width: 1560px; margin: 0 auto; padding: 22px 28px 72px; }
 .src-table input[disabled], .src-table select[disabled] { opacity: .4; cursor: not-allowed; }
 .src-table input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--gold-mark); }
 /* 分批手數輸入 + 提示,直向堆在「多 TP 處理」那一格裡,不外溢到隔壁欄 */
-.sp-tp-cell { min-width: 130px; }
+.sp-tp-cell { min-width: 148px; }
 .src-table .sp-lots { display: block; margin-top: 5px; width: 100%; min-width: 0; box-sizing: border-box; text-align: center; letter-spacing: .03em; }
 .sp-ratio-note { display: block; margin-top: 3px; font-size: 11px; line-height: 1.35; max-width: 150px; }
 .sp-ratio-note.is-bad  { color: var(--loss); font-weight: 600; }
@@ -916,6 +958,56 @@ main { max-width: 1560px; margin: 0 auto; padding: 22px 28px 72px; }
 .sp-ratio-note.is-ok   { color: var(--muted); }
 .src-name { font-weight: 600; white-space: nowrap; }
 .src-meta { font-size: 11px; color: var(--muted); font-weight: 400; }
+/* 鎖住的來源列(等級沒買到)。整列調淡 + 一顆鎖,不是只把欄位 disabled ——
+   只 disable 的話那一列看起來仍然像「可以用、只是壞了」。 */
+.src-table tr.is-locked { background: var(--sunk); }
+.src-table tr.is-locked .src-name { color: var(--muted); }
+.src-lock {
+  display: inline-flex; align-items: center; gap: 6px; margin-top: 4px;
+  font-size: 11px; font-weight: 600; color: var(--gold); letter-spacing: .02em;
+}
+.src-lock .lockmark { margin-top: 2px; }
+/* 保本移損的距離觸發。只有選了保本移損才顯示(見 syncSourceProfiles)。
+   標題放在輸入框上面而不是同一行 —— 同一行會把這一格撐爆、壓到隔壁欄。 */
+.src-table .sp-be-wrap { display: block; margin-top: 5px; }
+.src-table .sp-be-wrap span {
+  display: block; margin-bottom: 3px; font-size: 11px; color: var(--muted);
+}
+.src-table .sp-be-wrap input { width: 100%; min-width: 0; box-sizing: border-box; text-align: center; }
+
+/* ── 自動排程 ─────────────────────────────────────────────────────── */
+.sched-table { width: 100%; min-width: 520px; border-collapse: collapse; font-size: 13px; }
+.sched-table th {
+  padding: 8px 10px; text-align: left; font-size: 11px; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--hair);
+}
+.sched-table td { padding: 8px 10px; border-bottom: 1px solid var(--hair); }
+.sched-table tr:last-child td { border-bottom: none; }
+.sched-table input[type="time"] {
+  font: inherit; font-size: 13px; padding: 5px 8px;
+  border: 1px solid var(--rule); border-radius: 6px;
+  background: var(--paper); color: var(--ink);
+}
+.sched-table input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--gold-mark); }
+.sched-empty td { color: var(--muted); padding: 18px 10px; }
+.sc-days { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.sc-day {
+  width: 26px; height: 26px; padding: 0; flex: none;
+  font: inherit; font-size: 12px; cursor: pointer;
+  border: 1px solid var(--rule); border-radius: 6px;
+  background: var(--paper); color: var(--muted);
+}
+.sc-day.is-on { background: rgba(212, 160, 23, .14); border-color: var(--gold-mark); color: var(--gold); font-weight: 700; }
+.sc-day[disabled] { opacity: .45; cursor: not-allowed; }
+.sc-note { font-size: 11px; color: var(--muted); margin-left: 4px; }
+.sched-count { font-size: 12px; color: var(--muted); align-self: center; }
+.sched-lock {
+  display: flex; align-items: center; gap: 9px;
+  padding: 16px 14px; border-radius: 10px;
+  background: var(--sunk); color: var(--muted); font-size: 13px;
+}
+.sched-lock b { color: var(--gold); }
+
 .src-add { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 .src-add input {
   font: inherit; font-size: 12.5px; padding: 6px 10px; flex: 1 1 280px; min-width: 0;
@@ -1501,6 +1593,7 @@ body.auth-locked > *:not(#authGate) { display: none; }
     <a href="#secChart"    data-nav="secChart">圖表分析</a>
     <a href="#secPerf"     data-nav="secPerf">報表中心</a>
     <a href="#secTrades"   data-nav="secTrades">歷史訂單</a>
+    <a href="#settings"    data-nav="settings">設定</a>
     <a href="#secBenefits" data-nav="secBenefits">會員權益</a>
   </nav>
   <div class="rail-state">
@@ -1797,23 +1890,6 @@ body.auth-locked > *:not(#authGate) { display: none; }
       </div>
     </div>
 
-  <!-- ⑦ 會員權益：跟官網一致的方案比較表 + 聯絡方式 -->
-  <div class="section-head" id="secBenefits">
-    <h2>會員權益</h2>
-    <p>不同等級能用的功能一項一項對給你看。你目前的方案會標亮；想解鎖更多，私訊我們升級。</p>
-  </div>
-  <div class="card benefits-card">
-    <div class="cmp-scroll"><table class="cmp-table" id="benefitsTable"></table></div>
-    <p class="cmp-note">所有方案價格皆以美金（USD）計價；本公司保留方案內容與價格調整之權利。交易涉及風險，請詳閱頁尾免責聲明。</p>
-    <div class="benefits-ig">
-      <div>
-        <p class="bi-h">需要升級方案，或任何服務？</p>
-        <p class="bi-b">直接私訊我們的 Instagram，幫你開通、續期、解答問題。</p>
-      </div>
-      <a class="btn btn-go" href="https://instagram.com/goldyoung0927" target="_blank" rel="noopener noreferrer">IG @goldyoung0927</a>
-    </div>
-  </div>
-
   </div><!-- /client-only -->
 
 </div><!-- /viewSignals -->
@@ -1952,7 +2028,9 @@ body.auth-locked > *:not(#authGate) { display: none; }
   </div>
   <div class="card"><div class="logs" id="logs"></div></div>
 
-  <section class="card settings" id="settings" hidden style="margin-top:14px">
+  <!-- ⑧ 設定。會員端一律攤開（會員權益上方）——「改設定」是每天都會做的事，
+       藏在一顆按鈕後面只是多一步。訊號中心維持收合。 -->
+  <section class="card settings" id="settings" __SETTINGS_HIDDEN__ style="margin-top:14px">
     <div class="section-head" style="margin:0 0 16px">
       <h2>設定</h2>
       <p>改任何設定都會<b>自動儲存</b>，不用記得按儲存；狀態顯示在下方。</p>
@@ -1962,9 +2040,30 @@ body.auth-locked > *:not(#authGate) { display: none; }
       <span class="save-status" id="saveStatus"></span>
       <button class="btn central-only" id="restartApply" hidden>重新啟動並套用</button>
       <button class="btn" id="save">立即儲存</button>
-      <button class="btn" id="closeSettings">收起</button>
+      <button class="btn central-only" id="closeSettings">收起</button>
     </div>
   </section>
+
+  <!-- ⑨ 會員權益：跟官網一致的方案比較表 + 聯絡方式。
+       刻意排在最後、只在免責聲明上面 —— 這是「想升級時才會看」的內容，
+       每天要用的持倉/報表/設定都應該排在它前面。 -->
+  <div class="client-only">
+    <div class="section-head" id="secBenefits">
+      <h2>會員權益</h2>
+      <p>不同等級能用的功能一項一項對給你看。你目前的方案會標亮；想解鎖更多，私訊我們升級。</p>
+    </div>
+    <div class="card benefits-card">
+      <div class="cmp-scroll"><table class="cmp-table" id="benefitsTable"></table></div>
+      <p class="cmp-note">所有方案價格皆以美金（USD）計價；本公司保留方案內容與價格調整之權利。交易涉及風險，請詳閱頁尾免責聲明。</p>
+      <div class="benefits-ig">
+        <div>
+          <p class="bi-h">需要升級方案，或任何服務？</p>
+          <p class="bi-b">直接私訊我們的 Instagram，幫你開通、續期、解答問題。</p>
+        </div>
+        <a class="btn btn-go" href="https://instagram.com/goldyoung0927" target="_blank" rel="noopener noreferrer">IG @goldyoung0927</a>
+      </div>
+    </div>
+  </div>
 
   <!-- 頁尾免責聲明：跟官網一致，會員端每一頁底部都在。 -->
   <footer class="app-foot client-only" id="appFoot">
@@ -2024,6 +2123,7 @@ const SOURCE_ALIAS = {
   __HIGH_FREQ_SOURCE_JSON__: "高頻交易",
   __MID_FREQ_SOURCE_JSON__: "中頻交易",
   __ULTRA_HIGH_FREQ_SOURCE_JSON__: "超高頻交易",
+  __LOW_FREQ_SOURCE_JSON__: "低頻交易",
 };
 const srcName = (s) => SOURCE_ALIAS[s] || (s || "未標記來源");
 
@@ -2032,6 +2132,29 @@ const srcName = (s) => SOURCE_ALIAS[s] || (s || "未標記來源");
 const HIGH_SOURCE = Object.keys(SOURCE_ALIAS).find((k) => SOURCE_ALIAS[k] === "高頻交易") || "";
 const MID_SOURCE  = Object.keys(SOURCE_ALIAS).find((k) => SOURCE_ALIAS[k] === "中頻交易") || "";
 const ULTRA_SOURCE = Object.keys(SOURCE_ALIAS).find((k) => SOURCE_ALIAS[k] === "超高頻交易") || "";
+const LOW_SOURCE  = Object.keys(SOURCE_ALIAS).find((k) => SOURCE_ALIAS[k] === "低頻交易") || "";
+
+/* 四個頻率的固定排序 + 每一個需要哪個等級。來源表一律把這四列都畫出來，
+   會員沒授權的就鎖起來 —— 「看得到、知道升級能解鎖什麼」是刻意的，
+   而不是等收到第一筆訊號才讓那一列冒出來。 */
+const FREQ_SOURCES = [
+  { key: LOW_SOURCE,   need: "flagship" },
+  { key: MID_SOURCE,   need: "trial" },
+  { key: HIGH_SOURCE,  need: "advanced" },
+  { key: ULTRA_SOURCE, need: "flagship" },
+].filter((f) => f.key);
+const TIER_LABELS = { trial: "體驗版", basic: "基礎版", advanced: "進階版", flagship: "旗艦版" };
+
+/* 目前登入者的額度。paintAuth 每次輪詢都會更新，設定表與排程表都讀這一份，
+   不各自從 auth 裡再挖一次。沒登入 = 全部沒有。 */
+function noEntitlements() {
+  return { sources: [], max_lot: 0.01, martingale: false, partial_close: false,
+           breakeven: false, mobile_notify: false, time_pause: false,
+           schedule: false, plan_days: 30 };
+}
+let ENT = noEntitlements();
+let TIER = "";
+const entHas = (name) => !!name && (ENT.sources || []).indexOf(name) !== -1;
 
 
 function ids() {
@@ -2045,7 +2168,7 @@ function ids() {
     // 會員端只剩「訊號來源設定」一個地方要填。連線(MT5路徑/輪詢/Shadow/自動開始)與
     // 其他策略(EA)全移除,不給會員看:MT5 路徑自動偵測、auto_start 預設開、shadow 關,
     // 這些值後端各自保留,不從前端回送(少送的欄位 save_settings 會保住)。
-    : ["source_profiles"];
+    : ["source_profiles", "auto_schedules"];
 }
 function collect() {
   const out = {};
@@ -2889,42 +3012,128 @@ function renderRungs(ladder, level, mg, cycles, overrideNote) {
   }
 }
 
-/* 每群下單設定表。來源清單是自動發現的（會員端收過的訊號都會列出來），
-   使用者不用手打群組名——打錯字只會靜默套用全域設定，很難察覺。 */
+/* 每群下單設定表。
+
+   四個頻率(低頻/中頻/高頻/超高頻)一律整列畫出來，不管這台機器收過訊號沒有 ——
+   會員買到哪裡、再上去能解鎖什麼，寫在他每天都會看的地方，比等第一筆訊號進來
+   才讓那一列冒出來清楚。沒授權的整列鎖住：所有欄位 disabled、標出需要的等級，
+   點不動也存不進去(syncSourceProfiles 一律把鎖住的來源寫成 enabled:false)。
+
+   這四列以外，收過訊號或手動新增的來源仍然照舊列在後面，不受鎖定影響。 */
+
+/* 這個來源可以選哪些「止盈處理」。中頻訊號一單只有一個止盈，分批平倉根本沒有
+   東西可以分，所以中頻不給那個選項。ok=false 的會 render 成 disabled 的灰選項，
+   讓會員看得到「升級可以解鎖什麼」，但選不下去。 */
+function tpOptions(source) {
+  const partial   = { v: "partial",   label: "分批平倉", ok: !!ENT.partial_close, need: "advanced" };
+  const breakeven = { v: "breakeven", label: "保本移損", ok: !!ENT.breakeven,     need: "advanced" };
+  const single    = { v: "single",    label: "單一點位", ok: true,                need: "trial" };
+  return source === MID_SOURCE ? [single, breakeven] : [partial, breakeven, single];
+}
+function optionHtml(opt, current) {
+  const label = opt.ok ? opt.label : opt.label + "（需" + (TIER_LABELS[opt.need] || "更高等級") + "）";
+  return '<option value="' + opt.v + '"' + (opt.v === current ? " selected" : "") +
+    (opt.ok ? "" : " disabled") + ">" + esc(label) + "</option>";
+}
+/* 把後端存著的 tp_mode 收斂成「這個來源、這個等級真的選得到」的值。
+   例：中頻存著舊的 partial → 顯示成單一點位；沒有保本移損權益 → 退回單一點位。
+   選不到就取第一個可用的，絕不讓下拉停在一個 disabled 的選項上。 */
+function pickTpMode(source, stored) {
+  const opts = tpOptions(source);
+  const hit = opts.find((o) => o.v === stored && o.ok);
+  if (hit) return hit.v;
+  const first = opts.find((o) => o.ok);
+  return first ? first.v : "single";
+}
+
+function blankSourceRow(name) {
+  return { source: name, trades: 0, configured: false, enabled: false, mode: "flat",
+           tp_mode: name === MID_SOURCE ? "single" : "partial",
+           base_lot: 0.01, multiplier: 2, max_level: 5, partial_ratios: [],
+           // 預設 3 美元:黃金的停損多半抓 6~10 美元，走一半再保本是常見做法。
+           // 預設 0 等於「選了保本移損卻永遠不保本」，那是最糟的預設值。
+           breakeven_distance: 3, max_daily_profit: 0, max_daily_loss: 0 };
+}
+
+function sourceRowHtml(r, meta, locked, need) {
+  const dis = locked ? " disabled" : "";
+  const mgOk = !!ENT.martingale;
+  const mode = mgOk ? (r.mode === "martingale" ? "martingale" : "flat") : "flat";
+  const tp = pickTpMode(r.source, r.tp_mode);
+  const maxLot = ENT.max_lot;
+  const lotMax = (maxLot == null || !(maxLot > 0)) ? "" : ' max="' + maxLot + '"';
+  return '<tr data-source-row="' + esc(r.source) + '"' +
+      (locked ? ' data-locked="1" class="is-locked"' : "") + ">" +
+    '<td><div class="src-name">' + esc(srcName(r.source)) + "</div>" +
+      '<div class="src-meta">' + esc(meta) + "</div>" +
+      (locked ? '<div class="src-lock"><i class="lockmark"></i>需' +
+                esc(TIER_LABELS[need] || "更高等級") + "</div>" : "") +
+    "</td>" +
+    '<td><input type="checkbox" class="sp-enabled"' +
+      (r.enabled && !locked ? " checked" : "") + dis + " /></td>" +
+    '<td><select class="sp-mode"' + dis + ">" +
+      '<option value="martingale"' + (mode === "martingale" ? " selected" : "") +
+        (mgOk ? "" : " disabled") + ">馬丁" + (mgOk ? "" : "（需進階版）") + "</option>" +
+      '<option value="flat"' + (mode === "flat" ? " selected" : "") + ">均注</option>" +
+    "</select></td>" +
+    '<td><input type="number" class="sp-base" step="0.01" min="0.01"' + lotMax +
+      ' value="' + r.base_lot + '"' + dis + " /></td>" +
+    '<td><input type="number" class="sp-mult" step="0.1" min="1" value="' + r.multiplier + '"' + dis + " /></td>" +
+    '<td><input type="number" class="sp-max" step="1" min="1" max="12" value="' + r.max_level + '"' + dis + " /></td>" +
+    '<td class="sp-tp-cell"><select class="sp-tpmode"' + dis + ">" +
+      tpOptions(r.source).map((o) => optionHtml(o, tp)).join("") +
+    "</select>" +
+    '<input type="text" class="sp-lots" value="' + lotsToText(r.partial_ratios, r.base_lot) + '"' + dis +
+      ' title="每個止盈平多少手，例 0.01/0.01/0.01（加總 = 這單總手數）" />' +
+    '<label class="sp-be-wrap"><span>保本距離（美元）</span>' +
+      '<input type="number" class="sp-be" step="0.1" min="0"' + dis +
+      ' value="' + (Number(r.breakeven_distance) || 0) + '"' +
+      ' title="價格朝有利方向走到「進場價 ± 這個美元價差」時，把停損移到進場價保本。0 = 不啟動距離保本" /></label>' +
+    '<span class="sp-ratio-note"></span></td>' +
+    '<td><input type="number" class="sp-profit" step="1" min="0" value="' + (r.max_daily_profit || 0) + '"' + dis +
+      ' title="當日該來源獲利達此金額就今日停跟；0 = 不限" /></td>' +
+    '<td><input type="number" class="sp-loss" step="1" min="0" value="' + (r.max_daily_loss || 0) + '"' + dis +
+      ' title="當日該來源虧損達此金額就今日停跟；0 = 不限" /></td>' +
+  "</tr>";
+}
+
 function renderSourceSettings(rows) {
   const box = $("sourceSettings");
-  if (!rows.length) {
-    box.innerHTML = '<div class="empty" style="padding:20px"><b>還沒收過任何訊號來源</b>' +
-      "收到第一筆訊號後，來源會自動出現在這裡讓你設定</div>";
-    return;
+  const byName = {};
+  rows.forEach((r) => { byName[r.source] = r; });
+
+  // 先四個頻率(固定順序)，再接上其他收過訊號/手動新增的來源
+  const ordered = [];
+  const claimed = {};
+  for (const f of FREQ_SOURCES) {
+    claimed[f.key] = 1;
+    const r = byName[f.key] || blankSourceRow(f.key);
+    const locked = !entHas(f.key);
+    let meta;
+    if (f.key === LOW_SOURCE) {
+      // 低頻的訊號源還在建置，先把位置與權益顯示出來，不假裝它已經在發訊號
+      meta = "訊號源建置中，開放後自動生效";
+    } else if (byName[f.key]) {
+      meta = "已成交 " + r.trades + " 筆" + (r.configured ? "" : " · 尚未個別設定（用預設）");
+    } else {
+      meta = "尚未收過訊號";
+    }
+    ordered.push({ r, meta, locked, need: f.need });
   }
+  for (const r of rows) {
+    if (claimed[r.source]) continue;
+    // 這四個頻率以外的來源(手動新增的群組名)不做等級鎖 —— 真正擋得住的是
+    // Hub，它根本不會把未授權來源的訊號送下來。
+    ordered.push({ r, locked: false, need: null,
+      meta: "已成交 " + r.trades + " 筆" + (r.configured ? "" : " · 尚未個別設定（用預設）") });
+  }
+
   box.innerHTML =
     '<table class="src-table"><thead><tr>' +
-      "<th>訊號來源</th><th>跟單</th><th>模式</th><th>基礎手數</th><th>馬丁倍數</th><th>關卡數</th><th>多 TP 處理</th>" +
+      "<th>訊號來源</th><th>跟單</th><th>模式</th><th>基礎手數</th><th>馬丁倍數</th><th>關卡數</th><th>止盈處理</th>" +
       "<th>每日止盈</th><th>每日止損</th>" +
     "</tr></thead><tbody>" +
-    rows.map((r) => '' +
-      '<tr data-source-row="' + esc(r.source) + '">' +
-        '<td><div class="src-name">' + esc(srcName(r.source)) + "</div>" +
-          '<div class="src-meta">已成交 ' + r.trades + " 筆" +
-          (r.configured ? "" : " · 尚未個別設定（用預設）") + "</div></td>" +
-        '<td><input type="checkbox" class="sp-enabled"' + (r.enabled ? " checked" : "") + " /></td>" +
-        '<td><select class="sp-mode">' +
-          '<option value="martingale"' + (r.mode === "martingale" ? " selected" : "") + ">馬丁</option>" +
-          '<option value="flat"' + (r.mode === "flat" ? " selected" : "") + ">均注</option>" +
-        "</select></td>" +
-        '<td><input type="number" class="sp-base" step="0.01" min="0.01" value="' + r.base_lot + '" /></td>' +
-        '<td><input type="number" class="sp-mult" step="0.1" min="1" value="' + r.multiplier + '" /></td>' +
-        '<td><input type="number" class="sp-max" step="1" min="1" max="12" value="' + r.max_level + '" /></td>' +
-        '<td class="sp-tp-cell"><select class="sp-tpmode">' +
-          '<option value="partial"' + (r.tp_mode === "partial" ? " selected" : "") + ">分批平倉</option>" +
-          '<option value="breakeven"' + (r.tp_mode === "breakeven" ? " selected" : "") + ">保本移損</option>" +
-        "</select>" +
-        '<input type="text" class="sp-lots" value="' + lotsToText(r.partial_ratios, r.base_lot) + '" title="每個止盈平多少手，例 0.01/0.01/0.01（加總 = 這單總手數）" />' +
-        '<span class="sp-ratio-note"></span></td>' +
-        '<td><input type="number" class="sp-profit" step="1" min="0" value="' + (r.max_daily_profit || 0) + '" title="當日該來源獲利達此金額就今日停跟；0 = 不限" /></td>' +
-        '<td><input type="number" class="sp-loss" step="1" min="0" value="' + r.max_daily_loss + '" title="當日該來源虧損達此金額就今日停跟；0 = 不限" /></td>' +
-      "</tr>").join("") +
+    ordered.map((o) => sourceRowHtml(o.r, o.meta, o.locked, o.need)).join("") +
     "</tbody></table>" +
     '<div class="src-add">' +
       '<input type="text" id="newSourceName" placeholder="群組名稱（要跟訊號中心的顯示名稱完全一致）" />' +
@@ -2953,24 +3162,11 @@ function addSourceRow() {
     alert("「" + name + "」已經在清單裡了");
     return;
   }
-  const tr = document.createElement("tr");
-  tr.dataset.sourceRow = name;
-  tr.innerHTML =
-    '<td><div class="src-name">' + esc(srcName(name)) + "</div>" +
-      '<div class="src-meta">手動新增 · 尚未收過訊號</div></td>' +
-    '<td><input type="checkbox" class="sp-enabled" checked /></td>' +
-    '<td><select class="sp-mode"><option value="martingale">馬丁</option>' +
-      '<option value="flat" selected>均注</option></select></td>' +
-    '<td><input type="number" class="sp-base" step="0.01" min="0.01" value="0.01" /></td>' +
-    '<td><input type="number" class="sp-mult" step="0.1" min="1" value="2" /></td>' +
-    '<td><input type="number" class="sp-max" step="1" min="1" max="12" value="5" /></td>' +
-    '<td class="sp-tp-cell"><select class="sp-tpmode"><option value="partial" selected>分批平倉</option>' +
-      '<option value="breakeven">保本移損</option></select>' +
-      '<input type="text" class="sp-lots" value="0.01/0.01/0.01" title="每個止盈平多少手，例 0.01/0.01/0.01（加總 = 這單總手數）" />' +
-      '<span class="sp-ratio-note"></span></td>' +
-    '<td><input type="number" class="sp-profit" step="1" min="0" value="0" title="0 = 不限" /></td>' +
-    '<td><input type="number" class="sp-loss" step="1" min="0" value="0" title="0 = 不限" /></td>';
-  document.querySelector(".src-table tbody").appendChild(tr);
+  const tr = document.createElement("tbody");
+  tr.innerHTML = sourceRowHtml(
+    Object.assign(blankSourceRow(name), { enabled: true }),
+    "手動新增 · 尚未收過訊號", false, null);
+  document.querySelector(".src-table tbody").appendChild(tr.firstChild);
   input.value = "";
   syncSourceProfiles();
 }
@@ -2999,12 +3195,30 @@ function parseLots(text) {
   return nums.map((n) => pround2(n));
 }
 /* 檢查每個「分批平倉」來源:每段手數都要 ≥ 0.01(MT5 最低);基礎手數自動 = 三段總和。
-   回傳擋存錯誤字串陣列(空=可儲存)。 */
+   回傳擋存錯誤字串陣列(空=可儲存)。鎖住的來源不檢查 —— 它根本不會跟單。 */
 function validateSourceLots() {
   const errors = [];
   for (const row of document.querySelectorAll("[data-source-row]")) {
     const note = row.querySelector(".sp-ratio-note");
-    if (row.querySelector(".sp-tpmode").value !== "partial") { if (note) { note.textContent = ""; note.className = "sp-ratio-note"; } continue; }
+    const mode = row.querySelector(".sp-tpmode").value;
+    if (row.dataset.locked === "1" || mode !== "partial") {
+      if (note) {
+        // 保本移損把觸發條件講白:價格走到「進場價 ± 保本距離」就把停損移到進場價。
+        // 沒填距離(0)= 距離觸發沒開,提醒他填,不要讓人以為選了就會保本。
+        const be = row.querySelector(".sp-be");
+        const d = mode === "breakeven" ? (Number(be && be.value) || 0) : 0;
+        if (row.dataset.locked === "1" || mode !== "breakeven") {
+          note.textContent = ""; note.className = "sp-ratio-note";
+        } else if (d > 0) {
+          note.textContent = "價格觸及保本距離（進場後 " + d + " 美元）→ 停損移到進場價";
+          note.className = "sp-ratio-note is-ok";
+        } else {
+          note.textContent = "未設保本距離：退回「觸及第一個止盈才保本」";
+          note.className = "sp-ratio-note is-warn";
+        }
+      }
+      continue;
+    }
     const name = row.dataset.sourceRow;
     const lots = parseLots(row.querySelector(".sp-lots").value);
     if (!lots) {
@@ -3027,21 +3241,31 @@ function validateSourceLots() {
 function syncSourceProfiles() {
   const out = {};
   for (const row of document.querySelectorAll("[data-source-row]")) {
+    // 鎖住的來源(等級沒買到)一律寫成不跟單,而且每個欄位都維持 disabled。
+    // 前端擋只是體驗;真正的閘門在 Hub —— 它根本不會送那些訊號下來。
+    const locked = row.dataset.locked === "1";
     const mode = row.querySelector(".sp-mode").value;
     const martingale = mode === "martingale";
     // 均注沒有倍數與關卡可言，把欄位鎖住比留著讓人填了沒作用好
-    row.querySelector(".sp-mult").disabled = !martingale;
-    row.querySelector(".sp-max").disabled = !martingale;
-    // 分批手數只有「分批平倉」用得到,保本移損就藏起來。分批時基礎手數 = 三段總和,
-    // 自動帶入且不讓改(會員只填分批手數);內部存成佔比,馬丁加碼時比例才會跟著放大。
-    const partial = row.querySelector(".sp-tpmode").value === "partial";
+    row.querySelector(".sp-mult").disabled = locked || !martingale;
+    row.querySelector(".sp-max").disabled = locked || !martingale;
+    // 分批手數只有「分批平倉」用得到,保本距離只有「保本移損」用得到,其餘藏起來。
+    // 分批時基礎手數 = 三段總和,自動帶入且不讓改(會員只填分批手數);內部存成佔比,
+    // 馬丁加碼時比例才會跟著放大。
+    const tpMode = row.querySelector(".sp-tpmode").value;
+    const partial = tpMode === "partial";
     const lotsInput = row.querySelector(".sp-lots");
+    const beWrap = row.querySelector(".sp-be-wrap");
+    const beInput = row.querySelector(".sp-be");
     const spBase = row.querySelector(".sp-base");
     if (lotsInput) lotsInput.style.display = partial ? "" : "none";
+    if (beWrap) beWrap.style.display = tpMode === "breakeven" ? "" : "none";
     const entry = {
-      enabled: row.querySelector(".sp-enabled").checked,
+      enabled: !locked && row.querySelector(".sp-enabled").checked,
       mode,
-      tp_mode: row.querySelector(".sp-tpmode").value,
+      tp_mode: tpMode,
+      // 距離一律存著,不因為切走模式就把會員填過的數字丟掉
+      breakeven_distance: Math.max(0, parseFloat(beInput && beInput.value) || 0),
       max_daily_loss: parseFloat(row.querySelector(".sp-loss").value) || 0,
       max_daily_profit: parseFloat(row.querySelector(".sp-profit").value) || 0,
     };
@@ -3058,7 +3282,7 @@ function syncSourceProfiles() {
         spBase.disabled = true;
       }
     } else {
-      spBase.disabled = false;
+      spBase.disabled = locked;
       entry.base_lot = parseFloat(spBase.value) || 0.01;
     }
     if (martingale) {
@@ -3069,6 +3293,143 @@ function syncSourceProfiles() {
   }
   $("source_profiles").value = JSON.stringify(out);
   validateSourceLots();   // 更新每列的最低手數提示(紅/綠)
+}
+
+/* ── 自動排程 ────────────────────────────────────────────────────────
+   每天幾點開始跟單、幾點停。跨午夜(21:00→02:00)是合法的 —— 黃金本來就是通宵盤,
+   只支援 start < end 的話「晚上開盤跟到凌晨」根本設不出來。
+
+   等級只決定「有沒有這個功能」(進階版以上才有),不再分單一/多組/進階 —— 有的話
+   幾組、能不能挑星期都一樣。SCHEDULE_LIMIT 是面板的實用上限,不是等級差異。
+   後端 active_schedules() 會用同一套規則再箝制一次 —— 前端灰掉只是體驗,不是閘門。 */
+const SCHEDULE_LIMIT = __SCHEDULE_LIMIT__;
+const DAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"];   // 對齊 Python weekday(): 週一=0
+
+function readSchedules() {
+  try {
+    const raw = JSON.parse($("auto_schedules").value || "[]");
+    return Array.isArray(raw) ? raw.filter((x) => x && typeof x === "object") : [];
+  } catch (e) { return []; }
+}
+function scheduleSignature(list) {
+  return JSON.stringify(list) + "|" + (ENT.schedule ? 1 : 0);
+}
+function schedRowHtml(s, i) {
+  const days = Array.isArray(s.days) ? s.days : [];
+  const on = (d) => !days.length || days.indexOf(d) !== -1;   // 空陣列 = 每天
+  return '<tr data-sched="' + i + '">' +
+    '<td><input type="checkbox" class="sc-on"' + (s.enabled === false ? "" : " checked") + " /></td>" +
+    '<td><input type="time" class="sc-start" value="' + esc(s.start || "09:00") + '" /></td>' +
+    '<td><input type="time" class="sc-end" value="' + esc(s.end || "23:30") + '" /></td>' +
+    '<td class="sc-days">' +
+      DAY_LABELS.map((label, d) =>
+        '<button type="button" class="sc-day' + (on(d) ? " is-on" : "") + '" data-day="' + d + '"' +
+        ' aria-pressed="' + (on(d) ? "true" : "false") + '">' + label + "</button>").join("") +
+    "</td>" +
+    '<td><button type="button" class="btn btn-quiet sc-del">刪除</button></td>' +
+  "</tr>";
+}
+function renderSchedules() {
+  const box = $("scheduleBox");
+  if (!box) return;
+  const list = readSchedules();
+  const sig = scheduleSignature(list);
+  // 每秒輪詢都會叫到這裡,內容沒變就不重畫 —— 否則會把正在填的時間欄位洗掉
+  if (box.dataset.signature === sig) return;
+  box.dataset.signature = sig;
+
+  if (!ENT.schedule) {
+    box.innerHTML = '<div class="sched-lock"><i class="lockmark"></i>' +
+      "自動排程需<b>進階版</b>以上。升級後可以設定每天自動開始／停止跟單的時間。</div>";
+    return;
+  }
+
+  const rows = list.slice(0, SCHEDULE_LIMIT);
+  const full = rows.length >= SCHEDULE_LIMIT;
+  box.innerHTML =
+    '<table class="sched-table"><thead><tr>' +
+      "<th>啟用</th><th>開始跟單</th><th>停止跟單</th><th>星期</th><th></th>" +
+    "</tr></thead><tbody>" +
+    (rows.length
+      ? rows.map((s, i) => schedRowHtml(s, i)).join("")
+      : '<tr class="sched-empty"><td colspan="5">還沒有排程 —— 目前完全手動。按下面的「新增排程」加一組。</td></tr>') +
+    "</tbody></table>" +
+    '<div class="src-add">' +
+      '<button type="button" class="btn" id="addSchedule"' + (full ? " disabled" : "") +
+        ">＋ 新增排程</button>" +
+      (full ? '<span class="sched-count">已達上限 ' + SCHEDULE_LIMIT + " 組</span>" : "") +
+    "</div>";
+
+  if (!box.dataset.bound) {
+    box.dataset.bound = "1";
+    // 按鈕的 click 不會冒出 input/change,所以按鈕這條路要自己叫一次自動儲存
+    box.addEventListener("click", (evt) => {
+      const day = evt.target.closest(".sc-day");
+      if (day && !day.disabled) {
+        const nowOn = !day.classList.contains("is-on");
+        day.classList.toggle("is-on", nowOn);
+        day.setAttribute("aria-pressed", nowOn ? "true" : "false");
+        syncSchedules(); autoSaveSoon(); return;
+      }
+      const del = evt.target.closest(".sc-del");
+      if (del) {
+        const row = del.closest("[data-sched]");
+        if (row) row.remove();
+        syncSchedules(); autoSaveSoon(); return;
+      }
+      if (evt.target.closest("#addSchedule")) addSchedule();
+    });
+    box.addEventListener("change", syncSchedules);
+    box.addEventListener("input", syncSchedules);
+  }
+}
+function collectSchedules() {
+  const out = [];
+  for (const row of document.querySelectorAll("[data-sched]")) {
+    const days = [...row.querySelectorAll(".sc-day.is-on")].map((b) => Number(b.dataset.day));
+    out.push({
+      enabled: row.querySelector(".sc-on").checked,
+      start: row.querySelector(".sc-start").value || "",
+      end: row.querySelector(".sc-end").value || "",
+      days: days.length === 7 ? [] : days,      // 七天全勾 = 每天
+    });
+  }
+  return out;
+}
+function syncSchedules() {
+  if (!ENT.schedule) return;                        // 沒這功能就別去動已經存著的值
+  const list = collectSchedules();
+  $("auto_schedules").value = JSON.stringify(list);
+  $("scheduleBox").dataset.signature = scheduleSignature(list);
+}
+function addSchedule() {
+  const list = collectSchedules();
+  if (!ENT.schedule || list.length >= SCHEDULE_LIMIT) return;
+  // 預設帶「早上九點到晚上十一點半」,不是空白 —— 要會員自己從零填兩個時間
+  // 才看得到東西,第一次用一定卡住。
+  list.push({ enabled: true, start: "09:00", end: "23:30", days: [] });
+  $("auto_schedules").value = JSON.stringify(list);
+  $("scheduleBox").dataset.signature = "";       // 強制重畫
+  renderSchedules();
+  autoSaveSoon();
+}
+/* 排程說明列。每秒都更新,但它跟表格是分開的元素,不會打斷正在填的欄位。 */
+function paintScheduleHint(snap) {
+  const hint = $("scheduleHint");
+  if (!hint) return;
+  if (!ENT.schedule) {
+    hint.textContent = "目前方案沒有自動排程：跟單的開始與停止完全由你手動控制。";
+    return;
+  }
+  const active = snap ? snap.schedule_active : null;
+  if (active == null) {
+    hint.textContent = "還沒有生效中的排程，跟單維持手動控制。時間用這台電腦的本機時間；"
+      + "跨午夜（例如 21:00 → 02:00）是可以的。";
+    return;
+  }
+  hint.textContent = "排程生效中 · 現在" + (active ? "在跟單時段內" : "不在跟單時段內")
+    + "。時段開始會自動開始跟單、時段結束會自動停止；你在時段內手動按了停止就會維持停止，"
+    + "不會被自動拉回來。時間用這台電腦的本機時間。";
 }
 
 /* -------------------------------------------------------------- painting */
@@ -3755,7 +4116,9 @@ function paintStats() {
 
   // 設定表只在來源清單變動時重建，否則每 3 秒輪詢會把使用者正在打的字洗掉
   const srcRows = stats.source_settings || [];
-  const srcSig = srcRows.map((r) => r.source).join("|");
+  // 等級也要進 signature：登入/升級之後鎖定狀態會變，只比來源名稱的話
+  // 整張表會停在登入前那份「全部鎖住」的樣子。
+  const srcSig = srcRows.map((r) => r.source).join("|") + "@" + TIER;
   if ($("sourceSettings").dataset.signature !== srcSig) {
     $("sourceSettings").dataset.signature = srcSig;
     renderSourceSettings(srcRows);
@@ -3932,15 +4295,54 @@ function paintCentralHint(snap) {
    每一項都直接讀 auth.entitlements 的欄位，不自己推斷、也不列出後端沒有的東西——
    側欄上寫「可使用」但實際上被擋掉，比不顯示還糟。 */
 const TIER_ORDER = ["trial", "basic", "advanced", "flagship"];
-/* 到期進度條的滿格基準。方案多半是 30 天一期，用它當分母；
-   買一年的人會直接滿格，那是對的——剩很多就是剩很多。 */
-const TIER_FULL_DAYS = 30;
+/* 到期進度條的滿格基準 = 這個方案「一期是幾天」，由後端 entitlements.plan_days
+   帶過來（體驗版 7 天、其餘 30 天）。以前寫死 30 天，於是剛開通的體驗版帳號
+   一進來進度條只有 23%，看起來像快到期了。買一年的人會直接滿格，那是對的
+   ——剩很多就是剩很多。後端沒回（舊 Hub）就照等級猜一個保守值。 */
+/* 方案時間的警示等級。門檻用「還剩幾天」而不是百分比 —— 見 .side-meter 的註解。
+   ok  >14 天 · mid 8~14 · warn 4~7 · crit 1~3 · out 已到期／額度用盡 */
+function planLevel(daysLeft) {
+  if (!(daysLeft > 0)) return "out";
+  if (daysLeft > 14) return "ok";
+  if (daysLeft > 7) return "mid";
+  if (daysLeft > 3) return "warn";
+  return "crit";
+}
+const PLAN_LEVELS = ["lv-ok", "lv-mid", "lv-warn", "lv-crit", "lv-out"];
+/* 進度條、剩餘天數、倒數文字三個地方一起換色。只換一個的話，另外兩個看起來
+   像壞掉；而且 6px 的細線單獨變色很容易被滑過去。 */
+function applyPlanLevel(daysLeft) {
+  const cls = "lv-" + planLevel(daysLeft);
+  for (const id of ["sideMeterWrap", "sideExp", "sideLeft"]) {
+    const el = $(id);
+    if (!el) continue;
+    el.classList.remove(...PLAN_LEVELS);
+    el.classList.add(cls);
+  }
+}
+
+/* 這個帳號還剩幾天。用量制(進階版以上)看使用額度、日曆制看到期日；
+   無期限回 null。以前好幾個地方各自讀 a.expires_at —— 用量制的 expires_at 是
+   null，於是頂欄一律顯示「無期限」、側欄的續期提示永遠不會出現。 */
+function planDaysLeft(a) {
+  const u = (a && a.usage && typeof a.usage === "object") ? a.usage : null;
+  if (u && u.seconds_left != null) return Number(u.seconds_left) / 86400;
+  const exp = Number((a && a.expires_at) || 0);
+  return exp ? (exp * 1000 - Date.now()) / 86400000 : null;
+}
+
+function planFullDays(a) {
+  const days = Number(((a && a.entitlements) || {}).plan_days);
+  if (days > 0) return days;
+  return String((a && a.tier) || "").toLowerCase() === "trial" ? 7 : 30;
+}
 
 function paintSide(a) {
   const bar = $("sideBar");
   if (!bar) return;
   if (!a || !a.logged_in) { bar.hidden = true; return; }
   bar.hidden = false;
+  const TIER_FULL_DAYS = planFullDays(a);
 
   $("sideTier").textContent = a.tier_label || a.tier || "—";
 
@@ -3949,7 +4351,7 @@ function paintSide(a) {
   if (up) {
     const tier = String(a.tier || "").toLowerCase();
     const top = tier === "flagship";
-    const days = a.expires_at ? Math.floor((a.expires_at * 1000 - Date.now()) / 86400000) : null;
+    const days = planDaysLeft(a);
     const soon = days != null && days <= 14;
     up.hidden = top && !soon;
     const body = $("upgradeBody");
@@ -3981,12 +4383,18 @@ function paintSide(a) {
       window.__usageAt = Date.now();
     }
     const days = newSecs / 86400;
-    $("sideExp").textContent = days >= 1
+    // 進度條的滿格 = 這個帳號「當初拿到多少額度」(Hub 帶下來的 seconds_total)，
+    // 不是等級的預設天數。7 天試用開在進階版上，用 30 天當分母第一天就只有 23%，
+    // 看起來像快到期 —— 而且會讓人誤以為滿格是 30 天。舊 Hub 沒回這欄就退回等級預設。
+    const grantDays = Number(usage.seconds_total) / 86400;
+    const fullDays = grantDays > 0 ? Math.max(grantDays, days) : TIER_FULL_DAYS;
+    $("sideExp").textContent = (days >= 1
       ? "約 " + Math.floor(days) + " 天"
-      : "約 " + Math.max(0, Math.floor(newSecs / 3600)) + " 小時";
+      : "約 " + Math.max(0, Math.floor(newSecs / 3600)) + " 小時")
+      + (grantDays > 0 ? " / 共 " + Math.round(fullDays) + " 天" : "");
     wrap.hidden = false;
-    $("sideMeter").style.width = Math.max(0, Math.min(100, (days / TIER_FULL_DAYS) * 100)) + "%";
-    wrap.classList.toggle("is-soon", days <= 3);
+    $("sideMeter").style.width = Math.max(0, Math.min(100, (days / fullDays) * 100)) + "%";
+    applyPlanLevel(days);
     if (pauseEl) pauseEl.hidden = false;
     startExpTicker();
   } else if (tp && usage) {
@@ -3995,6 +4403,7 @@ function paintSide(a) {
     $("sideExp").textContent = "無期限";
     window.__memberExpAt = 0; window.__usage = null;
     wrap.hidden = true; $("sideLeft").textContent = "";
+    applyPlanLevel(Infinity);
     if (pauseEl) pauseEl.hidden = true;
     stopExpTicker();
   } else {
@@ -4013,12 +4422,13 @@ function paintSide(a) {
       const days = (exp * 1000 - Date.now()) / 86400000;
       wrap.hidden = false;
       $("sideMeter").style.width = Math.max(0, Math.min(100, (days / TIER_FULL_DAYS) * 100)) + "%";
-      wrap.classList.toggle("is-soon", days <= 7);
+      applyPlanLevel(days);
       startExpTicker();                          // 啟動/重啟每秒倒數
     } else {
       $("sideExp").textContent = "無期限";
       wrap.hidden = true;
       $("sideLeft").textContent = "";
+      applyPlanLevel(Infinity);
       stopExpTicker();
     }
   }
@@ -4027,27 +4437,31 @@ function paintSide(a) {
   const srcs = Array.isArray(e.sources) ? e.sources : [];
   const has = (name) => !!name && srcs.indexOf(name) !== -1;
   const maxLot = e.max_lot;
-  const TIER_LABEL = { trial: "體驗版", basic: "基礎版", advanced: "進階版", flagship: "旗艦版" };
 
-  // 完整列出方案所有功能(跟會員權益比較表一致)。會員沒有的鎖起來、標出需要的等級,
-  // 讓低階會員看見上面能解鎖什麼。訊號源/手數/馬丁/分批看後端授權;其餘依等級判定。
-  // 超高頻尚未完善,先不對外顯示。
+  // 完整列出方案所有功能(跟下方會員權益比較表逐項對得起來)。會員沒有的鎖起來、
+  // 標出需要的等級,讓低階會員看見上面能解鎖什麼。訊號源/手數/馬丁/分批/保本/排程
+  // 一律看後端 entitlements 的欄位,不自己依等級推 —— 推錯就會出現「側欄說有、
+  // 實際被擋掉」。只有沒有對應欄位的(勝率分析、真人建議…)才用等級判定。
   const curIdx = TIER_ORDER.indexOf(String(a.tier || "").toLowerCase());
   const atLeast = (t) => curIdx >= 0 && curIdx >= TIER_ORDER.indexOf(t);
   const rows = [
+    { label: "低頻訊號跟單",       on: has(LOW_SOURCE),   need: "flagship" },
     { label: "中頻訊號跟單",       on: has(MID_SOURCE),   need: "trial" },
     { label: "高頻訊號跟單",       on: has(HIGH_SOURCE),  need: "advanced" },
+    { label: "超高頻訊號跟單",     on: has(ULTRA_SOURCE), need: "flagship" },
     { label: "不限次數跟單",       on: atLeast("basic"),  need: "basic" },
     { label: "跟單手數上限",       on: true, need: "trial",
       value: maxLot == null ? "不限" : lots(maxLot) + " 手" },
     { label: "馬丁策略設定",       on: !!e.martingale,    need: "advanced" },
     { label: "分批止盈設定",       on: !!e.partial_close, need: "advanced" },
+    { label: "保本移損設定",       on: !!e.breakeven,     need: "advanced" },
     { label: "每日止盈 / 止損",    on: true, need: "trial" },
+    { label: "績效報表",           on: true, need: "trial" },
     { label: "各頻率勝率分析",     on: atLeast("advanced"), need: "advanced" },
-    { label: "手機跟單通知",       on: atLeast("basic"),   need: "basic" },
-    { label: "非開盤自動暫停計時", on: atLeast("advanced"), need: "advanced" },
+    { label: "手機跟單通知",       on: !!e.mobile_notify, need: "advanced" },
+    { label: "非開盤自動暫停計時", on: !!e.time_pause,    need: "advanced" },
     { label: "本金比例自動調手數", on: atLeast("flagship"), need: "flagship" },
-    { label: "自動排程",           on: atLeast("basic"),   need: "basic" },
+    { label: "自動排程",           on: !!e.schedule,      need: "advanced" },
     { label: "真人分析建議",       on: atLeast("flagship"), need: "flagship" },
   ];
 
@@ -4057,7 +4471,7 @@ function paintSide(a) {
       <span>${esc(r.label)}</span>
       ${r.on
         ? (r.value ? `<span class="val">${esc(r.value)}</span>` : "")
-        : `<span class="val val--lock">需${esc(TIER_LABEL[r.need] || "更高等級")}</span>`}
+        : `<span class="val val--lock">需${esc(TIER_LABELS[r.need] || "更高等級")}</span>`}
     </li>`).join("");
 }
 
@@ -4085,12 +4499,12 @@ function tickExp() {
     secs = Math.max(0, Math.floor(secs));
     if (secs <= 0) {
       left.textContent = "使用額度已用完，請聯繫管理員續期";
-      left.classList.add("is-soon");
+      applyPlanLevel(0);
       if (pauseEl) { pauseEl.hidden = false; pauseEl.className = "side-pause is-paused"; pauseEl.textContent = "⏸ 額度已用完"; }
       return;
     }
     left.textContent = `還可使用 ${fmtDHMS(secs)}`;
-    left.classList.toggle("is-soon", Number(u.seconds_left) / 86400 <= 3);
+    applyPlanLevel(secs / 86400);
     if (pauseEl) {
       pauseEl.hidden = false;
       if (consuming) { pauseEl.className = "side-pause is-live"; pauseEl.textContent = "⏱ 計時中"; }
@@ -4104,14 +4518,16 @@ function tickExp() {
   const exp = Number(window.__memberExpAt || 0);
   if (!exp) { left.textContent = ""; return; }
   let r = Math.floor(exp - Date.now() / 1000);
-  if (r <= 0) { left.textContent = "已到期，請聯繫管理員續期"; left.classList.add("is-soon"); return; }
+  if (r <= 0) { left.textContent = "已到期，請聯繫管理員續期"; applyPlanLevel(0); return; }
   left.textContent = `還剩 ${fmtDHMS(r)}`;
-  left.classList.toggle("is-soon", (exp - Date.now() / 1000) <= 7 * 86400);
+  applyPlanLevel(r / 86400);
 }
 function startExpTicker() { tickExp(); if (!__expTimer) __expTimer = setInterval(tickExp, 1000); }
 function stopExpTicker() { if (__expTimer) { clearInterval(__expTimer); __expTimer = null; } }
 
-/* 會員權益方案比較表 —— 內容跟官網一模一樣(13 項功能 × 四個方案),依會員目前等級標亮。
+/* 會員權益方案比較表 —— 內容跟官網 /pricing 一模一樣(13 項功能 × 四個方案),
+   依會員目前等級標亮。改這裡就要一起改 website/pricing/index.html 與 i18n。
+   側欄「方案功能」列的每一項也必須對得起來(見 paintSide)。
    每格:"y"=有、"n"=無、字串=單行文字、[主, 副]=兩行文字。 */
 const BENEFIT_COLS = [
   { key: "trial",    name: "體驗版", en: "FREE",    price: "US$0" },
@@ -4120,18 +4536,18 @@ const BENEFIT_COLS = [
   { key: "flagship", name: "旗艦版", en: "PREMIUM", price: "US$149" },
 ];
 const BENEFIT_ROWS = [
-  ["使用策略", "能跟哪些頻率的策略", ["中頻策略", "每日 1 筆訊號"], ["中頻策略", "完整跟單"], ["中頻 + 高頻策略", "完整跟單"], ["低頻 + 中頻 + 高頻策略", "完整跟單"]],
+  ["使用策略", "能跟哪些頻率的策略", ["中頻策略", "每日 1 筆訊號"], ["中頻策略", "完整跟單"], ["中頻 + 高頻策略", "完整跟單"], ["低頻 + 中頻 + 高頻 + 超高頻策略", "完整跟單"]],
   ["每日跟單限制", "每天最多跟幾筆中頻訊號", "每日最多 1 筆", "不限次數", "不限次數", "不限次數"],
   ["馬丁設定", "馬丁的倍數與層數能不能自己設", "n", "n", ["基礎馬丁", "倍數、最大層數限制"], ["完整馬丁", "倍數、層數、最大風險控制"]],
-  ["手數設定", "每筆跟單的手數能調到多細", ["基礎範圍", "有限制"], ["自己設", "標準範圍"], ["自己設", "+ 分批平倉"], ["自己設", "+ 分批平倉 + 動態自動調整手數"]],
+  ["手數設定", "每筆跟單的手數能調到多細", ["基礎範圍", "有限制"], ["自己設", "標準範圍"], ["自己設", "+ 分批平倉 / 保本移損"], ["自己設", "+ 分批平倉 / 保本移損 + 動態自動調整手數"]],
   ["績效報表", "今天 / 這週 / 這個月的報表", "y", "y", "y", "y"],
   ["各頻率勝率", "各頻率的勝率與績效分開看", "n", "n", "y", "y"],
   ["每日虧損上限", "每天最多虧多少，金額或比例", "y", "y", "y", "y"],
-  ["手機跟單通知", "手機收跟單訊號與系統通知", "n", "y", "y", "y"],
-  ["分批止盈", "分批止盈的比例與條件", "n", "n", "y", "y"],
+  ["手機跟單通知", "手機收跟單訊號與系統通知", "n", "n", "y", "y"],
+  ["分批止盈 / 保本移損", "分批止盈的手數分配，或走滿設定價差就把停損移到進場價", "n", "n", "y", "y"],
   ["本金比例自動調整手數", "手數跟著本金比例自動調整", "n", "n", "n", "y"],
   ["非開盤自動暫停計時", "非開盤/停止跟單時方案時間自動暫停,只在開盤跟單時計算", "n", "n", "y", "y"],
-  ["自動排程", "每天自動開始 / 停止的時間", "n", "單一排程", "多組排程", "多組進階排程"],
+  ["自動排程", "每天自動開始 / 停止的時間", "n", "n", "y", "y"],
   ["真人分析建議", "每月真人幫你看報表、給調整建議", "n", "n", "n", ["每月提供", "真人訊息分析與調整建議"]],
 ];
 function benefitCell(cell) {
@@ -4164,8 +4580,14 @@ function renderBenefits(a) {
 function paintAuth(snap) {
   if (!IS_CLIENT) return;
   const a = snap.auth || { logged_in: false };
+  // 額度先更新,再畫任何東西 —— 來源設定表與排程表都讀 ENT,晚一拍就會閃過
+  // 一次「全部鎖住」的畫面。沒登入 = 全部沒有。
+  ENT = a.logged_in ? Object.assign(noEntitlements(), a.entitlements || {})
+                    : noEntitlements();
+  TIER = a.logged_in ? String(a.tier || "").toLowerCase() : "";
   paintSide(a);
   renderBenefits(a);
+  renderSchedules();
   const gate = $("authGate");
   const locked = !a.logged_in;
   gate.classList.toggle("is-on", locked);
@@ -4184,9 +4606,9 @@ function paintAuth(snap) {
   badge.hidden = false;
   $("authBadgeUser").textContent = a.username || "";
   $("authBadgeTier").textContent = a.tier_label || "";
-  const exp = Number(a.expires_at || 0);
-  if (exp) {
-    const days = Math.floor((exp * 1000 - Date.now()) / 86400000);
+  const left = planDaysLeft(a);
+  if (left != null) {
+    const days = Math.floor(left);
     $("authBadgeExp").textContent = days >= 0 ? `剩 ${days} 天` : "已到期";
     // 剩不到一週就標紅，讓會員自己看得到該續費了
     badge.classList.toggle("is-soon", days <= 7);
@@ -4338,6 +4760,7 @@ async function refreshStatus() {
     S.status = snap;
     if (!S.filled) { fill(snap.settings); S.filled = true; }
     paintAuth(snap);
+    paintScheduleHint(snap);
     paintStatus();
     applyTick(snap.tick);      // 每秒把最新價灌進形成中的那根
   } catch (e) { /* 網頁還開著、服務暫時沒回應時不要洗版 */ }
@@ -4736,6 +5159,13 @@ if ($("restartApply")) {
 const toggle = $("toggleSettings");
 toggle.onclick = () => {
   const panel = $("settings");
+  // 會員端的設定永遠是開的（就排在會員權益上面），這顆按鈕只負責捲過去。
+  // 訊號中心維持收合／展開。
+  if (IS_CLIENT) {
+    panel.hidden = false;
+    panel.scrollIntoView({ behavior: REDUCED ? "auto" : "smooth", block: "start" });
+    return;
+  }
   const open = panel.hidden;
   panel.hidden = !open;
   toggle.setAttribute("aria-expanded", String(open));
@@ -4842,6 +5272,11 @@ def render(state: Any) -> str:
         .replace("__HIGH_FREQ_SOURCE_JSON__", json.dumps(HIGH_FREQ, ensure_ascii=False))
         .replace("__MID_FREQ_SOURCE_JSON__", json.dumps(MID_FREQ, ensure_ascii=False))
         .replace("__ULTRA_HIGH_FREQ_SOURCE_JSON__", json.dumps(ULTRA_HIGH_FREQ, ensure_ascii=False))
+        .replace("__LOW_FREQ_SOURCE_JSON__", json.dumps(LOW_FREQ, ensure_ascii=False))
+        .replace("__SCHEDULE_LIMIT__", str(SCHEDULE_LIMIT))
+        # 會員端的設定一律攤開來（在會員權益上方），不用先按「設定」才看得到；
+        # 訊號中心維持收合 —— 那邊的欄位多半是裝好一次就不再動的連線設定。
+        .replace("__SETTINGS_HIDDEN__", "hidden" if is_central else "")
         .replace("__TAB1__", "訊號發布" if is_central else "訊號跟單")
         .replace("__PWMIN__", str(MIN_PASSWORD_LENGTH))
     )

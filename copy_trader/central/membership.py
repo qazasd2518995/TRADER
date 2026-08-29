@@ -11,7 +11,8 @@
   * allowed_sources — **伺服器端**強制。Hub 在 /signals 就把該會員無權
     存取的來源濾掉，資料根本不會離開伺服器。這是真正的收費閘門。
 
-  * max_lot / martingale / partial — **用戶端**自律。Hub 只在登入時把
+  * max_lot / martingale / partial_close / breakeven / schedule —
+    **用戶端**自律。Hub 只在登入時把
     這些額度告訴會員端，由會員端自己套用。會員如果反編譯改掉，是擋不住的。
     之所以能接受：這些只影響他自己的帳戶風險，不影響我們的訊號值錢與否。
 """
@@ -40,6 +41,10 @@ logger = logging.getLogger(__name__)
 HIGH_FREQ = "焦點利潤(yuyu)"      # 對外稱「高頻交易」
 MID_FREQ = "黃金報單🈲言群"        # 對外稱「中頻交易」
 ULTRA_HIGH_FREQ = "超高頻交易"     # 市場資料模型；不是 LINE 聊天室
+# 低頻交易: 訊號源還沒接上, 但等級表與會員端面板已經把它列為旗艦版的權益,
+# 所以這裡先把名字定下來 —— 會員端會顯示這一列(旗艦版亮、其餘鎖住),
+# 收到第一筆訊號之前它就是一個「已授權但還沒有訊號」的來源, 不會下單。
+LOW_FREQ = "低頻交易"
 
 TIERS: Dict[str, Dict[str, Any]] = {
     "trial": {
@@ -48,6 +53,9 @@ TIERS: Dict[str, Dict[str, Any]] = {
         "max_lot": 0.01,
         "martingale": False,
         "partial_close": False,
+        "breakeven": False,
+        "mobile_notify": False,
+        "schedule": False,
         "time_pause": False,
         "default_days": 7,
     },
@@ -57,6 +65,9 @@ TIERS: Dict[str, Dict[str, Any]] = {
         "max_lot": 0.10,
         "martingale": False,
         "partial_close": False,
+        "breakeven": False,
+        "mobile_notify": False,
+        "schedule": False,
         "time_pause": False,
         "default_days": 30,
     },
@@ -66,6 +77,11 @@ TIERS: Dict[str, Dict[str, Any]] = {
         "max_lot": None,          # None = 不限
         "martingale": True,       # 對齊官網/會員權益表:進階版(PRO)含馬丁與分批平倉
         "partial_close": True,
+        # 保本移損跟分批平倉是同一組「多 TP 處理」的權益, 一起從進階版開始給。
+        # 體驗/基礎版只剩「單一點位」(照訊號的第一個止盈掛上去就不再管)。
+        "breakeven": True,
+        "mobile_notify": True,    # 手機跟單通知: 進階版(PRO)以上才有
+        "schedule": True,         # 自動排程: 有或沒有, 不再分單一/多組/進階
         # 用量計時: 進階版(PRO)以上才有「非開盤/停止跟單自動暫停計時」。
         # 方案時間變成一份「使用額度」, 只有黃金開盤且正在跟單時才會扣。
         "time_pause": True,
@@ -73,16 +89,23 @@ TIERS: Dict[str, Dict[str, Any]] = {
     },
     "flagship": {
         "label": "旗艦版",
-        "sources": [MID_FREQ, HIGH_FREQ, ULTRA_HIGH_FREQ],
+        "sources": [MID_FREQ, HIGH_FREQ, ULTRA_HIGH_FREQ, LOW_FREQ],
         "max_lot": None,
         "martingale": True,
         "partial_close": True,
+        "breakeven": True,
+        "mobile_notify": True,
+        "schedule": True,
         "time_pause": True,
         "default_days": 30,
     },
 }
 
 TIER_ORDER = ["trial", "basic", "advanced", "flagship"]
+
+# 自動排程最多幾組。這不是等級差異(有這功能的等級都一樣多), 純粹是設定面板的
+# 上限 —— 排程表是手動維護的清單, 超過十來組就沒人管得動了。
+SCHEDULE_LIMIT = 10
 
 # session 多久沒動就失效 (秒)。會員端每秒輪詢, 正常使用不會碰到;
 # 這是為了讓「電腦直接關機、沒有登出」的 session 不要卡住帳號一輩子。
@@ -147,14 +170,21 @@ def tier_entitlements(tier: str) -> Dict[str, Any]:
     if spec is None:
         logger.warning("unknown tier %r — falling back to no access", tier)
         return {"label": "未知", "sources": [], "max_lot": 0.01,
-                "martingale": False, "partial_close": False}
+                "martingale": False, "partial_close": False, "breakeven": False,
+                "mobile_notify": False, "schedule": False, "plan_days": 30}
     return {
         "label": spec["label"],
         "sources": list(spec["sources"]),
         "max_lot": spec["max_lot"],
         "martingale": spec["martingale"],
         "partial_close": spec["partial_close"],
+        "breakeven": bool(spec.get("breakeven", False)),
+        "mobile_notify": bool(spec.get("mobile_notify", False)),
+        "schedule": bool(spec.get("schedule", False)),
         "time_pause": bool(spec.get("time_pause", False)),
+        # 一期是幾天。會員端的到期進度條拿它當滿格基準 —— 體驗版 7 天就該
+        # 用 7 天當分母, 用 30 天算的話新開的體驗版帳號一進來只有 23% 滿。
+        "plan_days": int(spec.get("default_days", 30)),
     }
 
 
@@ -164,6 +194,9 @@ def tier_catalog() -> List[Dict[str, Any]]:
         {"key": k, "label": TIERS[k]["label"], "sources": list(TIERS[k]["sources"]),
          "max_lot": TIERS[k]["max_lot"], "martingale": TIERS[k]["martingale"],
          "partial_close": TIERS[k]["partial_close"],
+         "breakeven": bool(TIERS[k].get("breakeven", False)),
+         "mobile_notify": bool(TIERS[k].get("mobile_notify", False)),
+         "schedule": bool(TIERS[k].get("schedule", False)),
          "time_pause": bool(TIERS[k].get("time_pause", False)),
          "default_days": TIERS[k].get("default_days", 30)}
         for k in TIER_ORDER
@@ -267,6 +300,9 @@ class MemberStore:
         usage_seconds_left: 進階版以上的「使用額度」(秒)。NULL = 尚未初始化,
           第一次登入/輪詢時會從 expires_at 換算灌入。非進階版一律 NULL, 走舊的
           expires_at 日曆制。
+        usage_seconds_total: 這個帳號「當初拿到多少額度」(秒), 給會員端的進度條當
+          分母。沒有它的話只能拿等級的預設天數當滿格 —— 一個買 7 天試用的進階版
+          帳號第一天就會顯示 7/30 = 23%, 看起來像快到期了。
         last_active_at: 上次「有在跟單且開盤」而扣時間的時間點, 用來算兩次輪詢的
           間隔。與 last_seen_at(閒置斷線/最後上線顯示)分開, 語意才不會打架。
         """
@@ -275,6 +311,8 @@ class MemberStore:
             self._conn.execute("ALTER TABLE members ADD COLUMN usage_seconds_left REAL")
         if "last_active_at" not in cols:
             self._conn.execute("ALTER TABLE members ADD COLUMN last_active_at REAL")
+        if "usage_seconds_total" not in cols:
+            self._conn.execute("ALTER TABLE members ADD COLUMN usage_seconds_total REAL")
 
     def close(self) -> None:
         with self._lock:
@@ -301,6 +339,7 @@ class MemberStore:
             # 用量計時: 進階版以上, 方案時間是一份「使用額度」(秒), 只有開盤+跟單才扣。
             "time_pause": time_pause,
             "usage_seconds_left": row["usage_seconds_left"] if time_pause else None,
+            "usage_seconds_total": row["usage_seconds_total"] if time_pause else None,
         }
         if include_session:
             d["session_token"] = row["session_token"]
@@ -324,16 +363,32 @@ class MemberStore:
             return None
         left = row["usage_seconds_left"]
         if left is not None:
+            # 舊帳號沒有 total(這個欄位是後來加的)。用目前剩餘額度回填 ——
+            # 猜不出當初發了多少, 但「現在就是滿的」至少不會讓進度條一開始
+            # 就顯示成快到期; 之後正常遞減。
+            if row["usage_seconds_total"] is None:
+                self._conn.execute(
+                    "UPDATE members SET usage_seconds_total = ? WHERE id = ?",
+                    (float(left), row["id"]))
+                self._conn.commit()
             return float(left)
         exp = row["expires_at"]
         if exp is None:
             return None      # 永久帳號: 不設額度
         seeded = max(0.0, float(exp) - now)
         self._conn.execute(
-            "UPDATE members SET usage_seconds_left = ?, expires_at = NULL WHERE id = ?",
-            (seeded, row["id"]))
+            "UPDATE members SET usage_seconds_left = ?, usage_seconds_total = ?,"
+            " expires_at = NULL WHERE id = ?",
+            (seeded, seeded, row["id"]))
         self._conn.commit()
         return seeded
+
+    def _usage_total_locked(self, row: sqlite3.Row, left: Optional[float]) -> Optional[float]:
+        """進度條的分母:當初發了多少額度。至少不小於目前剩餘, 免得超過 100%。"""
+        if left is None:
+            return None
+        total = row["usage_seconds_total"]
+        return max(float(total), float(left)) if total is not None else float(left)
 
     def _log_event(self, username: str, ok: bool, device: str, ip: str, detail: str) -> None:
         self._conn.execute(
@@ -372,16 +427,19 @@ class MemberStore:
             expires_at = None      # 用量制不看日曆
         elif expires_at is None and days is not None:
             expires_at = time.time() + int(days) * 86400
+        # 進度條的分母 = 當初發的額度, 不是等級的預設天數。開一個 7 天試用的
+        # 進階版帳號, 第一天就該是滿格, 而不是 7/30 = 23%。
+        usage_seconds_total = usage_seconds_left
 
         with self._lock:
             if self._get_row(username) is not None:
                 raise ValueError(f"帳號已存在: {username}")
             self._conn.execute(
                 "INSERT INTO members (username, password_hash, tier, expires_at,"
-                " usage_seconds_left, status, note, created_at)"
-                " VALUES (?,?,?,?,?,'active',?,?)",
+                " usage_seconds_left, usage_seconds_total, status, note, created_at)"
+                " VALUES (?,?,?,?,?,?,'active',?,?)",
                 (username, hash_password(plain), tier, expires_at, usage_seconds_left,
-                 note or "", time.time()))
+                 usage_seconds_total, note or "", time.time()))
             self._conn.commit()
             row = self._get_row(username)
 
@@ -447,9 +505,12 @@ class MemberStore:
             if tier_has_time_pause(row["tier"]):
                 current = self._ensure_usage_locked(row, now) or 0.0
                 new_left = current + int(days) * 86400
+                # 續期後把分母一起拉到新的額度 —— 否則續了 30 天, 進度條還在拿
+                # 舊的 7 天當滿格, 會爆到 400%(前端夾在 100% 就變成永遠滿格)。
                 self._conn.execute(
-                    "UPDATE members SET usage_seconds_left = ?, expires_at = NULL"
-                    " WHERE username = ? COLLATE NOCASE", (new_left, username))
+                    "UPDATE members SET usage_seconds_left = ?, usage_seconds_total = ?,"
+                    " expires_at = NULL WHERE username = ? COLLATE NOCASE",
+                    (new_left, new_left, username))
             else:
                 base = max(now, float(row["expires_at"] or 0))
                 new_exp = base + int(days) * 86400
@@ -549,6 +610,7 @@ class MemberStore:
         out["kicked_previous"] = kicked
         if tier_has_time_pause(row["tier"]):
             out["usage"] = {"time_pause": True, "seconds_left": usage_left,
+                            "seconds_total": self._usage_total_locked(row, usage_left),
                             "market_open": gold_market_open(now), "consuming": False}
         return out, ""
 
@@ -621,6 +683,7 @@ class MemberStore:
                         else:
                             consuming = market
                 usage_block = {"time_pause": True, "seconds_left": fresh_left,
+                               "seconds_total": self._usage_total_locked(row, fresh_left),
                                "market_open": market, "consuming": consuming}
 
             # last_seen_at 節流。會員端每秒輪詢一次, 每次都寫就是每秒一次

@@ -178,9 +178,15 @@ SETTINGS = {
     "partial_close_ratios": "0.5,0.3,0.2",
     "ea_sources": json.dumps({EA_MAGIC: "趨勢線策略"}, ensure_ascii=False),
     "source_profiles": json.dumps({
-        SOURCES["mid"]:  {"mode": "martingale", "lot": "0.01"},
-        SOURCES["high"]: {"mode": "flat", "lot": "0.02"},
+        SOURCES["mid"]:  {"mode": "martingale", "lot": "0.01", "tp_mode": "breakeven",
+                          "breakeven_distance": 3.0},
+        SOURCES["high"]: {"mode": "flat", "lot": "0.02", "tp_mode": "partial"},
     }, ensure_ascii=False),
+    # 自動排程：兩組，讓預覽看得到「多組排程」長什麼樣（等級不夠時前端會自己截斷）
+    "auto_schedules": json.dumps([
+        {"enabled": True, "start": "09:00", "end": "23:30", "days": [0, 1, 2, 3, 4]},
+        {"enabled": False, "start": "21:00", "end": "02:00", "days": []},
+    ], ensure_ascii=False),
     "auto_start": True,
 }
 
@@ -367,6 +373,8 @@ def make_handler(mt5_dir: Path, tier: str = "flagship", role: str = "client"):
                         "timestamp": int(time.time()),
                     },
                     "uptime_seconds": 27_540,
+                    # 自動排程目前判定「該不該在跟單」。None = 沒設排程。
+                    "schedule_active": True,
                     "auth": None if role == "central" else {
                         "logged_in": True, "username": "demo",
                         "tier": tier, "tier_label": tier_entitlements(tier).get("label", tier),

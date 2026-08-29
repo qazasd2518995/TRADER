@@ -29,7 +29,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from copy_trader.config import DATA_DIR, _instance_name
-from copy_trader.central.membership import MIN_PASSWORD_LENGTH, ULTRA_HIGH_FREQ
+from copy_trader.central.membership import (
+    LOW_FREQ, MID_FREQ, MIN_PASSWORD_LENGTH, SCHEDULE_LIMIT, ULTRA_HIGH_FREQ,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,45 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().lower() in {"1", "true", "yes", "on", "啟用"}
+
+
+def _parse_hhmm(value: Any) -> Optional[int]:
+    """"HH:MM" → 當日第幾分鐘。看不懂就回 None（呼叫端一律把它當成「這筆無效」）。"""
+    try:
+        hh, mm = str(value or "").strip().split(":")
+        h, m = int(hh), int(mm)
+    except (ValueError, AttributeError):
+        return None
+    if 0 <= h <= 23 and 0 <= m <= 59:
+        return h * 60 + m
+    return None
+
+
+def _schedule_active(sched: Dict[str, Any], now: time.struct_time) -> bool:
+    """now 是否落在這一段排程裡。
+
+    支援跨午夜（start > end，例如 21:00→02:00）—— 黃金本來就是通宵盤，
+    只支援 start < end 的話「晚上開盤跟到凌晨」根本設不出來。
+    跨午夜時星期看的是「這段開始的那一天」：週五 21:00→02:00 會跟到週六
+    凌晨兩點，那仍然算週五那一段，不需要另外把週六也勾起來。
+    """
+    start = _parse_hhmm(sched.get("start"))
+    end = _parse_hhmm(sched.get("end"))
+    if start is None or end is None or start == end:
+        return False
+    days = sched.get("days") or []
+    mins = now.tm_hour * 60 + now.tm_min
+
+    def _day_ok(day: int) -> bool:
+        return not days or day in days
+
+    if start < end:
+        return _day_ok(now.tm_wday) and start <= mins < end
+    if mins >= start:
+        return _day_ok(now.tm_wday)
+    if mins < end:
+        return _day_ok((now.tm_wday - 1) % 7)
+    return False
 
 
 def _infer_role(default_role: Optional[str] = None) -> str:
@@ -121,6 +162,9 @@ class LauncherState:
         # 用量制會員(進階版以上)的剩餘額度/開盤狀態, 由 Hub 每次輪詢回傳。
         # 跟單中由 /signals 更新(最即時), 未跟單時由 /auth/me 更新。None=不適用。
         self.usage: Optional[Dict[str, Any]] = None
+        # 自動排程：上一次巡檢時「現在該不該在跟單」。None = 還沒巡檢過 /
+        # 沒有任何有效排程。只在這個值翻面時動作，見 schedule_tick()。
+        self._sched_prev: Optional[bool] = None
         if self.role == "client":
             self._load_session()
 
@@ -186,8 +230,23 @@ class LauncherState:
                     "max_active_orders": 1,
                     "max_daily_trades": 12,
                     "max_daily_loss": 25.0,
-                }
+                },
+                # 低頻的訊號源還沒接上。等它上線那天, 不能因為「這個等級有授權」
+                # 就自己開始下單 —— 跟超高頻同一個道理: 沒設定過的來源在
+                # stats.source_settings() 裡預設是 enabled=True, 不先種一筆
+                # enabled=False 進去, 第一筆低頻訊號會在沒人按過同意的情況下成交。
+                LOW_FREQ: {
+                    "enabled": False,
+                    "mode": "flat",
+                    "base_lot": 0.01,
+                    "tp_mode": "breakeven",
+                },
             }, ensure_ascii=False),
+            # 自動排程：每天幾點開始跟單、幾點停。存成 JSON 陣列字串，
+            # 每筆 {"enabled":true,"start":"09:00","end":"23:30","days":[0,1,2,3,4]}
+            # （days 用 Python 的 weekday()：週一=0 … 週日=6；空陣列 = 每天）。
+            # 幾組、能不能挑星期由等級決定，見 active_schedules()。
+            "auto_schedules": "[]",
             # 同一個 MT5 帳戶裡，另外掛的、自己會下單的 EA（例如趨勢線策略）——
             # magic number -> 顯示名稱，純粹讓報表認出「這是誰下的」，不控制下單。
             # 20260503 是目前這台機器上「趨勢追蹤_EA_NR」的預設魔術編號。
@@ -215,8 +274,9 @@ class LauncherState:
                 data["line_chats"] = migrated
                 logger.info("已將既有中央 LINE DB 預設升級為中頻／yuyu 嚴格解析設定")
         else:
-            # 升級舊會員端時，第三來源一定先以 0.01 均注、明確停用加入。
-            # 使用者必須親自在來源表打開；不會因為升級就突然多出實單。
+            # 升級舊會員端時，還沒接訊號源的來源（超高頻、低頻）一定先以
+            # 0.01 均注、明確停用加入。使用者必須親自在來源表打開；
+            # 不會因為升級或升等就突然多出實單。
             try:
                 profiles = json.loads(str(data.get("source_profiles") or "{}"))
                 if not isinstance(profiles, dict):
@@ -231,6 +291,12 @@ class LauncherState:
                 "max_active_orders": 1,
                 "max_daily_trades": 12,
                 "max_daily_loss": 25.0,
+            })
+            profiles.setdefault(LOW_FREQ, {
+                "enabled": False,
+                "mode": "flat",
+                "base_lot": 0.01,
+                "tp_mode": "breakeven",
             })
             data["source_profiles"] = json.dumps(profiles, ensure_ascii=False)
         return data
@@ -462,12 +528,20 @@ class LauncherState:
         """目前登入者的額度。沒登入就是全部不給。"""
         if not self.auth:
             return {"sources": [], "max_lot": 0.0, "martingale": False,
-                    "partial_close": False, "label": ""}
+                    "partial_close": False, "breakeven": False,
+                    "mobile_notify": False, "schedule": False,
+                    "plan_days": 30, "label": ""}
         ent = dict(self.auth.get("entitlements") or {})
         ent.setdefault("sources", [])
         ent.setdefault("max_lot", None)
         ent.setdefault("martingale", False)
         ent.setdefault("partial_close", False)
+        # 舊版 Hub 不會回這幾個欄位。預設一律取「最保守」的那一邊 ——
+        # 猜錯的話寧可是「功能沒開」，不要是「沒付費卻能用」。
+        ent.setdefault("breakeven", False)
+        ent.setdefault("mobile_notify", False)
+        ent.setdefault("schedule", False)
+        ent.setdefault("plan_days", 30)
         return ent
 
     def is_running(self) -> bool:
@@ -734,6 +808,81 @@ class LauncherState:
             self.status = "已停止"
             self.service_started_at = None
 
+    # ── 自動排程 ────────────────────────────────────────────────────────
+    def active_schedules(self) -> List[Dict[str, Any]]:
+        """會員設定的排程，已經照等級箝制過。
+
+        等級只決定「有沒有這個功能」（進階版以上才有），不再分單一/多組/進階。
+        有的話幾組、能不能挑星期都一樣，上限 SCHEDULE_LIMIT 純粹是面板的實用
+        上限，不是等級差異。
+
+        這跟手數/馬丁一樣屬於「用戶端自律」那一層：排程只決定本機何時開始
+        輪詢，不影響訊號值不值錢，所以不需要伺服器端執行。
+        """
+        if self.role != "client":
+            return []
+        if not self.entitlements().get("schedule"):
+            return []
+        limit = SCHEDULE_LIMIT
+        try:
+            raw = json.loads(str(self.settings.get("auto_schedules") or "[]"))
+        except (TypeError, ValueError) as exc:
+            logger.warning("auto_schedules JSON 解析失敗，已忽略：%s", exc)
+            return []
+        if not isinstance(raw, list):
+            return []
+        out: List[Dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, dict) or not _truthy(item.get("enabled", True)):
+                continue
+            if _parse_hhmm(item.get("start")) is None or _parse_hhmm(item.get("end")) is None:
+                continue
+            if _parse_hhmm(item.get("start")) == _parse_hhmm(item.get("end")):
+                continue
+            days: List[int] = []
+            if isinstance(item.get("days"), list):
+                days = sorted({int(d) for d in item["days"]
+                               if isinstance(d, (int, float)) and 0 <= int(d) <= 6})
+                if len(days) == 7:
+                    days = []          # 七天全勾 = 每天，不必逐日比對
+            out.append({"start": str(item.get("start")), "end": str(item.get("end")),
+                        "days": days})
+            if len(out) >= limit:
+                break
+        return out
+
+    def schedule_wants_running(self, now: Optional[float] = None) -> Optional[bool]:
+        """現在該不該在跟單。沒有任何有效排程就回 None（= 排程不管事）。"""
+        scheds = self.active_schedules()
+        if not scheds:
+            return None
+        moment = time.localtime(now) if now is not None else time.localtime()
+        return any(_schedule_active(s, moment) for s in scheds)
+
+    def schedule_tick(self) -> None:
+        """排程巡檢。只在「跨過時段邊界」時動作，不跟手動開關打架。
+
+        刻意只處理狀態轉換：會員在排程時段內自己按了停止，就讓它停著，不會
+        每 20 秒被自動拉回來 —— 「按了沒用」比排程不準還讓人火大。反過來，
+        時段結束時就算是手動開的也會停，因為那正是設排程的目的。
+        """
+        wants = self.schedule_wants_running()
+        if wants is None:
+            self._sched_prev = None
+            return
+        prev = self._sched_prev
+        self._sched_prev = wants
+        if wants and not prev:
+            if self.auth and not self.is_running():
+                self._log("自動排程：進入跟單時段，開始跟單")
+                try:
+                    self.start_service()
+                except Exception as exc:             # noqa: BLE001
+                    logger.warning("自動排程啟動失敗：%s", exc)
+        elif prev and not wants and self.is_running():
+            self._log("自動排程：離開跟單時段，停止跟單")
+            self.stop_service()
+
     def _clamp_to_entitlements(self, profiles: Dict[str, Any]) -> Dict[str, Any]:
         """把來源設定壓到會員等級允許的範圍內。
 
@@ -758,6 +907,12 @@ class LauncherState:
                         p["base_lot"] = max_lot
                 except (TypeError, ValueError):
                     pass
+            if name == MID_FREQ and str(p.get("tp_mode", "")).lower() == "partial":
+                # 中頻訊號一單只有一個止盈，分批平倉根本沒有東西可以分（實際行為
+                # 早就等同「整包在 TP1 平」）。把舊設定收斂成 single，面板上也
+                # 不再給那個選項，免得會員以為自己開了分批卻從來沒發生過。
+                logger.info("來源「%s」是單一止盈訊號，分批平倉改為單一點位", name)
+                p["tp_mode"] = "single"
             if not ent.get("martingale") and str(p.get("mode", "")).lower() == "martingale":
                 logger.info("來源「%s」的馬丁不在等級授權內，改為均注", name)
                 p["mode"] = "flat"
@@ -765,6 +920,11 @@ class LauncherState:
                 # 降級成保本移損: 一樣吃得到多 TP, 但不分批出場
                 logger.info("來源「%s」的分批平倉不在等級授權內，改為保本移損", name)
                 p["tp_mode"] = "breakeven"
+            if not ent.get("breakeven") and str(p.get("tp_mode", "")).lower() == "breakeven":
+                # 再降一階: 保本移損也要進階版。體驗/基礎版只剩「單一點位」——
+                # 照訊號的第一個止盈掛上去, 之後不再動停損。
+                logger.info("來源「%s」的保本移損不在等級授權內，改為單一點位", name)
+                p["tp_mode"] = "single"
             out[name] = p
         return out
 
@@ -996,6 +1156,8 @@ class LauncherState:
             "cloudflare_url": self.cloudflare_url,
             "uptime_seconds": int(time.time() - self.service_started_at) if self.service_started_at else 0,
             "auth": self._auth_snapshot(),
+            # 自動排程目前判定「該不該在跟單」。None = 沒設排程（前端就不顯示那一列）。
+            "schedule_active": self.schedule_wants_running(),
             "line_chats": self._line_chat_names(),
             "tick": self._live_tick(),
         }
@@ -1322,7 +1484,18 @@ def main(default_role: Optional[str] = None) -> None:
     _open_browser(url)
     logger.info("控制台：%s", url)
 
-    if _truthy(state.settings.get("auto_start")):
+    # 自動排程巡檢。獨立執行緒而不是搭 /api/status 的順風車 —— 那支只有在
+    # 瀏覽器開著時才會被打，會員把分頁關掉排程就整個停擺。
+    if role == "client":
+        threading.Thread(target=_schedule_loop, args=(state,), daemon=True).start()
+
+    # 排程有設而且現在不在時段內, 就不要自動開始 —— 否則「早上九點才開始跟」
+    # 設了等於沒設: 程式一開機就跟上了。沒設排程 (None) 維持原本行為。
+    scheduled = state.schedule_wants_running()
+    if _truthy(state.settings.get("auto_start")) and scheduled is False:
+        logger.info("目前不在自動排程時段內，暫不開始跟單")
+        state.status = "等待排程時段"
+    elif _truthy(state.settings.get("auto_start")):
         logger.info("已設定自動開始，啟動服務中…")
         try:
             state.start_service()
@@ -1347,6 +1520,17 @@ def main(default_role: Optional[str] = None) -> None:
             port_file.unlink()
         except OSError:
             pass
+
+
+def _schedule_loop(state: LauncherState) -> None:
+    """每 20 秒巡一次排程。20 秒的誤差對「幾點開始跟單」來說看不出來，
+    又不會讓一支背景執行緒每秒醒過來。"""
+    while True:
+        try:
+            state.schedule_tick()
+        except Exception:                            # noqa: BLE001
+            logger.debug("排程巡檢失敗", exc_info=True)
+        time.sleep(20)
 
 
 if __name__ == "__main__":

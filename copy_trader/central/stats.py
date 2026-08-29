@@ -462,7 +462,7 @@ def source_settings(
         if mode not in ("martingale", "flat"):
             mode = "martingale" if global_martingale else "flat"
         tp_mode = str(raw.get("tp_mode") or "").strip().lower()
-        if tp_mode not in ("partial", "breakeven"):
+        if tp_mode not in ("partial", "breakeven", "single"):
             tp_mode = "partial"
         state = per_source.get(name) or {}
         rows.append({
@@ -477,6 +477,17 @@ def source_settings(
             "max_active_orders": _int(raw.get("max_active_orders"), 0),
             "max_daily_trades": _int(raw.get("max_daily_trades"), 0),
             "max_daily_loss": _float(raw.get("max_daily_loss"), 0.0),
+            # max_daily_profit 以前漏掉沒回，面板每次刷新都把它顯示成 0，
+            # 然後下一次自動儲存又把那個 0 寫回設定 —— 設了就被自己洗掉。
+            "max_daily_profit": _float(raw.get("max_daily_profit"), 0.0),
+            # 保本移損的距離觸發（美元）。0 = 只在觸及 TP1 之後才保本。
+            "breakeven_distance": _float(raw.get("breakeven_distance"), 0.0),
+            # 分批佔比也一樣要回送，否則面板重繪時 lotsToText() 拿不到比例，
+            # 會退回預設的 0.01/0.01/0.01 並把使用者設好的分批手數蓋掉。
+            "partial_ratios": [
+                float(x) for x in (raw.get("partial_ratios") or [])
+                if isinstance(x, (int, float)) and float(x) > 0
+            ],
             "level": _int(state.get("level"), 0),
             "losses": _int(state.get("losses"), 0),
             "trades": sum(1 for t in trades if t["source"] == name),

@@ -124,7 +124,7 @@
         <ul class="plan-feats">
           <li data-i18n="plans.plus.f1">中頻策略跟到飽，不限次數</li>
           <li data-i18n="plans.plus.f2">手數自己設，不受限</li>
-          <li data-i18n="plans.plus.f3">手機收跟單通知</li>
+          <li data-i18n="plans.plus.f3">每日虧損上限，到了就自動停跟</li>
         </ul>
         <a class="btn btn--sm" href="/pricing/" data-i18n="plans.pick">選擇方案</a>
       </article>
@@ -139,7 +139,7 @@
         </div>
         <ul class="plan-feats">
           <li data-i18n="plans.pro.f1">中頻 + 高頻，兩組都跟</li>
-          <li data-i18n="plans.pro.f2">馬丁和分批止盈都能設</li>
+          <li data-i18n="plans.pro.f2">馬丁、分批止盈、保本移損都能設</li>
           <li data-i18n="plans.pro.f3">各頻率的勝率分開看</li>
         </ul>
         <a class="btn btn--primary btn--sm" href="/pricing/" data-i18n="plans.pick">選擇方案</a>
@@ -154,7 +154,7 @@
           <span class="per" data-i18n="plans.perMonth">/月</span>
         </div>
         <ul class="plan-feats">
-          <li data-i18n="plans.premium.f1">低頻 + 中頻 + 高頻，全部都跟</li>
+          <li data-i18n="plans.premium.f1">低頻 + 中頻 + 高頻 + 超高頻，全部都跟</li>
           <li data-i18n="plans.premium.f2">馬丁全開，手數跟著本金動</li>
           <li data-i18n="plans.premium.f3">每月真人幫你看報表、給建議</li>
         </ul>
@@ -193,7 +193,7 @@
             <td><span data-i18n="cmp.r1.free.head">中頻策略</span><small data-i18n="cmp.r1.free.sub">每日 1 筆訊號</small></td>
             <td><span data-i18n="cmp.r1.plus.head">中頻策略</span><small data-i18n="cmp.r1.plus.sub">完整跟單</small></td>
             <td><span data-i18n="cmp.r1.pro.head">中頻 + 高頻策略</span><small data-i18n="cmp.r1.pro.sub">完整跟單</small></td>
-            <td><span data-i18n="cmp.r1.premium.head">低頻 + 中頻 + 高頻策略</span><small data-i18n="cmp.r1.premium.sub">完整跟單</small></td>
+            <td><span data-i18n="cmp.r1.premium.head">低頻 + 中頻 + 高頻 + 超高頻策略</span><small data-i18n="cmp.r1.premium.sub">完整跟單</small></td>
           </tr>
           <tr>
             <th scope="row" class="feat">
@@ -222,8 +222,8 @@
             </th>
             <td><span data-i18n="cmp.r4.free.head">基礎範圍</span><small data-i18n="cmp.r4.free.sub">有限制</small></td>
             <td><span data-i18n="cmp.r4.plus.head">自己設</span><small data-i18n="cmp.r4.plus.sub">標準範圍</small></td>
-            <td><span data-i18n="cmp.r4.pro.head">自己設</span><small data-i18n="cmp.r4.pro.sub">+ 分批平倉</small></td>
-            <td><span data-i18n="cmp.r4.premium.head">自己設</span><small data-i18n="cmp.r4.premium.sub">+ 分批平倉 + 動態自動調整手數</small></td>
+            <td><span data-i18n="cmp.r4.pro.head">自己設</span><small data-i18n="cmp.r4.pro.sub">+ 分批平倉 / 保本移損</small></td>
+            <td><span data-i18n="cmp.r4.premium.head">自己設</span><small data-i18n="cmp.r4.premium.sub">+ 分批平倉 / 保本移損 + 動態自動調整手數</small></td>
           </tr>
           <tr>
             <th scope="row" class="feat">
@@ -261,14 +261,14 @@
               <span data-i18n="cmp.r8.desc">手機收跟單訊號與系統通知</span>
             </th>
             <td><span class="mk mk--n" role="img" aria-label="無"></span></td>
-            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
+            <td><span class="mk mk--n" role="img" aria-label="無"></span></td>
             <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
             <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
           </tr>
           <tr>
             <th scope="row" class="feat">
-              <b data-i18n="cmp.r9.name">分批止盈</b>
-              <span data-i18n="cmp.r9.desc">分批止盈的比例與條件</span>
+              <b data-i18n="cmp.r9.name">分批止盈 / 保本移損</b>
+              <span data-i18n="cmp.r9.desc">分批止盈的手數分配，或走滿設定價差就把停損移到進場價</span>
             </th>
             <td><span class="mk mk--n" role="img" aria-label="無"></span></td>
             <td><span class="mk mk--n" role="img" aria-label="無"></span></td>
@@ -290,8 +290,8 @@
               <b data-i18n="cmp.r11.name">非開盤時間自動暫停計時</b>
               <span data-i18n="cmp.r11.desc">非開盤時段自動暫停計時</span>
             </th>
-            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
-            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
+            <td><span class="mk mk--n" role="img" aria-label="無"></span></td>
+            <td><span class="mk mk--n" role="img" aria-label="無"></span></td>
             <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
             <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
           </tr>
@@ -301,9 +301,9 @@
               <span data-i18n="cmp.r12.desc">每天自動開始 / 停止的時間</span>
             </th>
             <td><span class="mk mk--n" role="img" aria-label="無"></span></td>
-            <td><span data-i18n="cmp.r12.plus.head">單一排程</span></td>
-            <td><span data-i18n="cmp.r12.pro.head">多組排程</span></td>
-            <td><span data-i18n="cmp.r12.premium.head">多組進階排程</span></td>
+            <td><span class="mk mk--n" role="img" aria-label="無"></span></td>
+            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
+            <td><span class="mk mk--y" role="img" aria-label="有"></span></td>
           </tr>
           <tr>
             <th scope="row" class="feat">
@@ -365,7 +365,7 @@
             <dd><span class="mk mk--n" role="img" aria-label="無"></span></dd>
           </div>
           <div>
-            <dt data-i18n="cmp.r9.name">分批止盈</dt>
+            <dt data-i18n="cmp.r9.name">分批止盈 / 保本移損</dt>
             <dd><span class="mk mk--n" role="img" aria-label="無"></span></dd>
           </div>
           <div>
@@ -374,7 +374,7 @@
           </div>
           <div>
             <dt data-i18n="cmp.r11.name">非開盤時間自動暫停計時</dt>
-            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
+            <dd><span class="mk mk--n" role="img" aria-label="無"></span></dd>
           </div>
           <div>
             <dt data-i18n="cmp.r12.name">自動排程</dt>
@@ -419,10 +419,10 @@
           </div>
           <div>
             <dt data-i18n="cmp.r8.name">手機跟單通知</dt>
-            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
+            <dd><span class="mk mk--n" role="img" aria-label="無"></span></dd>
           </div>
           <div>
-            <dt data-i18n="cmp.r9.name">分批止盈</dt>
+            <dt data-i18n="cmp.r9.name">分批止盈 / 保本移損</dt>
             <dd><span class="mk mk--n" role="img" aria-label="無"></span></dd>
           </div>
           <div>
@@ -431,11 +431,11 @@
           </div>
           <div>
             <dt data-i18n="cmp.r11.name">非開盤時間自動暫停計時</dt>
-            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
+            <dd><span class="mk mk--n" role="img" aria-label="無"></span></dd>
           </div>
           <div>
             <dt data-i18n="cmp.r12.name">自動排程</dt>
-            <dd><span data-i18n="cmp.r12.plus.head">單一排程</span></dd>
+            <dd><span class="mk mk--n" role="img" aria-label="無"></span></dd>
           </div>
           <div>
             <dt data-i18n="cmp.r13.name">真人分析建議</dt>
@@ -460,7 +460,7 @@
           </div>
           <div>
             <dt data-i18n="cmp.r4.name">手數設定</dt>
-            <dd><span data-i18n="cmp.r4.pro.head">自己設</span><small data-i18n="cmp.r4.pro.sub">+ 分批平倉</small></dd>
+            <dd><span data-i18n="cmp.r4.pro.head">自己設</span><small data-i18n="cmp.r4.pro.sub">+ 分批平倉 / 保本移損</small></dd>
           </div>
           <div>
             <dt data-i18n="cmp.r5.name">績效報表</dt>
@@ -479,7 +479,7 @@
             <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
           </div>
           <div>
-            <dt data-i18n="cmp.r9.name">分批止盈</dt>
+            <dt data-i18n="cmp.r9.name">分批止盈 / 保本移損</dt>
             <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
           </div>
           <div>
@@ -492,7 +492,7 @@
           </div>
           <div>
             <dt data-i18n="cmp.r12.name">自動排程</dt>
-            <dd><span data-i18n="cmp.r12.pro.head">多組排程</span></dd>
+            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
           </div>
           <div>
             <dt data-i18n="cmp.r13.name">真人分析建議</dt>
@@ -505,7 +505,7 @@
         <dl>
           <div>
             <dt data-i18n="cmp.r1.name">使用策略</dt>
-            <dd><span data-i18n="cmp.r1.premium.head">低頻 + 中頻 + 高頻策略</span><small data-i18n="cmp.r1.premium.sub">完整跟單</small></dd>
+            <dd><span data-i18n="cmp.r1.premium.head">低頻 + 中頻 + 高頻 + 超高頻策略</span><small data-i18n="cmp.r1.premium.sub">完整跟單</small></dd>
           </div>
           <div>
             <dt data-i18n="cmp.r2.name">每日跟單限制</dt>
@@ -517,7 +517,7 @@
           </div>
           <div>
             <dt data-i18n="cmp.r4.name">手數設定</dt>
-            <dd><span data-i18n="cmp.r4.premium.head">自己設</span><small data-i18n="cmp.r4.premium.sub">+ 分批平倉 + 動態自動調整手數</small></dd>
+            <dd><span data-i18n="cmp.r4.premium.head">自己設</span><small data-i18n="cmp.r4.premium.sub">+ 分批平倉 / 保本移損 + 動態自動調整手數</small></dd>
           </div>
           <div>
             <dt data-i18n="cmp.r5.name">績效報表</dt>
@@ -536,7 +536,7 @@
             <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
           </div>
           <div>
-            <dt data-i18n="cmp.r9.name">分批止盈</dt>
+            <dt data-i18n="cmp.r9.name">分批止盈 / 保本移損</dt>
             <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
           </div>
           <div>
@@ -549,7 +549,7 @@
           </div>
           <div>
             <dt data-i18n="cmp.r12.name">自動排程</dt>
-            <dd><span data-i18n="cmp.r12.premium.head">多組進階排程</span></dd>
+            <dd><span class="mk mk--y" role="img" aria-label="有"></span></dd>
           </div>
           <div>
             <dt data-i18n="cmp.r13.name">真人分析建議</dt>

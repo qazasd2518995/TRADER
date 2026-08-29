@@ -180,6 +180,48 @@ class UsageBillingTests(unittest.TestCase):
         self.store.extend("cb", 5)
         self.assertAlmostEqual(self._get("cb", "expires_at"), before + 5 * 86400, delta=5)
 
+    # ── 進度條的分母 ─────────────────────────────────────────────────────
+    # 會員端的到期進度條拿 usage.seconds_total 當滿格。以前沒有這個欄位,只能用
+    # 等級的預設天數(進階版 30 天),於是「開在進階版上的 7 天試用帳號」第一天就
+    # 顯示 7/30 = 23%,看起來像快到期,而且讓人誤以為滿格是 30 天。
+    def test_total_matches_the_days_granted(self):
+        out = self._login("advanced", days=7, user="t7")
+        self.assertAlmostEqual(out["usage"]["seconds_total"], 7 * 86400, delta=5)
+        self.assertAlmostEqual(out["usage"]["seconds_left"], 7 * 86400, delta=5)
+
+    def test_total_never_smaller_than_left(self):
+        self._login("advanced", days=7, user="t8")
+        self._set("t8", usage_seconds_left=9 * 86400)      # 手動加時但沒動 total
+        out, err = self.store.login("t8", "pw")
+        self.assertEqual(err, "")
+        self.assertGreaterEqual(out["usage"]["seconds_total"], out["usage"]["seconds_left"])
+
+    def test_legacy_row_backfills_total_from_left(self):
+        # 這個欄位是後來加的:舊帳號 total 是 NULL,要用目前剩餘額度回填,
+        # 進度條才不會沒有分母。
+        self._login("advanced", days=7, user="t9")
+        self._set("t9", usage_seconds_total=None)
+        out, err = self.store.login("t9", "pw")
+        self.assertEqual(err, "")
+        self.assertAlmostEqual(out["usage"]["seconds_total"],
+                               out["usage"]["seconds_left"], delta=5)
+
+    def test_extend_lifts_the_total_too(self):
+        # 續期後分母要跟著長,不然 7 天的帳號續 30 天,進度條會是 37/7 = 爆表
+        self._login("advanced", days=7, user="t10")
+        self.store.extend("t10", 30)
+        out, err = self.store.login("t10", "pw")
+        self.assertEqual(err, "")
+        self.assertAlmostEqual(out["usage"]["seconds_total"], 37 * 86400, delta=10)
+        self.assertLessEqual(out["usage"]["seconds_left"], out["usage"]["seconds_total"] + 5)
+
+    def test_calendar_tiers_have_no_usage_total(self):
+        self.store.create_member("cb2", "basic", password="pw", days=10)
+        out, err = self.store.login("cb2", "pw")
+        self.assertEqual(err, "")
+        self.assertIsNone(out["usage_seconds_total"])
+        self.assertNotIn("usage", out)
+
 
 if __name__ == "__main__":
     unittest.main()

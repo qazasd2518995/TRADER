@@ -590,10 +590,18 @@ class TradeManager:
             lots = []
         # 多 TP 的處理方式：
         #   "partial"   = 依比例分批平倉（舊行為）
-        #   "breakeven" = 不分批，觸及 TP(n) 就把停損推到 TP(n-1)，TP1 推到成交價
+        #   "breakeven" = 不分批，觸及 TP(n) 就把停損推到 TP(n-1)，TP1 推到成交價；
+        #                 另可設 breakeven_distance，進場後順向走滿該價差就直接保本
+        #   "single"    = 單一點位。止盈掛在最近的那一關就不再管，停損也不動。
+        #                 中頻那種「一單一個 TP」的訊號用這個 —— 分批平倉根本沒東西可分。
         tp_mode = str(raw.get("tp_mode") or "").strip().lower()
-        if tp_mode not in ("partial", "breakeven"):
+        if tp_mode not in ("partial", "breakeven", "single"):
             tp_mode = "partial"
+        # 保本觸發距離（報價單位，黃金 = 美元）。0 = 不用距離觸發，只看 TP 階梯。
+        try:
+            breakeven_distance = max(0.0, float(raw.get("breakeven_distance") or 0.0))
+        except (TypeError, ValueError):
+            breakeven_distance = 0.0
         # 每個來源可各自設分批比例(佔原始手數);沒給或不合法就用全域預設 [0.5,0.3,0.2]。
         partial_ratios = self.partial_close_ratios
         raw_ratios = raw.get("partial_ratios")
@@ -614,6 +622,7 @@ class TradeManager:
             "enabled": bool(raw.get("enabled", True)),
             "mode": mode,
             "tp_mode": tp_mode,
+            "breakeven_distance": breakeven_distance,
             "partial_ratios": [float(x) for x in partial_ratios],
             "base_lot": _num("base_lot", self.default_lot_size),
             "multiplier": _num("multiplier", self.martingale_multiplier),
@@ -909,7 +918,14 @@ class TradeManager:
         partial_plan: List[float] = []
         mt5_tp = None
 
-        if self.profile_for(order.source_window)["tp_mode"] == "breakeven" and len(tps) > 1:
+        source_tp_mode = self.profile_for(order.source_window)["tp_mode"]
+
+        if source_tp_mode == "single" and tps:
+            # 單一點位：止盈掛最近的那一關，不分批、也不移停損。多 TP 的訊號
+            # 選了這個模式就是「只吃第一段」—— 中頻訊號本來就只有一個 TP。
+            mt5_tp = tps[0]
+            logger.info("單一點位模式: %s 手整筆, MT5 TP=%s", lot_size, mt5_tp)
+        elif source_tp_mode == "breakeven" and len(tps) > 1:
             # 保本移損：不分批、手數整筆保留。MT5 停利掛在最遠那關，中途由
             # _check_trailing_sl 把停損往有利方向推（TP1→成交價、TP2→TP1…）。
             mt5_tp = tps[-1]
@@ -917,6 +933,12 @@ class TradeManager:
                 "保本移損模式: %s 手整筆不分批, MT5 TP=最遠 %s（觸及 TP1 後停損移到成交價）",
                 lot_size, mt5_tp,
             )
+        elif source_tp_mode == "breakeven" and tps:
+            # 單一 TP 的來源也能選保本移損 —— 沒有 TP 階梯可爬，靠的是
+            # breakeven_distance：進場後順向走滿那個價差就把停損推到成交價。
+            mt5_tp = tps[0]
+            logger.info("保本移損模式(單一 TP): %s 手整筆, MT5 TP=%s（靠距離觸發保本）",
+                        lot_size, mt5_tp)
         else:
             # 分批計畫以「原始手數」為基準；空計畫=手數不足以乾淨分割 → 退回整包在 TP1 平。
             # 用該來源自訂的分批比例(profile_for 已回退到全域預設)。
@@ -1522,6 +1544,13 @@ class TradeManager:
 
         手數完全不動——用「不會再賠」換「跑滿全程的機會」，跟分批平倉是二選一。
         最後一關不處理：那一關由 MT5 的停利整筆平掉。
+
+        「保本」那一步的觸發點由 profile 的 breakeven_distance 決定(單位是報價差，
+        黃金 = 美元)：價格朝有利方向走到「成交價 ± 該距離」就把停損推到成交價。
+        會員在面板上設什麼就是什麼 —— 就算第一個止盈比那個距離更近，也不提前
+        保本，否則面板寫的跟實際做的會對不起來。距離填 0 = 沒啟用，退回舊行為
+        (觸及 TP1 才保本)；單一 TP 的來源(中頻那種一單一個止盈)沒有階梯可爬，
+        距離是唯一的保本途徑。
         """
         current_price = self._get_current_price()
         if not current_price:
@@ -1540,20 +1569,41 @@ class TradeManager:
                 signal = order.signal
                 tps = signal.take_profit or []
                 direction = str(getattr(signal, "direction", "") or "").lower()
-                if len(tps) < 2 or direction not in ("buy", "sell"):
+                if direction not in ("buy", "sell"):
                     continue
+                distance = self.profile_for(order.source_window)["breakeven_distance"]
+                if len(tps) < 2 and distance <= 0:
+                    continue          # 沒階梯可爬又沒設距離 → 這一單沒事可做
+
+                # 保本那一步（停損移到成交價）的觸發價：
+                #   有設 breakeven_distance → 成交價 ± 該價差，這是會員在面板上
+                #     設定的東西，說了算。就算第一個止盈比它近也不提前保本 ——
+                #     面板寫「價格觸及保本距離時停損移到進場價」，行為就得是那樣。
+                #   沒設（0）→ 退回舊行為：觸及第一個止盈才保本。
+                # 之後的每一關仍然是「觸及 TP(n) 就把停損推到 TP(n-1)」。
+                def _trigger(index: int) -> float:
+                    if index == 0 and distance > 0:
+                        return (order.entry_price + distance) if direction == "buy"                             else (order.entry_price - distance)
+                    return tps[index]
 
                 # 從還沒推過的那一關往後看，一次可能跨過好幾關（跳空）
                 target_sl = None
                 reached = order.sl_trail_index
-                for index in range(order.sl_trail_index, len(tps) - 1):
-                    tp = tps[index]
-                    hit = current_price >= tp if direction == "buy" else current_price <= tp
+                for index in range(order.sl_trail_index, max(0, len(tps) - 1)):
+                    level = _trigger(index)
+                    hit = current_price >= level if direction == "buy" else current_price <= level
                     if not hit:
                         break
                     # 第一關推到實際成交價（保本），之後每一關推到前一關
                     target_sl = order.entry_price if index == 0 else tps[index - 1]
                     reached = index + 1
+
+                # 單一止盈的來源沒有階梯可跑（上面那個迴圈是空的），保本完全靠距離。
+                if target_sl is None and distance > 0 and order.sl_trail_index == 0:
+                    moved = (current_price - order.entry_price) if direction == "buy"                         else (order.entry_price - current_price)
+                    if moved >= distance:
+                        target_sl = order.entry_price
+                        reached = 1
 
                 if target_sl is None:
                     continue
@@ -1614,8 +1664,9 @@ class TradeManager:
             for signal_id, order in self.orders.items():
                 if order.status not in [OrderStatus.FILLED, OrderStatus.PARTIAL_CLOSED]:
                     continue
-                # 保本移損與分批平倉互斥，該來源選了保本就不在這裡分批
-                if self.profile_for(order.source_window)["tp_mode"] == "breakeven":
+                # 分批平倉只做給選了 partial 的來源；保本移損由 _check_trailing_sl
+                # 處理，單一點位則整筆交給 MT5 的停利，兩者都不在這裡分批。
+                if self.profile_for(order.source_window)["tp_mode"] != "partial":
                     continue
 
                 signal = order.signal
