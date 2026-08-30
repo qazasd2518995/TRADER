@@ -283,7 +283,7 @@
   "download.macNote": "macOS 12 or later, Apple Silicon and Intel",
   "download.detected": "Looks like the system you are on",
   "download.s1.h": "Message us for the installer and an account",
-  "download.s1.b": "Send us a message on Instagram saying whether you are on Windows or macOS. We will reply with the right installer and a member username and password.",
+  "download.s1.b": "Send us a message on Instagram or LINE saying whether you are on Windows or macOS. We will reply with the right installer and a member username and password.",
   "download.s2.h": "Attach the EA to MT5",
   "download.s2.b": "Copy MT5_File_Bridge_Enhanced.mq5 from the install directory into MT5's MQL5/Experts, compile it, and drag it onto an XAUUSD chart. Remember to tick Allow algorithmic trading under Tools → Options → Expert Advisors.",
   "download.s3.h": "Sign in and start",
@@ -300,7 +300,7 @@
   "download.req5.k": "Account",
   "download.req5.v": "A member account, issued together with the installer",
   "download.helpTitle": "Stuck?",
-  "download.helpBody": "If the installer fails, the EA will not attach, or MT5 cannot find the file path, message us on Instagram. A screenshot of the error gets it resolved faster.",
+  "download.helpBody": "If the installer fails, the EA will not attach, or MT5 cannot find the file path, message us on Instagram or LINE. A screenshot of the error gets it resolved faster.",
   "faqp.metaTitle": "FAQ & Support | AI Gold Copy Trading",
   "faqp.metaDesc": "How copying works, the risks, plan billing, installation, and how to reach us.",
   "faqp.title": "Ask first",
@@ -322,7 +322,7 @@
   "faqp.q11": "Can I stop at any time?",
   "faqp.a11": "Yes. Press Stop and no new signals are taken. Positions already open are not closed automatically; you decide in MT5 whether to hold or close them.",
   "faqp.q12": "How do I pay?",
-  "faqp.a12": "Message us on Instagram to arrange it. Once your account is opened you receive a username and password to sign in with.",
+  "faqp.a12": "Message us on Instagram or LINE to arrange it. Once your account is opened you receive a username and password to sign in with.",
   "faqp.q13": "Can I change plan?",
   "faqp.a13": "Yes. Contact us to upgrade or downgrade. The change takes effect immediately on the device you are signed in on — no reinstall needed.",
   "faqp.q14": "How many machines per account?",
@@ -361,5 +361,6 @@
   "download.askTitle": "How to get the installer",
   "download.askBody": "There is no public download. Message us and we will send the installer for your operating system along with a member account — the installer is of no use without one, so they are issued together.",
   "download.askCta": "Request the installer",
-  "download.stepsTitle": "Setup"
+  "download.stepsTitle": "Setup",
+  "contact.line": "Message on LINE"
 }

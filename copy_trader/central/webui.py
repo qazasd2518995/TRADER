@@ -1266,6 +1266,9 @@ tbody tr:hover { background: var(--sunk); }
 .benefits-ig .bi-h { margin: 0; font-weight: 650; color: var(--ink); }
 .benefits-ig .bi-b { margin: 3px 0 0; font-size: 12.5px; color: var(--muted); }
 .benefits-ig .bi-acts { display: flex; gap: 8px; flex-wrap: wrap; }
+/* LINE 用品牌綠。跟 IG 那顆金色主按鈕並排時,顏色本身就說明了是哪個 App。 */
+.btn-line { background: #06C755; border-color: #06C755; color: #fff; }
+.btn-line:hover { background: #05A948; border-color: #05A948; color: #fff; }
 
 .app-foot { margin: 26px 0 12px; padding-top: 18px; border-top: 1px solid var(--hair); color: var(--muted); }
 .app-foot .foot-tag { margin: 0 0 10px; font-size: 12.5px; }
@@ -1553,7 +1556,7 @@ body.auth-locked > *:not(#authGate) { display: none; }
 
     <p class="auth-foot">
       一組帳號同時只能在一台電腦使用；在別台登入會把這台登出。<br />
-      忘記密碼或需要續期，請聯繫管理員。<br />
+      忘記密碼或需要續期，請聯繫管理員：IG <b>@goldyoung0927</b>　/　LINE <b>qazasd96225</b><br />
       <a href="https://gold-young.com/" target="_blank" rel="noopener noreferrer">前往官方網站 gold-young.com ↗</a>
     </p>
   </form>
@@ -1666,6 +1669,7 @@ body.auth-locked > *:not(#authGate) { display: none; }
       <p class="side-up-h">升級方案</p>
       <p class="side-up-b" id="upgradeBody">解鎖更多訊號來源與策略設定</p>
       <p class="side-up-ig">IG<b>@goldyoung0927</b></p>
+      <p class="side-up-ig">LINE<b>qazasd96225</b></p>
       <a class="side-up-site" href="https://gold-young.com/" target="_blank" rel="noopener noreferrer">看完整方案內容 ↗</a>
     </div>
 
@@ -2080,10 +2084,11 @@ body.auth-locked > *:not(#authGate) { display: none; }
       <div class="benefits-ig">
         <div>
           <p class="bi-h">需要升級方案，或任何服務？</p>
-          <p class="bi-b">直接私訊我們的 Instagram，幫你開通、續期、解答問題。</p>
+          <p class="bi-b">直接私訊我們的 Instagram 或 LINE，幫你開通、續期、解答問題。</p>
         </div>
         <div class="bi-acts">
           <a class="btn btn-go" href="https://instagram.com/goldyoung0927" target="_blank" rel="noopener noreferrer">IG @goldyoung0927</a>
+          <a class="btn btn-line" href="https://line.me/ti/p/~qazasd96225" target="_blank" rel="noopener noreferrer">LINE qazasd96225</a>
           <a class="btn" href="https://gold-young.com/" target="_blank" rel="noopener noreferrer">官方網站 ↗</a>
         </div>
       </div>
@@ -2106,7 +2111,7 @@ body.auth-locked > *:not(#authGate) { display: none; }
         <p><b>使用者責任。</b>所有交易決策、參數設定、資金配置與風險承擔，均由使用者自行判斷並自負盈虧。使用本系統即表示您已充分理解上述風險，並同意自行承擔一切交易結果。</p>
       </div>
     </details>
-    <p class="foot-copy">官方網站 <a href="https://gold-young.com/" target="_blank" rel="noopener noreferrer">gold-young.com</a>　·　需要任何服務請私訊 IG <b>@goldyoung0927</b>。交易涉及風險，使用本系統即表示您已理解並同意自負盈虧。</p>
+    <p class="foot-copy">官方網站 <a href="https://gold-young.com/" target="_blank" rel="noopener noreferrer">gold-young.com</a>　·　需要任何服務請私訊 IG <b>@goldyoung0927</b> 或 LINE <a href="https://line.me/ti/p/~qazasd96225" target="_blank" rel="noopener noreferrer"><b>qazasd96225</b></a>。交易涉及風險，使用本系統即表示您已理解並同意自負盈虧。</p>
   </footer>
 
   </div><!-- /shell-main -->
@@ -4526,7 +4531,7 @@ function tickExp() {
     if (consuming) secs -= (Date.now() - (window.__usageAt || Date.now())) / 1000;
     secs = Math.max(0, Math.floor(secs));
     if (secs <= 0) {
-      left.textContent = "使用額度已用完，請聯繫管理員續期";
+      left.textContent = "額度已用完，請私訊續期（LINE qazasd96225）";
       applyPlanLevel(0);
       if (pauseEl) { pauseEl.hidden = false; pauseEl.className = "side-pause is-paused"; pauseEl.textContent = "⏸ 額度已用完"; }
       return;
@@ -4546,7 +4551,7 @@ function tickExp() {
   const exp = Number(window.__memberExpAt || 0);
   if (!exp) { left.textContent = ""; return; }
   let r = Math.floor(exp - Date.now() / 1000);
-  if (r <= 0) { left.textContent = "已到期，請聯繫管理員續期"; applyPlanLevel(0); return; }
+  if (r <= 0) { left.textContent = "已到期，請私訊續期（LINE qazasd96225）"; applyPlanLevel(0); return; }
   left.textContent = `還剩 ${fmtDHMS(r)}`;
   applyPlanLevel(r / 86400);
 }

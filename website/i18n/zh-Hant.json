@@ -283,7 +283,7 @@
   "download.macNote": "macOS 12 以上，Apple Silicon 和 Intel 都可以",
   "download.detected": "看起來你正在使用這個系統",
   "download.s1.h": "私訊拿安裝包和帳號",
-  "download.s1.b": "在 Instagram 私訊我們，說一下你用 Windows 還是 macOS。我們會給你對應的安裝包，還有一組會員帳號密碼。",
+  "download.s1.b": "在 Instagram 或 LINE 私訊我們，說一下你用 Windows 還是 macOS。我們會給你對應的安裝包，還有一組會員帳號密碼。",
   "download.s2.h": "把 EA 掛到 MT5",
   "download.s2.b": "把安裝目錄裡的 MT5_File_Bridge_Enhanced.mq5 複製到 MT5 的 MQL5/Experts，編譯之後拖到 XAUUSD 圖表上。記得到「工具 → 選項 → Expert Advisors」把「允許演算法交易」勾起來。",
   "download.s3.h": "登入，開始跟單",
@@ -300,7 +300,7 @@
   "download.req5.k": "帳號",
   "download.req5.v": "需要一組會員帳號，跟安裝包一起開通",
   "download.helpTitle": "裝不起來？",
-  "download.helpBody": "安裝卡住、EA 掛不上去、MT5 找不到路徑，直接在 Instagram 私訊我們。附上錯誤畫面會處理得快很多。",
+  "download.helpBody": "安裝卡住、EA 掛不上去、MT5 找不到路徑，直接在 Instagram 或 LINE 私訊我們。附上錯誤畫面會處理得快很多。",
   "faqp.metaTitle": "常見問題與支援｜AI 黃金自動跟單系統",
   "faqp.metaDesc": "跟單運作、風險、方案計費、安裝設定的常見問題，以及聯絡方式。",
   "faqp.title": "問清楚再開始",
@@ -322,7 +322,7 @@
   "faqp.q11": "我可以隨時停掉嗎？",
   "faqp.a11": "可以。按「停止」就不再收新訊號。已經在市場上的部位不會被自動平掉，你自己在 MT5 決定要留還是要平。",
   "faqp.q12": "怎麼付款？",
-  "faqp.a12": "直接在 Instagram 私訊我們安排。開通後會給你一組會員帳號，在會員端登入就可以。",
+  "faqp.a12": "直接在 Instagram 或 LINE 私訊我們安排。開通後會給你一組會員帳號，在會員端登入就可以。",
   "faqp.q13": "可以換方案嗎？",
   "faqp.a13": "可以。升級或降級跟我們說一聲，等級變更會立刻對你目前登入的那台生效，不用重裝。",
   "faqp.q14": "一個帳號可以裝幾台電腦？",
@@ -361,5 +361,6 @@
   "download.askTitle": "怎麼拿到安裝包",
   "download.askBody": "我們不做公開下載。私訊之後會依你的作業系統給對應的安裝包，同時開通一組會員帳號——兩個是一起給的，分開拿到也用不了。",
   "download.askCta": "私訊索取安裝包",
-  "download.stepsTitle": "安裝流程"
+  "download.stepsTitle": "安裝流程",
+  "contact.line": "LINE 私訊"
 }

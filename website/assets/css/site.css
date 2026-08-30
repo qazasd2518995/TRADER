@@ -868,6 +868,21 @@
   border-color: transparent;
   background: linear-gradient(45deg, #F09433, #E6683C 25%, #DC2743 50%, #CC2366 75%, #BC1888);
 }
+/* LINE 同一套規則：平常中性，hover 才上品牌綠。 */
+.social a.line:hover { color: #fff; border-color: transparent; background: #06C755; }
+
+/* 聯絡 CTA 一次給兩個管道（IG / LINE）。外層卡片是
+   grid-template-columns: minmax(0,1fr) auto，所以兩顆按鈕要包成一個子元素，
+   不然會把 grid 撐成三欄、文字被擠掉。 */
+.cta-pair { display: flex; flex-direction: column; gap: var(--s-3); }
+@media (max-width: 620px) { .cta-pair { width: 100%; } }
+.cta-pair .btn { justify-content: center; }
+/* LINE 按鈕。不用 btn--primary（那是金色主行動），綠色一眼認得出是哪個 App。 */
+.btn--line { background: #06C755; border-color: #06C755; color: #fff; }
+.btn--line:hover { background: #05A948; border-color: #05A948; color: #fff; }
+.btn--line svg { width: 18px; height: 18px; flex: none; }
+/* ID 用等寬字排在標籤後面，讓人可以直接照著打進 LINE 搜尋 */
+.cta-id { font-family: var(--f-mono, ui-monospace, monospace); font-size: var(--t-13); opacity: .85; margin-left: 2px; }
 
 .foot-base {
   display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-4);
