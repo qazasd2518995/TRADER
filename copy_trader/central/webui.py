@@ -1041,11 +1041,9 @@ main { max-width: 1560px; margin: 0 auto; padding: 22px 28px 72px; }
 }
 .sched-lock b { color: var(--gold); }
 
-.src-add { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
-.src-add input {
-  font: inherit; font-size: 12.5px; padding: 6px 10px; flex: 1 1 280px; min-width: 0;
-  border: 1px solid var(--rule); border-radius: 7px; background: var(--paper); color: var(--ink);
-}
+/* 表格下面那一列動作按鈕。以前是「新增來源」用的,那個功能已經移除
+   (來源清單由訊號中心決定),現在只剩自動排程的「＋ 新增排程」在用。 */
+.src-add { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
 
 .ladder-foot {
   display: flex; gap: 22px; flex-wrap: wrap;
@@ -2068,11 +2066,15 @@ body.auth-locked > *:not(#authGate) { display: none; }
   </div>
 </div><!-- /viewMembers -->
 
-  <div class="section-head" id="secLogs">
+  <!-- 狀態紀錄只留給訊號中心。那是給維運看的東西（LINE DB 連線、發布狀況），
+       會員看到只會困惑或誤判。元素保留在 DOM 裡而不是整段拿掉 —— paintStatus()
+       每秒都會寫 #logs / #uptime，拿掉要在好幾處加防呆，用 central-only 把它
+       對會員隱藏起來就夠了，也跟這頁其他角色差異的做法一致。 -->
+  <div class="section-head central-only" id="secLogs">
     <h2>狀態紀錄</h2>
     <p id="uptime"></p>
   </div>
-  <div class="card"><div class="logs" id="logs"></div></div>
+  <div class="card central-only"><div class="logs" id="logs"></div></div>
 
   <!-- ⑧ 設定。會員端一律攤開（會員權益上方）——「改設定」是每天都會做的事，
        藏在一顆按鈕後面只是多一步。訊號中心維持收合。 -->
@@ -3069,7 +3071,11 @@ function renderRungs(ladder, level, mg, cycles, overrideNote) {
    才讓那一列冒出來清楚。沒授權的整列鎖住：所有欄位 disabled、標出需要的等級，
    點不動也存不進去(syncSourceProfiles 一律把鎖住的來源寫成 enabled:false)。
 
-   這四列以外，收過訊號或手動新增的來源仍然照舊列在後面，不受鎖定影響。 */
+   這四列以外，過去收過訊號的來源仍然照舊列在後面，不受鎖定影響。
+
+   刻意沒有「新增來源」：來源清單完全由訊號中心決定(會員收得到什麼，Hub 說了算)，
+   讓會員自己打群組名只會打錯字 —— 打錯的名字不會對到任何訊號，那一列從此靜靜
+   躺在表上什麼也不做，而使用者會以為自己設定好了。 */
 
 /* 這個來源可以選哪些「止盈處理」。中頻訊號一單只有一個止盈，分批平倉根本沒有
    東西可以分，所以中頻不給那個選項。ok=false 的會 render 成 disabled 的灰選項，
@@ -3172,8 +3178,8 @@ function renderSourceSettings(rows) {
   }
   for (const r of rows) {
     if (claimed[r.source]) continue;
-    // 這四個頻率以外的來源(手動新增的群組名)不做等級鎖 —— 真正擋得住的是
-    // Hub，它根本不會把未授權來源的訊號送下來。
+    // 這四個頻率以外的來源(早期手動新增、或收過訊號的舊群組名)不做等級鎖 ——
+    // 真正擋得住的是 Hub，它根本不會把未授權來源的訊號送下來。
     ordered.push({ r, locked: false, need: null,
       meta: "已成交 " + r.trades + " 筆" + (r.configured ? "" : " · 尚未個別設定（用預設）") });
   }
@@ -3184,11 +3190,7 @@ function renderSourceSettings(rows) {
       "<th>每日止盈</th><th>每日止損</th>" +
     "</tr></thead><tbody>" +
     ordered.map((o) => sourceRowHtml(o.r, o.meta, o.locked, o.need)).join("") +
-    "</tbody></table>" +
-    '<div class="src-add">' +
-      '<input type="text" id="newSourceName" placeholder="群組名稱（要跟訊號中心的顯示名稱完全一致）" />' +
-      '<button type="button" class="btn" id="addSource">新增來源</button>' +
-    "</div>";
+    "</tbody></table>";
 
   // box 是持久元素(每次只換 innerHTML),事件監聽器只綁一次,否則每次重繪都疊加、
   // syncSourceProfiles 會被同一個事件呼叫好幾次(記憶體與重複觸發)。用委派 + 旗標守門。
@@ -3197,29 +3199,9 @@ function renderSourceSettings(rows) {
     box.addEventListener("input", syncSourceProfiles);
     box.dataset.bound = "1";
   }
-  $("addSource").onclick = addSourceRow;
-  $("newSourceName").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); addSourceRow(); } };
   syncSourceProfiles();
 }
 
-/* 手動新增：讓還沒發過訊號的群組可以「先設定好再上線」。
-   不然只能等它發第一筆才會出現在表上，而那第一筆已經照全域設定下出去了。 */
-function addSourceRow() {
-  const input = $("newSourceName");
-  const name = (input.value || "").trim();
-  if (!name) return;
-  if (document.querySelector('[data-source-row="' + CSS.escape(name) + '"]')) {
-    alert("「" + name + "」已經在清單裡了");
-    return;
-  }
-  const tr = document.createElement("tbody");
-  tr.innerHTML = sourceRowHtml(
-    Object.assign(blankSourceRow(name), { enabled: true }),
-    "手動新增 · 尚未收過訊號", false, null);
-  document.querySelector(".src-table tbody").appendChild(tr.firstChild);
-  input.value = "";
-  syncSourceProfiles();
-}
 
 /* ── 分批手數 ────────────────────────────────────────────────────────
    分批平倉直接讓會員填「每段實際手數」(例如 0.01/0.01/0.01),不再用比例。
