@@ -275,11 +275,29 @@ body[data-role="client"]:not(.auth-locked) .shell {
   .side { display: none; }
 }
 
-.side {
+/* 側欄要跟著頁面一起捲(黏在視窗上)。兩個坑都得處理:
+   1. .shell 是 align-items:start 的 grid,格線項目的高度就是內容高度 —— sticky
+      的可黏範圍等於那個盒子,所以捲過側欄自己的高度之後它就跟著跑掉了。
+      解法是讓 .side 撐滿整列(align-self:stretch),真正 sticky 的是裡面那層。
+   2. 側欄長出市場總覽 + 17 項方案功能之後比一個螢幕還高,黏住也只看得到上半段。
+      給它自己的高度上限與捲軸,內容再長都黏得住。 */
+.side { align-self: stretch; }
+.side[hidden] { display: none; }
+.side-sticky {
   position: sticky; top: 76px;
   display: flex; flex-direction: column; gap: 14px;
+  max-height: calc(100vh - 92px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* 捲軸壓在卡片上很醜,留一點右邊距;下面再把捲軸做細 */
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--rule) transparent;
 }
-.side[hidden] { display: none; }
+.side-sticky::-webkit-scrollbar { width: 6px; }
+.side-sticky::-webkit-scrollbar-track { background: transparent; }
+.side-sticky::-webkit-scrollbar-thumb { background: var(--rule); border-radius: 999px; }
+.side-sticky::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 
 .side-head {
   margin: 0 0 10px; font-size: 11px; font-weight: 700;
@@ -1652,6 +1670,7 @@ body.auth-locked > *:not(#authGate) { display: none; }
        這裡不放任何「還沒做出來的功能」：導覽連到的每個錨點都真的存在，
        方案功能列出的每一項都直接對應後端 entitlements 的欄位。 -->
   <aside class="side client-only" id="sideBar" hidden>
+   <div class="side-sticky">
 
     <div class="side-card">
       <p class="side-tier"><b id="sideTier">—</b><span>會員</span></p>
@@ -1690,6 +1709,7 @@ body.auth-locked > *:not(#authGate) { display: none; }
       </p>
     </div>
 
+   </div><!-- /side-sticky -->
   </aside>
 
   <div class="shell-main">
@@ -4630,10 +4650,25 @@ function paintAuth(snap) {
     // 被踢下線 / 到期 / 停權時，後端會把原因放在 auth.error
     if (a.error) showAuthMsg(a.error);
     $("authBadge").hidden = true;
+    // 自動聚焦只做一次,而且只在「登入卡片裡完全沒有東西被聚焦」時做。
+    //
+    // 原本的條件是 activeElement !== authUser && !authPass.value —— 使用者點進
+    // 密碼欄、還沒開始打字的那一刻兩個條件同時成立,而 paintAuth 每秒都會被
+    // /api/status 叫一次,於是游標每秒被搶回帳號欄,密碼根本打不進去。
+    const gate = $("authGate");
     const u = $("authUser");
-    if (u && document.activeElement !== u && !$("authPass").value) u.focus();
+    const active = document.activeElement;
+    const insideGate = !!(active && gate && gate.contains(active));
+    if (u && !insideGate && !gate.dataset.focused) {
+      gate.dataset.focused = "1";
+      u.focus();
+    }
     return;
   }
+
+  // 登出後閘門會再打開,那時要能重新自動聚焦一次
+  const gateEl = $("authGate");
+  if (gateEl) delete gateEl.dataset.focused;
 
   const badge = $("authBadge");
   badge.hidden = false;

@@ -152,6 +152,39 @@ class LineDatabaseSource:
         database = self._database_state()
         return database.setdefault("chats", {}).setdefault(chat.chat_id, {})
 
+    def _inherited_cursor(self, chat: ResolvedLineChat) -> dict | None:
+        """在其他 database_id 底下,找同一個聊天室最近一次的游標。
+
+        為什麼需要這個:`database_id` 是 sha256(檔案路徑 + 檔頭 16 bytes),而 LINE
+        大約每天會改寫一次 .edb 的檔頭。檔頭一變,同一個檔案就會被算出新的 id,
+        於是 `_database_state()` 拿到一份空的狀態、`ensure_baseline()` 把游標直接
+        設在「當下最新那一則」—— **上次輪詢之後進來的訊息全部靜默跳過**。
+        `database_id` 只在程序啟動時算一次,所以觸發點是「訊號中心重啟」,而守護
+        排程每 3 分鐘會拉起當掉的行程,漏單只會越來越頻繁。
+
+        實測 2026-08-30:游標檔裡累積了 5 個 database_id,其中三次換 id 分別漏掉
+        中頻 3/6/0 則、高頻 36/21/4 則,裡面至少有 6 筆是真實報單(乘的 Buy 4570、
+        yuyu 的 4600-4601 空…)。
+
+        接手舊游標是安全的,有兩層互相獨立的保護:
+          1. `line_event_id` / `execution_id` 都只由 chat_id + message_id 算出,
+             跟 database_id 無關 —— 重讀已發布過的訊息會產生同一個 id,Hub 的
+             冪等會擋掉。
+          2. collector 的 `max_trade_age_seconds`(中頻 300 秒 / 高頻 180 秒)
+             會把補讀到的舊訊息當成過期拒絕。
+        """
+        best: tuple[float, dict] | None = None
+        for database_id, database in (self._state.get("databases") or {}).items():
+            if database_id == self.provider.database_id:
+                continue
+            state = ((database or {}).get("chats") or {}).get(chat.chat_id)
+            if not isinstance(state, dict) or "last_rowid" not in state:
+                continue
+            stamp = float(state.get("updated_at") or state.get("baselined_at") or 0)
+            if best is None or stamp > best[0]:
+                best = (stamp, state)
+        return best[1] if best else None
+
     def ensure_baseline(self) -> bool:
         """Create missing cursors. Return True when any baseline was created."""
         changed = False
@@ -161,19 +194,35 @@ class LineDatabaseSource:
                 if "last_rowid" in state:
                     continue
                 latest = self.provider.latest_rowid(chat)
-                state.update(
-                    {
-                        "target_name": chat.target.name,
-                        "chat_name": chat.target.chat_name,
-                        "last_rowid": latest,
-                        "baselined_at": time.time(),
-                    }
-                )
-                logger.info(
-                    "LINE DB baseline %r: rowid=%s (history will not be replayed)",
-                    chat.target.display_name,
-                    latest,
-                )
+                fresh = {
+                    "target_name": chat.target.name,
+                    "chat_name": chat.target.chat_name,
+                    "last_rowid": latest,
+                    "baselined_at": time.time(),
+                }
+
+                # 換 database_id 時盡量接手舊游標,不要重新 baseline —— 見
+                # _inherited_cursor 的說明。舊游標比 latest 還大代表那真的是
+                # 另一個資料庫的 rowid(換帳號/換檔案),那時只能重新 baseline。
+                inherited = self._inherited_cursor(chat)
+                carried = int((inherited or {}).get("last_rowid") or 0)
+                if inherited is not None and 0 < carried <= latest:
+                    fresh["last_rowid"] = carried
+                    fresh["carried_from_rowid"] = carried
+                    if inherited.get("last_message_id"):
+                        fresh["last_message_id"] = inherited["last_message_id"]
+                    logger.info(
+                        "LINE DB 換了 database_id,%r 接手舊游標 rowid=%s(最新 %s,"
+                        " 會補讀中間 %s 筆列;過期的會被 collector 拒絕)",
+                        chat.target.display_name, carried, latest, latest - carried,
+                    )
+                else:
+                    logger.info(
+                        "LINE DB baseline %r: rowid=%s (history will not be replayed)",
+                        chat.target.display_name,
+                        latest,
+                    )
+                state.update(fresh)
                 changed = True
             if changed:
                 self._save_state()

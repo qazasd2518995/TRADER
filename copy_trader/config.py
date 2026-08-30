@@ -173,10 +173,20 @@ class Config:
         # 舊代號 + 舊價格檔卡死(先前 XAUUSD.s 跨券商沿用、每單被拒的那個雷)。
         if _is_valid_symbol_name(detected):
             if configured and configured != detected:
-                logger.info("依券商檔案把 MT5 代號從 %s 更新為 %s", configured, detected)
+                # 只在「這一組對應第一次出現」時記一次。Config 每幾秒就會被重建
+                # 一次(狀態輪詢會重讀設定),原本每次都寫一行 —— 訊號中心的日誌
+                # 被這一行以每 5 秒一筆的速度洗掉,真正的問題全看不到。
+                global _LAST_SYMBOL_SWAP
+                if _LAST_SYMBOL_SWAP != (configured, detected):
+                    _LAST_SYMBOL_SWAP = (configured, detected)
+                    logger.info("依券商檔案把 MT5 代號從 %s 更新為 %s", configured, detected)
             return detected
         # 券商檔案還沒出現(EA 未啟動/空目錄)時,保留使用者設定,別蓋成預設。
         return configured or DEFAULT_SYMBOL
+
+
+# 上一次記錄過的「設定代號 → 偵測代號」。見 Config._resolve_symbol_name。
+_LAST_SYMBOL_SWAP: tuple[str, str] | None = None
 
 
 def save_config(config: Config, path: Path = CONFIG_FILE) -> None:
