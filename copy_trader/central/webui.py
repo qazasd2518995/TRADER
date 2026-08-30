@@ -275,29 +275,21 @@ body[data-role="client"]:not(.auth-locked) .shell {
   .side { display: none; }
 }
 
-/* 側欄要跟著頁面一起捲(黏在視窗上)。兩個坑都得處理:
-   1. .shell 是 align-items:start 的 grid,格線項目的高度就是內容高度 —— sticky
-      的可黏範圍等於那個盒子,所以捲過側欄自己的高度之後它就跟著跑掉了。
-      解法是讓 .side 撐滿整列(align-self:stretch),真正 sticky 的是裡面那層。
-   2. 側欄長出市場總覽 + 17 項方案功能之後比一個螢幕還高,黏住也只看得到上半段。
-      給它自己的高度上限與捲軸,內容再長都黏得住。 */
+/* 側欄要跟著頁面一起捲(黏在視窗上)。
+   .shell 是 align-items:start 的 grid,格線項目的高度就是內容高度 —— sticky 的
+   可黏範圍等於那個盒子,所以捲過側欄自己的高度之後它就跟著跑掉了(這就是原本
+   「左邊不會跟下來」的原因)。解法是讓 .side 撐滿整列,真正 sticky 的是裡面那層。
+
+   刻意不給它 max-height + overflow-y。給了之後側欄會變成一個自己有捲軸的盒子:
+   側欄比螢幕高時要另外捲它、捲完下面還是空白,兩層捲軸互相打架。現在的行為是
+   側欄比螢幕高就跟著頁面一起往上捲,捲到它自己的底才黏住 —— 一條捲軸,一個心智
+   模型。 */
 .side { align-self: stretch; }
 .side[hidden] { display: none; }
 .side-sticky {
   position: sticky; top: 76px;
   display: flex; flex-direction: column; gap: 14px;
-  max-height: calc(100vh - 92px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  /* 捲軸壓在卡片上很醜,留一點右邊距;下面再把捲軸做細 */
-  padding-right: 4px;
-  scrollbar-width: thin;
-  scrollbar-color: var(--rule) transparent;
 }
-.side-sticky::-webkit-scrollbar { width: 6px; }
-.side-sticky::-webkit-scrollbar-track { background: transparent; }
-.side-sticky::-webkit-scrollbar-thumb { background: var(--rule); border-radius: 999px; }
-.side-sticky::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 
 .side-head {
   margin: 0 0 10px; font-size: 11px; font-weight: 700;
