@@ -65,7 +65,7 @@ window.SITE_CONFIG = {
      網域。拿到網域後填這裡，canonical / OG / sitemap 會一起對上。
      -------------------------------------------------------------------- */
   site: {
-    origin: '',                       // TODO: 例如 'https://gold-copy.com'（結尾不要斜線）
+    origin: 'https://gold-young.com',   // 結尾不要斜線
     ogImage: '/assets/img/og.png'
   }
 };

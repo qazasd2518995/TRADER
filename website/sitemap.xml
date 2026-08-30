@@ -1,48 +1,48 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  網域確定後，把所有 REPLACE-WITH-YOUR-DOMAIN 換成實際網域。一次全換：
-    cd website && grep -rl REPLACE-WITH-YOUR-DOMAIN . | xargs sed -i '' 's|REPLACE-WITH-YOUR-DOMAIN|你的網域|g'
+  網域確定後，把所有 gold-young.com 換成實際網域。一次全換：
+    cd website && grep -rl gold-young.com . | xargs sed -i '' 's|gold-young.com|你的網域|g'
 -->
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
         xmlns:xhtml="http://www.w3.org/1999/xhtml">
 
   <url>
-    <loc>https://REPLACE-WITH-YOUR-DOMAIN/</loc>
-    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://REPLACE-WITH-YOUR-DOMAIN/"/>
-    <xhtml:link rel="alternate" hreflang="en" href="https://REPLACE-WITH-YOUR-DOMAIN/?lang=en"/>
-    <xhtml:link rel="alternate" hreflang="x-default" href="https://REPLACE-WITH-YOUR-DOMAIN/"/>
+    <loc>https://gold-young.com/</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://gold-young.com/"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://gold-young.com/?lang=en"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://gold-young.com/"/>
     <changefreq>weekly</changefreq><priority>1.0</priority>
   </url>
 
   <url>
-    <loc>https://REPLACE-WITH-YOUR-DOMAIN/pricing/</loc>
-    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://REPLACE-WITH-YOUR-DOMAIN/pricing/"/>
-    <xhtml:link rel="alternate" hreflang="en" href="https://REPLACE-WITH-YOUR-DOMAIN/pricing/?lang=en"/>
-    <xhtml:link rel="alternate" hreflang="x-default" href="https://REPLACE-WITH-YOUR-DOMAIN/pricing/"/>
+    <loc>https://gold-young.com/pricing/</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://gold-young.com/pricing/"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://gold-young.com/pricing/?lang=en"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://gold-young.com/pricing/"/>
     <changefreq>monthly</changefreq><priority>0.9</priority>
   </url>
 
   <url>
-    <loc>https://REPLACE-WITH-YOUR-DOMAIN/download/</loc>
-    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://REPLACE-WITH-YOUR-DOMAIN/download/"/>
-    <xhtml:link rel="alternate" hreflang="en" href="https://REPLACE-WITH-YOUR-DOMAIN/download/?lang=en"/>
-    <xhtml:link rel="alternate" hreflang="x-default" href="https://REPLACE-WITH-YOUR-DOMAIN/download/"/>
+    <loc>https://gold-young.com/download/</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://gold-young.com/download/"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://gold-young.com/download/?lang=en"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://gold-young.com/download/"/>
     <changefreq>weekly</changefreq><priority>0.9</priority>
   </url>
 
   <url>
-    <loc>https://REPLACE-WITH-YOUR-DOMAIN/features/</loc>
-    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://REPLACE-WITH-YOUR-DOMAIN/features/"/>
-    <xhtml:link rel="alternate" hreflang="en" href="https://REPLACE-WITH-YOUR-DOMAIN/features/?lang=en"/>
-    <xhtml:link rel="alternate" hreflang="x-default" href="https://REPLACE-WITH-YOUR-DOMAIN/features/"/>
+    <loc>https://gold-young.com/features/</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://gold-young.com/features/"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://gold-young.com/features/?lang=en"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://gold-young.com/features/"/>
     <changefreq>monthly</changefreq><priority>0.8</priority>
   </url>
 
   <url>
-    <loc>https://REPLACE-WITH-YOUR-DOMAIN/faq/</loc>
-    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://REPLACE-WITH-YOUR-DOMAIN/faq/"/>
-    <xhtml:link rel="alternate" hreflang="en" href="https://REPLACE-WITH-YOUR-DOMAIN/faq/?lang=en"/>
-    <xhtml:link rel="alternate" hreflang="x-default" href="https://REPLACE-WITH-YOUR-DOMAIN/faq/"/>
+    <loc>https://gold-young.com/faq/</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://gold-young.com/faq/"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://gold-young.com/faq/?lang=en"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://gold-young.com/faq/"/>
     <changefreq>monthly</changefreq><priority>0.6</priority>
   </url>
 </urlset>

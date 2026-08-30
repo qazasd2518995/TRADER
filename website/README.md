@@ -102,13 +102,10 @@ python3 ../scripts/sync-website-partials.py   # 把 index.html 的導覽/Footer 
 - [ ] **換掉 `site-config.js` 裡所有標了 `TODO` 的值**
       —— 尤其是績效數字。金融產品行銷頁掛虛構績效有法律風險，
       必須換成真實統計，或把 `showStats` 設成 `false` 讓整段消失。
-- [ ] 填 `site-config.js` 的 `site.origin`（你的網域，結尾不要斜線）
-- [ ] 全站換掉網域佔位字串：
-      ```bash
-      cd website
-      grep -rl REPLACE-WITH-YOUR-DOMAIN . | xargs sed -i '' 's|REPLACE-WITH-YOUR-DOMAIN|你的網域|g'
-      ```
-- [ ] 改 `index.html` `<head>` 裡的 `canonical` / `hreflang` / `og:image` 為絕對網址
+- [x] ~~填 `site-config.js` 的 `site.origin`~~ —— 2026-08-30 填為 `https://gold-young.com`
+- [x] ~~全站換掉網域佔位字串~~ —— `sitemap.xml` / `robots.txt` 已換成 gold-young.com
+- [x] ~~改 `<head>` 裡的 `canonical` / `hreflang` / `og:image` 為絕對網址~~ —— 五頁都改了。
+      `og:image` 非絕對不可：LINE / FB / X 的爬蟲不解相對路徑，分享出去會沒有預覽圖
 - [ ] 補上服務條款與隱私政策頁面
 
 ---
@@ -140,6 +137,10 @@ vercel --prod     # 部署到正式環境
 ### 自訂網域
 
 Vercel 專案 → Settings → Domains → 加網域，照它給的 DNS 設定改。
+
+**目前線上網域：`gold-young.com`**（2026-08-30 起，A 記錄指向 Vercel 216.198.79.65 /
+64.29.17.65，HTTPS 與 http→https 轉址都正常）。`www.gold-young.com` **還沒設定**
+（DNS 查不到），要的話得在 Vercel 把 `www` 也加進 Domains 並設 CNAME 轉到主網域。
 網域生效後記得回來做「上線前必做」那份清單的第 2、3 項。
 
 ### 為什麼要 `.vercelignore`

@@ -540,6 +540,11 @@ body[data-role="client"]:not(.auth-locked) .shell {
   font-size: 11px; color: var(--muted);
 }
 .side-up-ig b { font-family: var(--mono); font-size: 12px; color: var(--ink); }
+.side-up-site {
+  display: inline-block; margin-top: 8px; font-size: 11.5px; font-weight: 600;
+  color: var(--gold); text-decoration: none;
+}
+.side-up-site:hover { text-decoration: underline; }
 
 /* 策略卡片的運行狀態與管理鍵 */
 .sc-run {
@@ -589,6 +594,16 @@ body[data-role="client"]:not(.auth-locked) .shell {
   transition: color .18s, background .18s;
 }
 .rail-nav a:hover { color: var(--ink); background: var(--sunk); }
+/* 官網是外部連結,不是頁內錨點 —— 用金色與一道分隔線跟其他項目區隔,
+   免得使用者點下去以為只是捲動,結果整個跳出面板。 */
+.rail-nav a.rail-out {
+  color: var(--gold); margin-left: 4px; padding-left: 15px;
+}
+.rail-nav a.rail-out::before {
+  content: ""; position: absolute; left: 0; top: 8px; bottom: 8px;
+  width: 1px; background: var(--hair);
+}
+.rail-nav a.rail-out:hover { color: var(--gold-hi); }
 .rail-nav a.is-on { color: var(--ink); background: var(--sunk); }
 /* 目前所在的區塊底下畫一道金線，跟分頁列的作法一致 */
 .rail-nav a.is-on::after {
@@ -1250,9 +1265,12 @@ tbody tr:hover { background: var(--sunk); }
   padding: 16px; border-top: 1px solid var(--hair); background: linear-gradient(180deg, transparent, rgba(212,160,23,.05)); }
 .benefits-ig .bi-h { margin: 0; font-weight: 650; color: var(--ink); }
 .benefits-ig .bi-b { margin: 3px 0 0; font-size: 12.5px; color: var(--muted); }
+.benefits-ig .bi-acts { display: flex; gap: 8px; flex-wrap: wrap; }
 
 .app-foot { margin: 26px 0 12px; padding-top: 18px; border-top: 1px solid var(--hair); color: var(--muted); }
 .app-foot .foot-tag { margin: 0 0 10px; font-size: 12.5px; }
+.app-foot a, .auth-foot a { color: var(--gold); text-decoration: none; }
+.app-foot a:hover, .auth-foot a:hover { text-decoration: underline; }
 .foot-legal summary { cursor: pointer; font-size: 12.5px; color: var(--ink-2); user-select: none; }
 .foot-legal .legal-body { margin-top: 10px; display: grid; gap: 8px; }
 .foot-legal .legal-body p { margin: 0; font-size: 11.5px; line-height: 1.6; color: var(--muted); }
@@ -1535,7 +1553,8 @@ body.auth-locked > *:not(#authGate) { display: none; }
 
     <p class="auth-foot">
       一組帳號同時只能在一台電腦使用；在別台登入會把這台登出。<br />
-      忘記密碼或需要續期，請聯繫管理員。
+      忘記密碼或需要續期，請聯繫管理員。<br />
+      <a href="https://gold-young.com/" target="_blank" rel="noopener noreferrer">前往官方網站 gold-young.com ↗</a>
     </p>
   </form>
 </div>
@@ -1595,6 +1614,8 @@ body.auth-locked > *:not(#authGate) { display: none; }
     <a href="#secTrades"   data-nav="secTrades">歷史訂單</a>
     <a href="#settings"    data-nav="settings">設定</a>
     <a href="#secBenefits" data-nav="secBenefits">會員權益</a>
+    <!-- 官網是外部連結，不進 bindRailNav 的錨點捲動（那支只認 data-nav） -->
+    <a class="rail-out" href="https://gold-young.com/" target="_blank" rel="noopener noreferrer">官方網站 ↗</a>
   </nav>
   <div class="rail-state">
     <span class="auth-badge client-only" id="authBadge" hidden>
@@ -1645,6 +1666,7 @@ body.auth-locked > *:not(#authGate) { display: none; }
       <p class="side-up-h">升級方案</p>
       <p class="side-up-b" id="upgradeBody">解鎖更多訊號來源與策略設定</p>
       <p class="side-up-ig">IG<b>@goldyoung0927</b></p>
+      <a class="side-up-site" href="https://gold-young.com/" target="_blank" rel="noopener noreferrer">看完整方案內容 ↗</a>
     </div>
 
     <!-- 市場總覽。資料來自 EA 的 watchlist.json；舊版 EA 沒寫這個檔，
@@ -2060,7 +2082,10 @@ body.auth-locked > *:not(#authGate) { display: none; }
           <p class="bi-h">需要升級方案，或任何服務？</p>
           <p class="bi-b">直接私訊我們的 Instagram，幫你開通、續期、解答問題。</p>
         </div>
-        <a class="btn btn-go" href="https://instagram.com/goldyoung0927" target="_blank" rel="noopener noreferrer">IG @goldyoung0927</a>
+        <div class="bi-acts">
+          <a class="btn btn-go" href="https://instagram.com/goldyoung0927" target="_blank" rel="noopener noreferrer">IG @goldyoung0927</a>
+          <a class="btn" href="https://gold-young.com/" target="_blank" rel="noopener noreferrer">官方網站 ↗</a>
+        </div>
       </div>
     </div>
   </div>
@@ -2081,7 +2106,7 @@ body.auth-locked > *:not(#authGate) { display: none; }
         <p><b>使用者責任。</b>所有交易決策、參數設定、資金配置與風險承擔，均由使用者自行判斷並自負盈虧。使用本系統即表示您已充分理解上述風險，並同意自行承擔一切交易結果。</p>
       </div>
     </details>
-    <p class="foot-copy">需要任何服務請私訊 IG <b>@goldyoung0927</b>。交易涉及風險，使用本系統即表示您已理解並同意自負盈虧。</p>
+    <p class="foot-copy">官方網站 <a href="https://gold-young.com/" target="_blank" rel="noopener noreferrer">gold-young.com</a>　·　需要任何服務請私訊 IG <b>@goldyoung0927</b>。交易涉及風險，使用本系統即表示您已理解並同意自負盈虧。</p>
   </footer>
 
   </div><!-- /shell-main -->
@@ -3874,6 +3899,9 @@ function bindRailNav() {
   nav.addEventListener("click", (e) => {
     const a = e.target.closest("a");
     if (!a) return;
+    // 沒有 data-nav 的是外部連結(官網)，讓瀏覽器自己處理 ——
+    // 這裡如果照樣 preventDefault，那顆連結會變成按了完全沒反應。
+    if (!a.dataset.nav) return;
     e.preventDefault();
     const id = a.dataset.nav;
     if (id === "top") {
@@ -3896,7 +3924,7 @@ function bindRailNav() {
     let active = "top";
     for (const a of links) {
       const id = a.dataset.nav;
-      if (id === "top") continue;
+      if (!id || id === "top") continue;
       const el = $(id);
       if (!el || el.hidden) continue;
       if (el.getBoundingClientRect().top <= line) active = id;
