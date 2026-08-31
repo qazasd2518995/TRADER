@@ -7,11 +7,15 @@ computer posts normalized trading signals, and each client agent polls them.
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
 import threading
 import time
+import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -144,6 +148,129 @@ class MemberStatusStore:
             return {user: dict(record) for user, record in self._by_user.items()}
 
 
+class LineNotifyState:
+    """LINE 群組通知：登記 Bot 所在群組 + 推播封裝。狀態存磁碟(跨重啟)。
+
+    token / secret 從環境變數讀(fly secret)。沒有 token 就整個停用(push 變
+    no-op)，Hub 其他功能完全不受影響 —— 通知是加值旁路，永遠不能拖垮訊號流。
+    """
+
+    def __init__(self, state_path: Path, token: str = "", secret: str = ""):
+        self.state_path = Path(state_path)
+        self.token = token or os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
+        self.secret = secret or os.environ.get("LINE_CHANNEL_SECRET", "")
+        self._lock = threading.Lock()
+        self._groups: Dict[str, Dict[str, Any]] = {}
+        self._load()
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.token)
+
+    def _load(self) -> None:
+        try:
+            data = json.loads(self.state_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("groups"), dict):
+                self._groups = data["groups"]
+        except (OSError, json.JSONDecodeError):
+            self._groups = {}
+
+    def _save(self) -> None:
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.state_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"groups": self._groups}, ensure_ascii=False, indent=2),
+                           encoding="utf-8")
+            tmp.replace(self.state_path)
+        except OSError as exc:
+            logger.warning("save LINE state failed: %s", exc)
+
+    def remember_group(self, group_id: str, name: str = "") -> None:
+        if not group_id:
+            return
+        with self._lock:
+            if group_id not in self._groups:
+                self._groups[group_id] = {"added_at": time.time(), "name": name}
+                self._save()
+                logger.info("LINE 群組已登記：%s", group_id)
+
+    def forget_group(self, group_id: str) -> None:
+        with self._lock:
+            if self._groups.pop(group_id, None) is not None:
+                self._save()
+                logger.info("LINE 群組已移除（Bot 被踢出）：%s", group_id)
+
+    def target_groups(self) -> List[str]:
+        with self._lock:
+            return list(self._groups.keys())
+
+    def verify_signature(self, body: bytes, signature: str) -> Optional[bool]:
+        """驗 X-Line-Signature。未設 secret 回 None(呼叫端決定是否放行)。"""
+        if not self.secret:
+            return None
+        mac = hmac.new(self.secret.encode("utf-8"), body, hashlib.sha256).digest()
+        return hmac.compare_digest(base64.b64encode(mac).decode("utf-8"), signature or "")
+
+    def push_text(self, text: str, to: Optional[str] = None) -> int:
+        """推一則純文字。to=None 推給所有已登記群組。回成功數。整段吞例外。"""
+        if not self.enabled or not text:
+            return 0
+        targets = [to] if to else self.target_groups()
+        sent = 0
+        for group_id in targets:
+            if group_id and self._push_one(group_id, text):
+                sent += 1
+        return sent
+
+    def _push_one(self, group_id: str, text: str) -> bool:
+        try:
+            body = json.dumps({"to": group_id,
+                               "messages": [{"type": "text", "text": text[:4900]}]}).encode("utf-8")
+            req = urllib.request.Request(
+                "https://api.line.me/v2/bot/message/push", data=body, method="POST",
+                headers={"Content-Type": "application/json",
+                         "Authorization": f"Bearer {self.token}"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                resp.read()
+            return True
+        except Exception as exc:                        # noqa: BLE001
+            logger.warning("LINE push 失敗：%s", exc)
+            return False
+
+
+def format_signal_notice(record: Dict[str, Any]) -> Optional[str]:
+    """把 Hub 訊號 record 轉成給會員看的 LINE 通知文字。None = 不通知。"""
+    when = str(record.get("message_time") or "").strip()
+    source = str(record.get("source") or "訊號").strip()
+    if record.get("type") == "cancel_signal":
+        reason = record.get("cancel_reason")
+        label = "訊息收回" if reason == "line_unsent" else "引用撤單"
+        target = (record.get("target_signals") or [{}])
+        sig = target[0] if target and isinstance(target[0], dict) else {}
+        entry = sig.get("entry_price")
+        head = f"⚠️ 撤單通知{f' · {when}' if when else ''}"
+        body = f"{source}｜{label}"
+        return head + "\n" + body + (f"\n原掛單進場 {entry}" if entry else "")
+
+    sig = record.get("signal") if isinstance(record.get("signal"), dict) else {}
+    direction = str(sig.get("direction") or "").upper()
+    dir_zh = {"BUY": "買進 BUY", "SELL": "賣出 SELL"}.get(direction, direction or "—")
+    symbol = str(sig.get("symbol") or "XAUUSD")
+    entry = sig.get("entry_price")
+    if entry is None:
+        return None      # 沒有進場價的不是可掛單訊號，不通知
+    sl = sig.get("stop_loss")
+    tps = sig.get("take_profit") or []
+    tp_str = "／".join(str(t) for t in tps) if tps else "—"
+    return "\n".join([
+        f"📌 新訊號{f' · {when}' if when else ''}",
+        f"{symbol} {dir_zh}",
+        f"進場 {entry}｜止損 {sl if sl is not None else '—'}｜止盈 {tp_str}",
+        "✅ 已發送掛單",
+        "※ 訊號來源為第三方，僅供參考，請自負盈虧",
+    ])
+
+
 class HubRequestHandler(BaseHTTPRequestHandler):
     server_version = "CopyTraderHub/1.0"
 
@@ -165,6 +292,10 @@ class HubRequestHandler(BaseHTTPRequestHandler):
     @property
     def member_status(self) -> Optional["MemberStatusStore"]:
         return getattr(self.server, "member_status", None)
+
+    @property
+    def line(self) -> Optional["LineNotifyState"]:
+        return getattr(self.server, "line", None)
 
     def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -345,6 +476,14 @@ class HubRequestHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._send_json(401, {"ok": False, "error": "unauthorized"})
             return
+        if parsed.path == "/admin/line/status":
+            line = self.line
+            self._send_json(200, {"ok": True,
+                                  "enabled": bool(line and line.enabled),
+                                  "has_secret": bool(line and line.secret),
+                                  "groups": line.target_groups() if line else []})
+            return
+
         store = self.members
         if store is None:
             self._send_json(503, {"ok": False, "error": "membership_unavailable"})
@@ -424,6 +563,22 @@ class HubRequestHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._send_json(401, {"ok": False, "error": "unauthorized"})
             return
+        if parsed.path == "/admin/line/test":
+            data = self._read_body()
+            if data is None:
+                return
+            line = self.line
+            if line is None or not line.enabled:
+                self._send_json(400, {"ok": False, "error": "line_disabled"})
+                return
+            if not line.target_groups():
+                self._send_json(400, {"ok": False, "error": "no_group_registered"})
+                return
+            text = str(data.get("text") or "🔔 測試：黃金跟單通知已連線")
+            sent = line.push_text(text)
+            self._send_json(200, {"ok": True, "sent": sent,
+                                  "groups": len(line.target_groups())})
+            return
         store = self.members
         if store is None:
             self._send_json(503, {"ok": False, "error": "membership_unavailable"})
@@ -470,6 +625,34 @@ class HubRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+
+        if parsed.path == "/line/webhook":
+            # LINE 平台的 webhook（公開，不需管理 token）。主要用途：Bot 被加進
+            # 群組時自動登記 group id，之後廣播訊號就推得到。必須回 200。
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length) if length > 0 else b""
+            state = self.line
+            if state is not None and state.secret:
+                if state.verify_signature(raw, self.headers.get("X-Line-Signature", "")) is False:
+                    self._send_json(401, {"ok": False, "error": "bad_signature"})
+                    return
+            try:
+                payload = json.loads(raw.decode("utf-8")) if raw else {}
+            except json.JSONDecodeError:
+                payload = {}
+            if state is not None:
+                for event in payload.get("events", []):
+                    if not isinstance(event, dict):
+                        continue
+                    gid = (event.get("source") or {}).get("groupId")
+                    if not gid:
+                        continue
+                    if event.get("type") == "leave":
+                        state.forget_group(gid)
+                    else:
+                        state.remember_group(gid)
+            self._send_json(200, {"ok": True})
+            return
 
         if parsed.path in ("/auth/login", "/auth/logout", "/auth/change-password"):
             self._handle_auth_post(parsed)
@@ -522,6 +705,21 @@ class HubRequestHandler(BaseHTTPRequestHandler):
             if not isinstance(item, dict):
                 continue
             published.append(self.store.publish(item))
+
+        # LINE 廣播（旁路）：丟背景 thread，push 失敗或慢都不能影響訊號發布回應。
+        # already_published 的(retry 重送)不重推，避免同一訊號通知兩次。
+        line = self.line
+        if line is not None and line.enabled:
+            for record in published:
+                if record.get("already_published"):
+                    continue
+                try:
+                    text = format_signal_notice(record)
+                except Exception:                       # noqa: BLE001
+                    text = None
+                if text:
+                    threading.Thread(target=line.push_text, args=(text,),
+                                     daemon=True).start()
 
         self._send_json(200, {
             "ok": True,
@@ -599,18 +797,25 @@ class HubRequestHandler(BaseHTTPRequestHandler):
 class HubHTTPServer(ThreadingHTTPServer):
     def __init__(self, server_address: tuple, handler_class: type, store: SignalStore,
                  token: str, members: Optional["membership.MemberStore"] = None,
-                 member_status: Optional["MemberStatusStore"] = None):
+                 member_status: Optional["MemberStatusStore"] = None,
+                 line: Optional["LineNotifyState"] = None):
         super().__init__(server_address, handler_class)
         self.store = store
         self.token = token
         self.members = members
         self.member_status = member_status
+        self.line = line
 
 
 def run_server(host: str, port: int, store_path: Path, token: str = "",
                members_path: Optional[Path] = None) -> None:
     store = SignalStore(store_path)
     member_status = MemberStatusStore()
+    line = LineNotifyState(store_path.parent / "line_notify_state.json")
+    if line.enabled:
+        logger.info("LINE 通知已啟用（已登記 %d 個群組）", len(line.target_groups()))
+    else:
+        logger.info("LINE 通知未啟用（未設 LINE_CHANNEL_ACCESS_TOKEN）")
 
     # 會員資料庫壞掉不該讓整個 Hub 起不來 —— 訊號流是核心, 會員系統是加值。
     # 起不來就退回「只認管理 token」的舊行為, 並把錯誤大聲印出來。
@@ -624,7 +829,7 @@ def run_server(host: str, port: int, store_path: Path, token: str = "",
             logger.error("membership store FAILED to open (%s): %s — "
                          "會員登入將不可用, Hub 僅接受管理 token", members_path, e)
 
-    httpd = HubHTTPServer((host, port), HubRequestHandler, store, token, members, member_status)
+    httpd = HubHTTPServer((host, port), HubRequestHandler, store, token, members, member_status, line)
     logger.info("signal hub listening on http://%s:%s (store=%s)", host, port, store_path)
     try:
         httpd.serve_forever()
