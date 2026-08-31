@@ -41,7 +41,7 @@ for _stream in (sys.stdout, sys.stderr):
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
 OUT = DIST / "installers"
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 
 # slug 只用在發布檔名上。GitHub Release 會把非 ASCII 從資產名稱剝掉，
 # 「黃金跟單會員端_1.0.1_Windows.exe」和「黃金訊號中心_1.0.1_Windows.exe」

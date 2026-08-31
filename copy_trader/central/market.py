@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from copy_trader.central.stats import _read_json, resolve_mt5_dir
+from copy_trader.config import DEFAULT_SYMBOL, _is_valid_symbol_name, detect_mt5_symbol
 
 # 前端可以切的週期，以及每根幾秒。順序就是 UI 上的排列順序。
 TIMEFRAMES: Dict[str, int] = {
@@ -37,6 +38,16 @@ STALE_AFTER_SECONDS = 180
 
 # 前端最多畫這麼多根。再多也只是把蠟燭壓成一片糊。
 MAX_BARS = 400
+
+
+def _resolve_symbol(settings: Dict[str, Any], mt5_dir: Path) -> str:
+    """圖表要用的商品代號。優先會員明確設定，否則跟著券商檔案自動偵測(與下單
+    同一套 detect_mt5_symbol)，讓 XAUUSD.s / XAUUSD247m 這類有後綴的券商代號
+    也讀得到 <SYMBOL>_price.json;都查不到才退回預設。"""
+    explicit = str(settings.get("symbol") or settings.get("trading_symbol") or "").strip()
+    if _is_valid_symbol_name(explicit):
+        return explicit
+    return detect_mt5_symbol(str(mt5_dir)) or DEFAULT_SYMBOL
 
 
 def _bars_from(path: Path) -> Optional[Dict[str, Any]]:
@@ -171,7 +182,7 @@ def build_market(settings: Dict[str, Any], timeframe: str = "M15") -> Dict[str, 
     """
     timeframe = timeframe if timeframe in TIMEFRAMES else "M15"
     mt5_dir = resolve_mt5_dir(str(settings.get("mt5_files_dir") or ""))
-    symbol = str(settings.get("symbol") or settings.get("trading_symbol") or "XAUUSD")
+    symbol = _resolve_symbol(settings, mt5_dir)
 
     result: Dict[str, Any] = {
         "connected": False,
@@ -238,5 +249,5 @@ def live_tick(settings: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     mt5_dir = resolve_mt5_dir(str(settings.get("mt5_files_dir") or ""))
     if not mt5_dir.is_dir():
         return None
-    symbol = str(settings.get("symbol") or settings.get("trading_symbol") or "XAUUSD")
+    symbol = _resolve_symbol(settings, mt5_dir)
     return _live_price(mt5_dir, symbol)
