@@ -28,7 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from copy_trader.config import DATA_DIR, _instance_name
+from copy_trader.config import DATA_DIR, _instance_name, _read_json_dict
 from copy_trader.central.membership import (
     LOW_FREQ, MID_FREQ, MIN_PASSWORD_LENGTH, SCHEDULE_LIMIT, ULTRA_HIGH_FREQ,
 )
@@ -1056,6 +1056,7 @@ class LauncherState:
             self.service_started_at = time.time()
 
             consecutive_fail = 0  # 連線連續失敗次數 (用來壓 log 洗版)
+            last_status_report = 0.0
             while not self.stop_event.is_set():
                 try:
                     count = self.client_agent.run_cycle()
@@ -1068,6 +1069,13 @@ class LauncherState:
                         consecutive_fail = 0
                     if count:
                         logger.info("本輪送出 %s 筆 MT5 指令", count)
+                    # 每 STATUS_REPORT_SEC 秒把帳戶/持倉快照上報一次(背景執行,
+                    # 不卡跟單迴圈)。給訊號中心後台看，跟發不發單無關。
+                    now = time.time()
+                    if now - last_status_report >= self.STATUS_REPORT_SEC:
+                        last_status_report = now
+                        threading.Thread(target=self._report_member_status,
+                                         daemon=True).start()
                 except urllib.error.HTTPError as exc:
                     if exc.code in (401, 403):
                         # 已登入的會員收到 401/403，代表 session 出事了 —— 被別台
@@ -1100,6 +1108,52 @@ class LauncherState:
                 self.client_agent = None
             self.status = "已停止"
             self.service_started_at = None
+
+    # 帳戶/持倉快照上報間隔（秒）。這是給後台看的旁路，不用太即時；
+    # 10 秒足夠讓訊號中心看到會員的持倉變化，又不會壓垮 Hub。
+    STATUS_REPORT_SEC = 10.0
+
+    def _report_member_status(self) -> None:
+        """讀本機 MT5 三個橋接檔，組精簡快照上報 Hub。整段吞例外——
+        這是旁路，任何失敗都不能影響跟單。"""
+        agent = self.client_agent
+        if agent is None or self.role != "client":
+            return
+        hub = getattr(agent, "hub", None)
+        if hub is None:
+            return
+        try:
+            mt5_dir = Path(str(self.settings.get("mt5_files_dir") or ""))
+            account = _read_json_dict(mt5_dir / "account_info.json")
+            positions_raw = _read_json_dict(mt5_dir / "positions.json").get("positions") or []
+            orders_raw = _read_json_dict(mt5_dir / "orders.json").get("orders") or []
+            # 只挑要顯示的欄位，別把整包原始 JSON 往外送。
+            account_slim = {k: account.get(k) for k in (
+                "login", "server", "currency", "balance", "equity",
+                "margin", "free_margin", "profit")}
+            positions = [{
+                "symbol": p.get("symbol"), "type": p.get("type"),
+                "volume": p.get("volume"), "price_open": p.get("price_open"),
+                "price_current": p.get("price_current"), "sl": p.get("sl"),
+                "tp": p.get("tp"), "profit": p.get("profit"),
+            } for p in positions_raw if isinstance(p, dict)]
+            # 用檔案 mtime（本地時鐘）判 MT5 是否還活著 —— 不用 EA 寫的 broker
+            # timestamp，因為週末休市時 broker 時間會凍結、會誤判成 stale。
+            try:
+                age = time.time() - (mt5_dir / "account_info.json").stat().st_mtime
+                mt5_stale = age > 120
+            except OSError:
+                mt5_stale = True
+            hub.report_status({
+                "account": account_slim,
+                "positions": positions,
+                "positions_count": len(positions),
+                "orders_count": len(orders_raw),
+                "device": self._device_label(),
+                "mt5_stale": mt5_stale,
+            })
+        except Exception as exc:                 # noqa: BLE001
+            logger.debug("上報帳戶狀態失敗（不影響跟單）：%s", exc)
 
     def drain_logs(self) -> None:
         while True:

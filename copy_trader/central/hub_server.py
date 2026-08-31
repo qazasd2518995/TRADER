@@ -106,6 +106,44 @@ class SignalStore:
             return [r for r in self._records if int(r.get("seq") or 0) > after][:limit]
 
 
+class MemberStatusStore:
+    """會員端上報的 MT5 帳戶／持倉即時快照，一位會員一筆最新值。
+
+    刻意只放記憶體、不落地：這是每 ~10 秒就被覆寫的即時值，重啟後會員端
+    很快又報一次。寫進磁碟只是徒增 IO 與隱私外洩面。「多久沒回報」由前端
+    依 reported_at 自己判斷，Hub 不主動刪。
+    """
+
+    # 單筆持倉列表最多存這麼多，擋住異常大的 payload 撐爆記憶體。
+    MAX_POSITIONS = 60
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._by_user: Dict[str, Dict[str, Any]] = {}
+
+    def update(self, username: str, payload: Dict[str, Any]) -> None:
+        if not username:
+            return
+        positions = payload.get("positions")
+        positions = positions[: self.MAX_POSITIONS] if isinstance(positions, list) else []
+        record = {
+            "username": username,
+            "account": payload.get("account") if isinstance(payload.get("account"), dict) else {},
+            "positions": positions,
+            "positions_count": int(payload.get("positions_count") or len(positions)),
+            "orders_count": int(payload.get("orders_count") or 0),
+            "device": str(payload.get("device") or ""),
+            "mt5_stale": bool(payload.get("mt5_stale")),
+            "reported_at": time.time(),
+        }
+        with self._lock:
+            self._by_user[username] = record
+
+    def snapshot(self) -> Dict[str, Dict[str, Any]]:
+        with self._lock:
+            return {user: dict(record) for user, record in self._by_user.items()}
+
+
 class HubRequestHandler(BaseHTTPRequestHandler):
     server_version = "CopyTraderHub/1.0"
 
@@ -123,6 +161,10 @@ class HubRequestHandler(BaseHTTPRequestHandler):
     @property
     def members(self) -> Optional["membership.MemberStore"]:
         return getattr(self.server, "members", None)
+
+    @property
+    def member_status(self) -> Optional["MemberStatusStore"]:
+        return getattr(self.server, "member_status", None)
 
     def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -319,6 +361,11 @@ class HubRequestHandler(BaseHTTPRequestHandler):
             limit = int((qs.get("limit") or ["100"])[0] or 100)
             self._send_json(200, {"ok": True, "logins": store.recent_logins(limit)})
             return
+        if parsed.path == "/admin/members/status":
+            status_store = self.member_status
+            statuses = status_store.snapshot() if status_store is not None else {}
+            self._send_json(200, {"ok": True, "statuses": statuses})
+            return
         self._send_json(404, {"ok": False, "error": "not_found"})
 
     def _client_ip(self) -> str:
@@ -431,6 +478,26 @@ class HubRequestHandler(BaseHTTPRequestHandler):
             self._handle_admin_post(parsed)
             return
 
+        if parsed.path == "/report/status":
+            # 會員端自報 MT5 帳戶／持倉。用會員自己的 session token 認身分,
+            # 不是管理 token —— 只能報自己那份, 報不到別人的。
+            status_store = self.member_status
+            if status_store is None:
+                self._send_json(503, {"ok": False, "error": "status_unavailable"})
+                return
+            # 先把 request body 讀掉再驗證: 否則被拒(401)時 body 沒消化,
+            # Windows 的 client 會收到 connection abort 而不是乾淨的 401。
+            data = self._read_body()
+            if data is None:
+                return
+            member = self._current_member()
+            if member is None:
+                self._send_json(401, {"ok": False, "error": self._member_auth_error()})
+                return
+            status_store.update(str(member.get("username") or ""), data)
+            self._send_json(200, {"ok": True})
+            return
+
         if parsed.path != "/signals":
             self._send_json(404, {"ok": False, "error": "not_found"})
             return
@@ -531,16 +598,19 @@ class HubRequestHandler(BaseHTTPRequestHandler):
 
 class HubHTTPServer(ThreadingHTTPServer):
     def __init__(self, server_address: tuple, handler_class: type, store: SignalStore,
-                 token: str, members: Optional["membership.MemberStore"] = None):
+                 token: str, members: Optional["membership.MemberStore"] = None,
+                 member_status: Optional["MemberStatusStore"] = None):
         super().__init__(server_address, handler_class)
         self.store = store
         self.token = token
         self.members = members
+        self.member_status = member_status
 
 
 def run_server(host: str, port: int, store_path: Path, token: str = "",
                members_path: Optional[Path] = None) -> None:
     store = SignalStore(store_path)
+    member_status = MemberStatusStore()
 
     # 會員資料庫壞掉不該讓整個 Hub 起不來 —— 訊號流是核心, 會員系統是加值。
     # 起不來就退回「只認管理 token」的舊行為, 並把錯誤大聲印出來。
@@ -554,7 +624,7 @@ def run_server(host: str, port: int, store_path: Path, token: str = "",
             logger.error("membership store FAILED to open (%s): %s — "
                          "會員登入將不可用, Hub 僅接受管理 token", members_path, e)
 
-    httpd = HubHTTPServer((host, port), HubRequestHandler, store, token, members)
+    httpd = HubHTTPServer((host, port), HubRequestHandler, store, token, members, member_status)
     logger.info("signal hub listening on http://%s:%s (store=%s)", host, port, store_path)
     try:
         httpd.serve_forever()

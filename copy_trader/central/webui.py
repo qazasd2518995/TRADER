@@ -2039,7 +2039,8 @@ body.auth-locked > *:not(#authGate) { display: none; }
       <table>
         <thead><tr>
           <th>帳號</th><th>等級</th><th>狀態</th><th>到期</th>
-          <th>線上</th><th>最後上線</th><th>備註</th><th>操作</th>
+          <th>線上</th><th>持倉</th><th>淨值</th><th>浮動損益</th>
+          <th>最後上線</th><th>備註</th><th>操作</th>
         </tr></thead>
         <tbody id="mbrRows"></tbody>
       </table>
@@ -4925,7 +4926,7 @@ $("viewTabs").addEventListener("click", (evt) => {
 /* ------------------------------------------------------------- 會員管理 */
 /* 只有訊號中心有這一區。瀏覽器不直接打 Hub —— 一律經過本機控制台的
    /api/admin/* 代理，管理 token 才不會落到前端 JS 裡。 */
-const MBR = { list: [], tiers: [], filter: "" };
+const MBR = { list: [], tiers: [], filter: "", status: {} };
 
 async function adminGet(path) {
   const res = await fetch("/api/admin" + path);
@@ -4979,7 +4980,7 @@ function renderMembers() {
 
   if (!rows.length) {
     $("mbrRows").innerHTML =
-      '<tr><td colspan="8" class="muted" style="padding:22px;text-align:center">' +
+      '<tr><td colspan="11" class="muted" style="padding:22px;text-align:center">' +
       (MBR.list.length ? "沒有符合的會員" : "還沒有任何會員，按右上角「開通會員」新增") +
       "</td></tr>";
     return;
@@ -4992,12 +4993,32 @@ function renderMembers() {
       : (m.expired ? '<span class="mbr-state bad">過期</span>'
                    : '<span class="mbr-state ok">正常</span>');
     const u = esc(m.username);
+    // 會員端上報的即時 MT5 快照（可能沒有 —— 舊版、離線、或還沒報過）。
+    const st = (MBR.status || {})[m.username];
+    let posCell = '<span class="muted">—</span>';
+    let eqCell = '<span class="muted">—</span>';
+    let pnlCell = '<span class="muted">—</span>';
+    if (st && st.mt5_stale) {
+      posCell = '<span class="mbr-state warn">MT5 未開</span>';
+    } else if (st) {
+      const acc = st.account || {};
+      posCell = `${st.positions_count || 0} 倉 / ${st.orders_count || 0} 掛`;
+      if (acc.equity != null)
+        eqCell = `${money(Number(acc.equity))}${acc.currency ? " " + esc(acc.currency) : ""}`;
+      if (acc.profit != null) {
+        const p = Number(acc.profit);
+        pnlCell = `<span class="${toneClass(p)}">${money(p, { signed: true })}</span>`;
+      }
+    }
     return "<tr>" +
       `<td class="mono"><b>${u}</b></td>` +
       `<td><span class="mbr-tag t-${esc(m.tier)}">${esc(m.tier_label)}</span></td>` +
       `<td>${state}</td>` +
       `<td class="mbr-state ${exp.cls}">${esc(exp.text)}</td>` +
       `<td class="${m.online ? "mbr-online" : "mbr-offline"}">${m.online ? "● 在線" : "○"}</td>` +
+      `<td class="mono">${posCell}</td>` +
+      `<td class="mono">${eqCell}</td>` +
+      `<td class="mono">${pnlCell}</td>` +
       `<td class="muted">${esc(seenText(m.last_seen_at))}</td>` +
       `<td class="muted">${esc(m.note || "—")}</td>` +
       '<td><div class="mbr-acts">' +
@@ -5040,13 +5061,20 @@ async function loadMembers() {
       if (adv >= 0) $("mbrTier").selectedIndex = adv;
     }
     MBR.list = (await adminGet("/members")).members;
+    // 併拉會員端上報的即時帳戶／持倉快照。這是加值資訊，拉不到(舊版 Hub
+    // 或還沒有人上報)就顯示「—」，不擋會員清單本身。
+    try {
+      MBR.status = (await adminGet("/members/status")).statuses || {};
+    } catch (e) {
+      MBR.status = MBR.status || {};
+    }
     renderMembers();
     renderLogins((await adminGet("/logins?limit=60")).logins);
     $("mbrSubtitle").textContent = "已連上 Hub";
   } catch (e) {
     $("mbrSubtitle").textContent = "讀取失敗：" + e.message;
     $("mbrRows").innerHTML =
-      '<tr><td colspan="8" class="mbr-state bad" style="padding:22px;text-align:center">' +
+      '<tr><td colspan="11" class="mbr-state bad" style="padding:22px;text-align:center">' +
       esc(e.message) + "</td></tr>";
   }
 }

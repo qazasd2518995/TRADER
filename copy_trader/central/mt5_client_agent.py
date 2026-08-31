@@ -76,6 +76,25 @@ class HubClient:
             self.last_cursor = fallback_cursor
         return signals
 
+    def report_status(self, payload: Dict) -> bool:
+        """上報本機 MT5 帳戶／持倉快照給 Hub（給訊號中心後台看）。
+
+        這是純旁路：任何失敗都吞掉並回 False，絕不能影響跟單主流程。
+        用會員自己的 session token 認身分，只報得到自己那份。
+        """
+        if not self.token:
+            return False
+        try:
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            req = urllib.request.Request(
+                f"{self.hub_url}/report/status", data=body, method="POST",
+                headers={"Content-Type": "application/json; charset=utf-8"})
+            req.add_header("Authorization", f"Bearer {self.token}")
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return bool(json.loads(resp.read().decode("utf-8")).get("ok"))
+        except Exception:       # noqa: BLE001 — 上報失敗不能拖垮跟單
+            return False
+
 
 def _load_state(path: Path) -> Dict:
     try:
