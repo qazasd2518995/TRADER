@@ -45,6 +45,23 @@ class FormatSignalTests(unittest.TestCase):
         self.assertIn("買進 BUY", text)
         self.assertIn("4440／4445／4450", text)
 
+    def test_repaired_signal_discloses_original_and_corrected_point(self):
+        text = format_signal_notice({
+            "type": "trade_signal", "source": "焦點利潤(yuyu)",
+            "signal": {
+                "direction": "buy", "entry_price": 4374,
+                "stop_loss": 4369, "take_profit": [4380, 4385, 4390],
+                "repair": {
+                    "field": "stop_loss", "original": [4469.0],
+                    "corrected": [4369.0],
+                    "method": "yuyu_hundred_offset_consensus",
+                },
+            },
+        })
+        self.assertIn("進場 4374｜止損 4369｜止盈 4380／4385／4390", text)
+        self.assertIn("已自動修正止損：4469 → 4369", text)
+        self.assertIn("已發送掛單", text)
+
     def test_no_entry_is_not_notified(self):
         self.assertIsNone(format_signal_notice({
             "type": "trade_signal", "signal": {"direction": "buy", "entry_price": None}}))

@@ -138,6 +138,8 @@ _squareMember 或 _contact
 明確解析結果為：
 
 - `accepted`
+- `accepted_tp_repaired`（yuyu 單一 TP 明顯掉位數，依另外兩個等距 TP 唯一外推）
+- `accepted_point_repaired`（yuyu 單一欄位家族有唯一的 ±100 百點錯位修正）
 - `rejected_missing_entry`
 - `rejected_invalid_geometry`
 - `rejected_unknown_format`
@@ -149,6 +151,22 @@ _squareMember 或 _contact
 
 - `mid_frequency_v1`：中頻「乘」的 `Buy/Sell：價格`，以及有完整 SL／TP 的「價格附近多／空」。
 - `yuyu_range_v1`：高頻 yuyu 的「價格-價格多／空」及已在歷史資料驗證過的單一價格版本。
+
+### yuyu 點位誤植的有限修正
+
+本機歷史樣本中，yuyu 可執行訊號有 407 筆，其中 398 筆（97.8%）的三個 TP 為等距 5 或 10 點；391 筆（96.1%）同時符合 SL 距離 4–15 點、TP1 距離 4–15 點及三個 TP 等距的完整排列。系統只把這組高重複規律用作「證明明顯誤植」，不把它當成所有訊號必須符合的全域限制。
+
+`yuyu_range_v1` 只有在下列條件全部成立時，才自動修正點位並真實發布掛單：
+
+1. 原訊號的進場、SL、三個 TP 幾何不符合 yuyu 完整排列。
+2. 只移動一個欄位家族：進場、SL，或整組三個 TP。
+3. 移動量必須恰好為 `+100` 或 `-100`，不做任意數字猜測。
+4. 修正後 SL 與 TP1 距離進場均為 4–15 點，三個 TP 同方向、等距且間距為 5 或 10 點。
+5. 六種候選（三個欄位家族 × 正負 100）中恰好只有一個解；零個或多個解都維持拒單並由 Bot 通知。
+
+修正資料會隨訊號保存 `field`、`original`、`corrected`、`method`，寫入總帳並傳至 Hub。LINE Bot 會明示例如「已自動修正止損：4469 → 4369」，不做靜默修改。這項規則只對 yuyu 啟用；中頻「乘」的歷史 SL／TP 距離變化較大，仍使用原始點位與一般幾何檢查。
+
+例：`進場 4374 / SL 4469 / TP 4380,4385,4390` 的唯一解是 `SL 4369`；但 `進場 4374 / SL 4469 / TP 4480,4485,4490` 的唯一解是 `進場 4474`。系統以整組點位判斷，不能只看 SL 的尾數。
 
 `trusted_senders`／綁定後的 sender IDs 為空時採 fail-closed：可以讀 row 做診斷，但不會發布交易或撤單。
 

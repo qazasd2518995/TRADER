@@ -55,6 +55,12 @@ python -m copy_trader.central.central_signal_center_web
 
 一般行情評論即使提到「多／空」，只要沒有 SL 與 TP 的報單骨架就不通知。拒絕事件使用穩定 event ID，因此中央端重試不會讓 Bot 重複推播。
 
+## yuyu 百點誤植修正
+
+高頻 yuyu 若只有進場、SL 或整組 TP 其中一個欄位家族落在相鄰百點，系統會嘗試 `±100`，但只有唯一候選同時符合來源歷史中的完整排列（SL／TP1 距離 4–15 點、三個 TP 等距 5 或 10 點）才會修正並發布。修正前後點位會保存到總帳及 Hub，LINE Bot 也會明示「原值 → 修正值」。沒有唯一解就維持 `signal_rejected`，不猜測下單。
+
+此功能只套用 `yuyu_range_v1`；中頻來源的距離分布較廣，不自動套用。`TP 4480/4485/4490` 搭配 `SL 4469` 支持的是進場 4474；`TP 4380/4385/4390` 搭配進場 4374 才支持 SL 4369。
+
 Shadow mode 會把結果記為 `shadow_accepted`／`shadow_cancel`，但不會建立 Hub event。它適合正式交易前的一至兩週人工對照；關閉後才會開始發布新訊息，Shadow 期間的歷史不會補下。
 
 ## 引用撤單

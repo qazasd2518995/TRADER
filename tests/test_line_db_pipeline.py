@@ -458,9 +458,9 @@ class CollectorTests(unittest.TestCase):
             "manual_review",
         )
 
-    def test_provider_entry_typo_emits_exact_point_rejection_notice(self):
-        # 真實類型：進場 4374 應為 4474，造成買單的 SL 高於進場。
-        # 系統不能猜測修正，但 Bot 必須說清楚哪組點位未掛單。
+    def test_provider_entry_hundred_offset_is_repaired_and_published(self):
+        # 2026-08-13 真實類型：SL 與三個 TP 都圍繞 4474，只有進場少 100。
+        # yuyu 的完整排列提供唯一解，所以修成 4474 並留下原值供 Bot／總帳稽核。
         typo = "黃金 4374-4375多\nTp 4480 4485 4490\nSl 4469"
         target = LineChatTarget(
             "high_freq_yuyu",
@@ -480,17 +480,82 @@ class CollectorTests(unittest.TestCase):
         )
         source = QueueSource([row])
         publisher = RecordingPublisher()
+        ledger = LineMessageLedger()
 
-        self.assertEqual(CentralSignalCollector(source, publisher).run_cycle(), 0)
+        self.assertEqual(CentralSignalCollector(source, publisher, ledger).run_cycle(), 1)
         self.assertEqual(source.acknowledged, ["bad-entry-message"])
         self.assertEqual(len(publisher.payloads), 1)
+        event = publisher.payloads[0]
+        self.assertEqual(event["type"], "trade_signal")
+        self.assertEqual(event["signal"]["parse_status"], "accepted_point_repaired")
+        self.assertEqual(event["signal"]["entry_price"], 4474.0)
+        self.assertEqual(event["signal"]["stop_loss"], 4469.0)
+        self.assertEqual(event["signal"]["take_profit"], [4480.0, 4485.0, 4490.0])
+        self.assertEqual(event["signal"]["repair"], {
+            "field": "entry_price",
+            "original": [4374.0],
+            "corrected": [4474.0],
+            "method": "yuyu_hundred_offset_consensus",
+        })
+        recorded = ledger.message_record(
+            "unknown-database", "focus-chat-mid", "bad-entry-message"
+        )
+        self.assertEqual(recorded["parse_status"], "accepted_point_repaired")
+
+    def test_provider_stop_loss_hundred_offset_is_repaired_and_published(self):
+        # 2026-09-01 16:45：進場與三個 TP 都在 4374–4390，只有 SL 高 100。
+        typo = "黃金 4374-4375多\nTp 4380 4385 4390\nSl 4469"
+        target = LineChatTarget(
+            "high_freq_yuyu",
+            "🈲禁言群🈲 Focus forex 焦點利潤",
+            "焦點利潤(yuyu)",
+            ("yuyu（yu__o822",),
+            parser_profile="yuyu_range_v1",
+        )
+        chat = ResolvedLineChat(target, "focus-chat-mid", "openchat")
+        row = message(
+            chat,
+            21,
+            "bad-sl-message",
+            typo,
+            sender_id="yuyu-sender-id",
+            sender_name="yuyu（yu__o822",
+        )
+        publisher = RecordingPublisher()
+
+        self.assertEqual(CentralSignalCollector(QueueSource([row]), publisher).run_cycle(), 1)
+        signal = publisher.payloads[0]["signal"]
+        self.assertEqual(signal["entry_price"], 4374.0)
+        self.assertEqual(signal["stop_loss"], 4369.0)
+        self.assertEqual(signal["repair"]["field"], "stop_loss")
+        self.assertEqual(signal["repair"]["original"], [4469.0])
+        self.assertEqual(signal["repair"]["corrected"], [4369.0])
+
+    def test_non_hundred_geometry_error_still_emits_rejection_notice(self):
+        typo = "黃金 4560-4561多\nTp 4555 4560 4565\nSl 4555"
+        target = LineChatTarget(
+            "high_freq_yuyu",
+            "🈲禁言群🈲 Focus forex 焦點利潤",
+            "焦點利潤(yuyu)",
+            ("yuyu（yu__o822",),
+            parser_profile="yuyu_range_v1",
+        )
+        chat = ResolvedLineChat(target, "focus-chat-mid", "openchat")
+        row = message(
+            chat,
+            22,
+            "ambiguous-point-message",
+            typo,
+            sender_id="yuyu-sender-id",
+            sender_name="yuyu（yu__o822",
+        )
+        publisher = RecordingPublisher()
+
+        self.assertEqual(CentralSignalCollector(QueueSource([row]), publisher).run_cycle(), 0)
         notice = publisher.payloads[0]
         self.assertEqual(notice["type"], "signal_rejected")
         self.assertEqual(notice["parse_status"], "rejected_invalid_geometry")
-        self.assertEqual(notice["rejection_reason"], "sl_tp_geometry")
-        self.assertEqual(notice["signal"]["entry_price"], 4374.0)
-        self.assertEqual(notice["signal"]["stop_loss"], 4469.0)
-        self.assertEqual(notice["signal"]["take_profit"], [4480.0, 4485.0, 4490.0])
+        self.assertNotIn("repair", notice["signal"])
 
     def test_provider_commentary_is_not_misreported_as_a_missed_order(self):
         source = QueueSource([

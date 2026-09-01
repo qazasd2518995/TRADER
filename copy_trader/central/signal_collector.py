@@ -42,7 +42,7 @@ def is_cancel_reply(text: str) -> bool:
 
 
 def _signal_payload(signal: ParsedSignal, result: StrictParseResult) -> Dict:
-    return {
+    payload = {
         "symbol": signal.symbol or "XAUUSD",
         "direction": signal.direction,
         "entry_price": signal.entry_price,
@@ -55,6 +55,14 @@ def _signal_payload(signal: ParsedSignal, result: StrictParseResult) -> Dict:
         "raw_text_summary": signal.raw_text_summary,
         "error": signal.error,
     }
+    if result.repair is not None:
+        payload["repair"] = {
+            "field": result.repair.field,
+            "original": list(result.repair.original),
+            "corrected": list(result.repair.corrected),
+            "method": result.repair.method,
+        }
+    return payload
 
 
 def _message_preview(text: str, limit: int = 160) -> str:
@@ -316,17 +324,27 @@ class CentralSignalCollector:
             target.max_trade_age_seconds > 0
             and age_seconds > target.max_trade_age_seconds
         )
-        repaired = result.reason == "tp_repaired_from_spacing"
+        repaired = result.repair is not None
         if repaired:
-            # 訊號原本幾何不成立(某個止盈打錯位數)，靠固定間距外推補回來後才發布。
-            # 記成可辨識的狀態並留 warning，方便事後對照原文稽核，不做靜默修改。
+            # 只有來源專屬規則得到唯一解才會修復。原值／修正值一路帶到 Hub
+            # 與 LINE Bot，方便事後對照原文稽核，不做靜默修改。
             logger.warning(
-                "repaired malformed TP source=%s message=%s -> %s",
+                "repaired malformed signal source=%s message=%s method=%s field=%s %s -> %s",
                 target.display_name,
                 message.message_id,
-                signal,
+                result.repair.method,
+                result.repair.field,
+                result.repair.original,
+                result.repair.corrected,
             )
-        base_status = "accepted_tp_repaired" if repaired else result.status
+        base_status = (
+            "accepted_tp_repaired"
+            if result.reason == "tp_repaired_from_spacing"
+            else "accepted_point_repaired"
+            if repaired
+            else result.status
+        )
+        signal_payload["parse_status"] = base_status
         parse_status = (
             "rejected_stale_backlog"
             if stale

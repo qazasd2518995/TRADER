@@ -265,6 +265,23 @@ def _fmt_point(value: Any) -> str:
         return str(value)
 
 
+def _repair_notice(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    label = {
+        "entry_price": "進場",
+        "stop_loss": "止損",
+        "take_profit": "止盈",
+    }.get(str(value.get("field") or ""), "點位")
+    original = value.get("original") if isinstance(value.get("original"), list) else []
+    corrected = value.get("corrected") if isinstance(value.get("corrected"), list) else []
+    if not original or not corrected:
+        return ""
+    before = "／".join(_fmt_point(item) for item in original)
+    after = "／".join(_fmt_point(item) for item in corrected)
+    return f"🛠️ 已自動修正{label}：{before} → {after}"
+
+
 def _rejection_copy(record: Dict[str, Any], signal: Dict[str, Any]) -> tuple[str, str, str]:
     """Return a public label, explanation and next action for a skipped signal."""
     status = str(record.get("parse_status") or "")
@@ -345,14 +362,20 @@ def format_signal_notice(record: Dict[str, Any]) -> Optional[str]:
         return None      # 沒有進場價的不是可掛單訊號，不通知
     sl = sig.get("stop_loss")
     tps = sig.get("take_profit") or []
-    tp_str = "／".join(str(t) for t in tps) if tps else "—"
-    return "\n".join([
+    tp_str = "／".join(_fmt_point(value) for value in tps) if tps else "—"
+    lines = [
         f"📌 新訊號{f' · {when}' if when else ''}",
         f"{symbol} {dir_zh}",
-        f"進場 {entry}｜止損 {sl if sl is not None else '—'}｜止盈 {tp_str}",
+        f"進場 {_fmt_point(entry)}｜止損 {_fmt_point(sl)}｜止盈 {tp_str}",
+    ]
+    repair_line = _repair_notice(sig.get("repair"))
+    if repair_line:
+        lines.append(repair_line)
+    lines.extend([
         "✅ 已發送掛單",
         "※ 訊號來源為第三方，僅供參考，請自負盈虧",
     ])
+    return "\n".join(lines)
 
 
 class HubRequestHandler(BaseHTTPRequestHandler):

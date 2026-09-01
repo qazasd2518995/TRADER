@@ -34,6 +34,14 @@ _PRICE_RE = re.compile(PRICE)
 
 
 @dataclass(frozen=True)
+class StrictSignalRepair:
+    field: str
+    original: tuple[float, ...]
+    corrected: tuple[float, ...]
+    method: str
+
+
+@dataclass(frozen=True)
 class StrictParseResult:
     status: str
     profile: str
@@ -42,6 +50,7 @@ class StrictParseResult:
     # True 表示正文具備報單骨架，即使不能安全執行也應通知管理群。
     # 一般聊天（例如「目前不建議追多」）不能因為出現方向字就被當成掉單。
     signal_like: bool = False
+    repair: StrictSignalRepair | None = None
 
     @property
     def accepted(self) -> bool:
@@ -105,6 +114,10 @@ def _geometry_is_valid(signal: ParsedSignal) -> bool:
 # 而是某一格打錯位數(掉一個 0)造成的離群值。給到 20 是他真實間距的 4 倍裕度,
 # 連偶爾 ±1 的區間端點抖動都遠在界內,只有掉位數的粗錯才會超過。
 _YUYU_MAX_TP_STEP = 20.0
+_YUYU_HUNDRED_OFFSET = 100.0
+_YUYU_CONSENSUS_STEPS = (5.0, 10.0)
+_YUYU_MIN_RISK_DISTANCE = 4.0
+_YUYU_MAX_RISK_DISTANCE = 15.0
 
 
 def _repair_take_profits(
@@ -150,6 +163,101 @@ def _repair_take_profits(
         return candidate, True
 
     return take_profits, False
+
+
+def _near(left: float, right: float, tolerance: float = 0.01) -> bool:
+    return abs(float(left) - float(right)) <= tolerance
+
+
+def _yuyu_consensus_geometry(
+    direction: str,
+    entry: float,
+    stop_loss: float,
+    take_profits: list[float],
+) -> bool:
+    """The high-confidence yuyu family seen in 96% of accepted history.
+
+    This is deliberately narrower than normal parser acceptance. It is used
+    only as proof for correcting an obvious ±100-point family offset, never to
+    reject a clean but less common yuyu setup.
+    """
+    if len(take_profits) != 3:
+        return False
+    sign = 1.0 if direction == "buy" else -1.0
+    sl_distance = sign * (entry - stop_loss)
+    tp_distances = [sign * (value - entry) for value in take_profits]
+    first_step = tp_distances[1] - tp_distances[0]
+    second_step = tp_distances[2] - tp_distances[1]
+    return (
+        _YUYU_MIN_RISK_DISTANCE <= sl_distance <= _YUYU_MAX_RISK_DISTANCE
+        and _YUYU_MIN_RISK_DISTANCE <= tp_distances[0] <= _YUYU_MAX_RISK_DISTANCE
+        and all(distance > 0 for distance in tp_distances)
+        and _near(first_step, second_step)
+        and any(_near(first_step, expected) for expected in _YUYU_CONSENSUS_STEPS)
+    )
+
+
+def _repair_yuyu_hundred_offset(
+    direction: str,
+    entry: float,
+    stop_loss: float,
+    take_profits: list[float],
+) -> tuple[float, float, list[float], StrictSignalRepair | None]:
+    """Correct one uniquely identifiable ±100 offset among entry/SL/all TPs.
+
+    The provider sometimes types one semantic field in the adjacent hundred:
+    e.g. entry 4374 + TP 4380/85/90 but SL 4469. We only repair when exactly
+    one of six candidates (three field families × ±100) matches the source's
+    strongly repeated risk geometry. No unique candidate means no repair.
+    """
+    if _yuyu_consensus_geometry(direction, entry, stop_loss, take_profits):
+        return entry, stop_loss, take_profits, None
+
+    candidates: list[tuple[float, float, list[float], StrictSignalRepair]] = []
+    for offset in (-_YUYU_HUNDRED_OFFSET, _YUYU_HUNDRED_OFFSET):
+        values = (
+            (
+                entry + offset,
+                stop_loss,
+                list(take_profits),
+                StrictSignalRepair(
+                    "entry_price", (entry,), (entry + offset,),
+                    "yuyu_hundred_offset_consensus",
+                ),
+            ),
+            (
+                entry,
+                stop_loss + offset,
+                list(take_profits),
+                StrictSignalRepair(
+                    "stop_loss", (stop_loss,), (stop_loss + offset,),
+                    "yuyu_hundred_offset_consensus",
+                ),
+            ),
+            (
+                entry,
+                stop_loss,
+                [value + offset for value in take_profits],
+                StrictSignalRepair(
+                    "take_profit",
+                    tuple(take_profits),
+                    tuple(value + offset for value in take_profits),
+                    "yuyu_hundred_offset_consensus",
+                ),
+            ),
+        )
+        for candidate in values:
+            if _yuyu_consensus_geometry(
+                direction,
+                candidate[0],
+                candidate[1],
+                candidate[2],
+            ):
+                candidates.append(candidate)
+
+    if len(candidates) != 1:
+        return entry, stop_loss, take_profits, None
+    return candidates[0]
 
 
 def parse_strict_signal(text: str, profile: str) -> StrictParseResult:
@@ -216,9 +324,24 @@ def parse_strict_signal(text: str, profile: str) -> StrictParseResult:
     # 只有他這個 profile 先試著把離群的那格用另外兩格外推補回來,再照常做幾何檢查。
     # 放在幾何檢查「之前」是因為賣單掉位數(如 456)仍在進場價下方、會騙過幾何,
     # 必須靠間距檢查才抓得到。修不動時原封回傳,行為與過去一致。
-    tp_repaired = False
+    repair: StrictSignalRepair | None = None
     if profile == "yuyu_range_v1":
+        original_take_profits = list(take_profits)
         take_profits, tp_repaired = _repair_take_profits(take_profits, direction)
+        if tp_repaired:
+            repair = StrictSignalRepair(
+                "take_profit",
+                tuple(original_take_profits),
+                tuple(take_profits),
+                "yuyu_tp_spacing",
+            )
+        else:
+            entry, stop_loss, take_profits, repair = _repair_yuyu_hundred_offset(
+                direction,
+                entry,
+                stop_loss,
+                take_profits,
+            )
 
     signal = _build_signal(direction, entry, stop_loss, take_profits)
     if not _geometry_is_valid(signal):
@@ -229,11 +352,18 @@ def parse_strict_signal(text: str, profile: str) -> StrictParseResult:
             reason="sl_tp_geometry",
             signal_like=True,
         )
-    reason = "tp_repaired_from_spacing" if tp_repaired else ""
+    reason = (
+        "tp_repaired_from_spacing"
+        if repair and repair.method == "yuyu_tp_spacing"
+        else "point_repaired_hundred_offset"
+        if repair
+        else ""
+    )
     return StrictParseResult(
         "accepted",
         profile,
         signal=signal,
         reason=reason,
         signal_like=True,
+        repair=repair,
     )
