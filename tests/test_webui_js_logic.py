@@ -158,6 +158,25 @@ for (const [ent, src, stored, want] of cases) {
 """
         self._run_node("const FNS = " + json.dumps(fns) + ";\n" + assertions)
 
+    def test_dynamic_lot_mode_is_visible_but_flagship_locked(self):
+        """所有會員都看得到本金比例選項；只有 entitlement 開啟時才能選。"""
+        fns = "\n".join(_extract_function(self.src, n)
+                        for n in ("lotModeOptions", "pickLotMode"))
+        assertions = r"""
+function bad(msg){ console.error("FAIL "+msg); process.exit(1); }
+const make = (ent) => new Function("ENT", FNS + "; return {lotModeOptions,pickLotMode};")(ent);
+const advanced = make({martingale:true, dynamic_lot:false});
+const flagship = make({martingale:true, dynamic_lot:true});
+const locked = advanced.lotModeOptions().find((o) => o.v === "risk_percent");
+if (!locked) bad("非旗艦版仍要看得到本金比例選項");
+if (locked.ok || locked.need !== "flagship") bad("非旗艦版選項應灰掉並標示需旗艦版");
+if (advanced.pickLotMode("risk_percent") !== "flat") bad("未授權舊設定必須退回均注");
+const unlocked = flagship.lotModeOptions().find((o) => o.v === "risk_percent");
+if (!unlocked || !unlocked.ok) bad("旗艦版應能啟用本金比例");
+if (flagship.pickLotMode("risk_percent") !== "risk_percent") bad("旗艦版設定不應被改掉");
+"""
+        self._run_node("const FNS = " + json.dumps(fns) + ";\n" + assertions)
+
     def test_side_feature_list_matches_the_benefit_table(self):
         """側欄「方案功能」與會員權益比較表要對得起來:比較表的每一列在側欄
         都找得到對應項目,而且側欄不會出現比較表沒有的功能。"""

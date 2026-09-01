@@ -11,7 +11,7 @@
   * allowed_sources — **伺服器端**強制。Hub 在 /signals 就把該會員無權
     存取的來源濾掉，資料根本不會離開伺服器。這是真正的收費閘門。
 
-  * max_lot / martingale / partial_close / breakeven / schedule —
+  * max_lot / martingale / dynamic_lot / partial_close / breakeven / schedule —
     **用戶端**自律。Hub 只在登入時把
     這些額度告訴會員端，由會員端自己套用。會員如果反編譯改掉，是擋不住的。
     之所以能接受：這些只影響他自己的帳戶風險，不影響我們的訊號值錢與否。
@@ -52,6 +52,7 @@ TIERS: Dict[str, Dict[str, Any]] = {
         "sources": [MID_FREQ],
         "max_lot": 0.01,
         "martingale": False,
+        "dynamic_lot": False,
         "partial_close": False,
         "breakeven": False,
         "mobile_notify": False,
@@ -64,6 +65,7 @@ TIERS: Dict[str, Dict[str, Any]] = {
         "sources": [MID_FREQ],
         "max_lot": 0.10,
         "martingale": False,
+        "dynamic_lot": False,
         "partial_close": False,
         "breakeven": False,
         "mobile_notify": False,
@@ -76,6 +78,7 @@ TIERS: Dict[str, Dict[str, Any]] = {
         "sources": [MID_FREQ, HIGH_FREQ],
         "max_lot": None,          # None = 不限
         "martingale": True,       # 對齊官網/會員權益表:進階版(PRO)含馬丁與分批平倉
+        "dynamic_lot": False,
         "partial_close": True,
         # 保本移損跟分批平倉是同一組「多 TP 處理」的權益, 一起從進階版開始給。
         # 體驗/基礎版只剩「單一點位」(照訊號的第一個止盈掛上去就不再管)。
@@ -92,6 +95,9 @@ TIERS: Dict[str, Dict[str, Any]] = {
         "sources": [MID_FREQ, HIGH_FREQ, ULTRA_HIGH_FREQ, LOW_FREQ],
         "max_lot": None,
         "martingale": True,
+        # 本金比例動態手數是旗艦版專屬。會員端會把選項畫給所有人看，
+        # 但非旗艦版的 option 是 disabled，後端也會把偽造設定壓回均注。
+        "dynamic_lot": True,
         "partial_close": True,
         "breakeven": True,
         "mobile_notify": True,
@@ -170,13 +176,15 @@ def tier_entitlements(tier: str) -> Dict[str, Any]:
     if spec is None:
         logger.warning("unknown tier %r — falling back to no access", tier)
         return {"label": "未知", "sources": [], "max_lot": 0.01,
-                "martingale": False, "partial_close": False, "breakeven": False,
+                "martingale": False, "dynamic_lot": False,
+                "partial_close": False, "breakeven": False,
                 "mobile_notify": False, "schedule": False, "plan_days": 30}
     return {
         "label": spec["label"],
         "sources": list(spec["sources"]),
         "max_lot": spec["max_lot"],
         "martingale": spec["martingale"],
+        "dynamic_lot": bool(spec.get("dynamic_lot", False)),
         "partial_close": spec["partial_close"],
         "breakeven": bool(spec.get("breakeven", False)),
         "mobile_notify": bool(spec.get("mobile_notify", False)),
@@ -193,6 +201,7 @@ def tier_catalog() -> List[Dict[str, Any]]:
     return [
         {"key": k, "label": TIERS[k]["label"], "sources": list(TIERS[k]["sources"]),
          "max_lot": TIERS[k]["max_lot"], "martingale": TIERS[k]["martingale"],
+         "dynamic_lot": bool(TIERS[k].get("dynamic_lot", False)),
          "partial_close": TIERS[k]["partial_close"],
          "breakeven": bool(TIERS[k].get("breakeven", False)),
          "mobile_notify": bool(TIERS[k].get("mobile_notify", False)),

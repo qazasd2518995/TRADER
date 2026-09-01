@@ -459,7 +459,7 @@ def source_settings(
     for name in known:
         raw = profiles.get(name) or {}
         mode = str(raw.get("mode") or "").strip().lower()
-        if mode not in ("martingale", "flat"):
+        if mode not in ("martingale", "flat", "risk_percent"):
             mode = "martingale" if global_martingale else "flat"
         tp_mode = str(raw.get("tp_mode") or "").strip().lower()
         if tp_mode not in ("partial", "breakeven", "single"):
@@ -472,6 +472,7 @@ def source_settings(
             "mode": mode,
             "tp_mode": tp_mode,
             "base_lot": _float(raw.get("base_lot"), base_lot),
+            "risk_percent": max(0.01, min(_float(raw.get("risk_percent"), 0.5), 5.0)),
             "multiplier": _float(raw.get("multiplier"), multiplier),
             "max_level": _int(raw.get("max_level"), max_level),
             "max_active_orders": _int(raw.get("max_active_orders"), 0),
@@ -625,7 +626,7 @@ def build_stats(
             signal_id = comment[5:] if comment.startswith("copy_copy_") else comment
             fields = index.get(signal_id, {})
             source = sources_raw.get(signal_id) or fields.get("來源") or ""
-            mode = None  # 下面依 source_profiles 決定 flat/martingale
+            mode = None  # 下面依 source_profiles 決定 flat/martingale/risk_percent
             level = _level_for_volume(volume, ladder)
 
         trades.append({
@@ -665,7 +666,7 @@ def build_stats(
             continue
         profile = profiles.get(trade["source"]) if isinstance(profiles, dict) else None
         mode = str((profile or {}).get("mode") or "").lower()
-        trade["mode"] = mode if mode in ("flat", "martingale") else ""
+        trade["mode"] = mode if mode in ("flat", "martingale", "risk_percent") else ""
 
     trades = _merge_partial_closes(trades)
     trades.sort(key=lambda t: (t["close_timestamp"], t["ticket"] or 0))

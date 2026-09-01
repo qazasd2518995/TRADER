@@ -256,6 +256,10 @@ void WriteSymbolInfo(string sym)
    j+="\"volume_step\":"     + DoubleToString(SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP), 2) + ",";
    j+="\"tick_size\":"       + DoubleToString(SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE), 8) + ",";
    j+="\"tick_value\":"      + DoubleToString(SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE), 5) + ",";
+   // 動態手數以「打到停損會虧多少」反推 volume。部分商品的 profit/loss
+   // tick value 不對稱，loss 才是風險計算該用的值；會員端仍相容舊版 tick_value。
+   j+="\"tick_value_profit\":" + DoubleToString(SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE_PROFIT), 5) + ",";
+   j+="\"tick_value_loss\":"   + DoubleToString(SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE_LOSS), 5) + ",";
    j+="\"stops_level\":" + IntegerToString((int)SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL)) + ",";
    j+="\"freeze_level\":" + IntegerToString((int)SymbolInfoInteger(sym, SYMBOL_TRADE_FREEZE_LEVEL)) + ",";
    j+="\"swap_type\":0,";

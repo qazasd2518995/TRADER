@@ -403,7 +403,20 @@ class MT5ClientAgent:
             )
             order = self.trade_manager.get_order_status(signal_id)
             if order is not None and order.status == OrderStatus.FAILED:
-                raise RuntimeError(f"failed to write MT5 command for hub seq={seq}")
+                reason = str(getattr(order, "failure_reason", "") or "")
+                raise RuntimeError(
+                    f"failed to prepare/write MT5 command for hub seq={seq}: {reason}"
+                )
+            if order is not None and order.status == OrderStatus.REJECTED:
+                # This event can never meet the member's risk budget (most often
+                # <0.01 lot).  Consume it without recording a successful accept,
+                # otherwise one impossible signal would block every later event.
+                logger.warning(
+                    "會員端風控略過 hub seq=%s source=%s：%s",
+                    seq, source, getattr(order, "failure_reason", "") or "動態手數無法下單",
+                )
+                self._mark_seq(seq)
+                continue
             logger.info("submitted hub seq=%s as local signal %s: %s", seq, signal_id, signal)
             self._record_source_accept(source, signal_id)
             self._mark_seq(seq)

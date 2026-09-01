@@ -1,7 +1,7 @@
 ; 版本由 build-release.py 用 /DMyAppVersion=x.y.z 帶進來；
 ; 直接用 ISCC 跑的話走下面的預設值。
 #ifndef MyAppVersion
-  #define MyAppVersion "1.1.0"
+  #define MyAppVersion "1.2.2"
 #endif
 
 [Setup]

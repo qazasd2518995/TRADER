@@ -79,6 +79,8 @@ python -m copy_trader.central.client_agent_web
 
 會員端登入後從 Hub 最新序號開始，不補下歷史事件。重啟時會依 MT5 magic number 與 comment 認領本系統仍存在的掛單／持倉，使引用撤單與馬丁結果追蹤維持相同 identity。
 
+旗艦版可為每個來源選擇「本金比例」動態手數；完整公式、0.01 手下限與失敗處理見 [`dynamic-lot-sizing.md`](dynamic-lot-sizing.md)。
+
 來源與會員方案的固定路由：
 
 - `黃金報單🈲言群`：乘的中頻交易，體驗版、基礎版、進階版與旗艦版可接收。

@@ -131,6 +131,7 @@ def main() -> None:
         for t_ in _call(hub, tok, "/admin/tiers")["tiers"]:
             lot = "不限" if t_["max_lot"] is None else f"{t_['max_lot']} 手"
             extras = [x for x, on in (("馬丁", t_["martingale"]),
+                                      ("本金比例動態手數", t_.get("dynamic_lot", False)),
                                       ("分批平倉", t_["partial_close"])) if on]
             print(f"{t_['key']:<10}{t_['label']:<8}預設 {t_['default_days']:>3} 天  "
                   f"手數上限 {lot:<8}來源 {', '.join(t_['sources'])}"

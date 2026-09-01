@@ -528,6 +528,7 @@ class LauncherState:
         """目前登入者的額度。沒登入就是全部不給。"""
         if not self.auth:
             return {"sources": [], "max_lot": 0.0, "martingale": False,
+                    "dynamic_lot": False,
                     "partial_close": False, "breakeven": False,
                     "mobile_notify": False, "schedule": False,
                     "plan_days": 30, "label": ""}
@@ -535,6 +536,7 @@ class LauncherState:
         ent.setdefault("sources", [])
         ent.setdefault("max_lot", None)
         ent.setdefault("martingale", False)
+        ent.setdefault("dynamic_lot", False)
         ent.setdefault("partial_close", False)
         # 舊版 Hub 不會回這幾個欄位。預設一律取「最保守」的那一邊 ——
         # 猜錯的話寧可是「功能沒開」，不要是「沒付費卻能用」。
@@ -916,6 +918,9 @@ class LauncherState:
             if not ent.get("martingale") and str(p.get("mode", "")).lower() == "martingale":
                 logger.info("來源「%s」的馬丁不在等級授權內，改為均注", name)
                 p["mode"] = "flat"
+            if not ent.get("dynamic_lot") and str(p.get("mode", "")).lower() == "risk_percent":
+                logger.info("來源「%s」的本金比例動態手數不在等級授權內，改為均注", name)
+                p["mode"] = "flat"
             if not ent.get("partial_close") and str(p.get("tp_mode", "")).lower() == "partial":
                 # 降級成保本移損: 一樣吃得到多 TP, 但不分批出場
                 logger.info("來源「%s」的分批平倉不在等級授權內，改為保本移損", name)
@@ -967,7 +972,7 @@ class LauncherState:
         if pcr:
             tm.partial_close_ratios = pcr
 
-        # 每個訊號來源各自的下單模式（均注 / 馬丁）。壞掉的 JSON 就當沒設定，
+        # 每個訊號來源各自的下單模式（均注 / 馬丁 / 本金比例）。壞掉的 JSON 就當沒設定，
         # 讓全域設定接手，不要因為一個欄位打錯就讓整個跟單起不來。
         profiles = {}
         raw_profiles = str(self.settings.get("source_profiles") or "").strip()
@@ -999,9 +1004,14 @@ class LauncherState:
             # 混用均注/馬丁時，層級一定要各群分開算，否則會互相污染
             tm.martingale_per_source = True
             for name, p in profiles.items():
-                mode = "均注" if str(p.get("mode", "")).lower() == "flat" else "馬丁"
+                raw_mode = str(p.get("mode", "")).lower()
+                mode = {"flat": "均注", "martingale": "馬丁",
+                        "risk_percent": "本金比例"}.get(raw_mode, "均注")
                 on = "跟單" if p.get("enabled", True) else "已停用"
-                logger.info("來源設定：%s → %s / %s / 基礎手數 %s", name, on, mode, p.get("base_lot", "(全域)"))
+                size = (f"每筆風險 {p.get('risk_percent', 0.5)}%"
+                        if raw_mode == "risk_percent"
+                        else f"基礎手數 {p.get('base_lot', '(全域)')}")
+                logger.info("來源設定：%s → %s / %s / %s", name, on, mode, size)
 
         # martingale_per_source 只從 config.json 或每群設定推導，面板沒有這個欄位；
         # 跟多個報單群時這個值決定虧損會不會互相放大手數，所以印出來。

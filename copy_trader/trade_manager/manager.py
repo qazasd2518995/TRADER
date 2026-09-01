@@ -10,6 +10,7 @@ import threading
 import logging
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation, ROUND_FLOOR
 from typing import Any, Optional, List, Dict, Tuple
 from pathlib import Path
 from enum import Enum
@@ -25,7 +26,22 @@ class OrderStatus(Enum):
     PARTIAL_CLOSED = "partial"    # Some TP levels hit
     CLOSED = "closed"             # Fully closed
     CANCELLED = "cancelled"       # Cancelled before execution
+    REJECTED = "rejected"         # Deliberately skipped by local risk sizing
     FAILED = "failed"             # Execution failed
+
+
+class LotSizingError(ValueError):
+    """Dynamic sizing could not safely produce a tradable volume.
+
+    Transient failures (for example a stale MT5 bridge file) are retried without
+    acknowledging the Hub event. Permanent failures (for example a result below
+    the broker's minimum lot) reject only that event so later signals are not
+    blocked forever.
+    """
+
+    def __init__(self, message: str, *, transient: bool = False):
+        super().__init__(message)
+        self.transient = transient
 
 
 class CancelState(Enum):
@@ -73,6 +89,7 @@ class ManagedOrder:
     cancel_attempts: int = 0
     cancel_error: str = ""
     cancel_last_result: str = ""
+    failure_reason: str = ""
 
     # 保本移損模式：已經因為觸及第幾關而推過停損（0=還沒推過）
     sl_trail_index: int = 0
@@ -90,6 +107,14 @@ class TradeManager:
     Integrates with MT5 via file-based bridge.
     Supports Martingale lot sizing.
     """
+
+    # Enhanced bridge writes account_info.json every two seconds.  Fifteen
+    # seconds leaves room for Windows file locks but will not size a real order
+    # from an account snapshot left behind by a stopped/disconnected EA.
+    DYNAMIC_ACCOUNT_STALE_SECONDS = 15.0
+    MT5_ABSOLUTE_MIN_LOT = 0.01
+    DEFAULT_RISK_PERCENT = 0.5
+    MAX_RISK_PERCENT = 5.0
 
     def __init__(self, mt5_files_dir: str):
         """
@@ -571,11 +596,12 @@ class TradeManager:
     def profile_for(self, source_window: str = "") -> dict:
         """把某個來源的下單設定解析成完整的一份（沒設定的欄位回退全域值）。
 
-        mode: "martingale" = 逐關加碼；"flat" = 均注，每筆固定手數、不進關。
+        mode: "martingale" = 逐關加碼；"flat" = 均注；"risk_percent" =
+        依本機 MT5 本金、淨值與訊號停損距離動態反推每筆手數。
         """
         raw = self.source_profiles.get(source_window) or {} if source_window else {}
         mode = str(raw.get("mode") or "").strip().lower()
-        if mode not in ("martingale", "flat"):
+        if mode not in ("martingale", "flat", "risk_percent"):
             mode = "martingale" if self.use_martingale else "flat"
 
         def _num(key, fallback):
@@ -625,6 +651,12 @@ class TradeManager:
             "breakeven_distance": breakeven_distance,
             "partial_ratios": [float(x) for x in partial_ratios],
             "base_lot": _num("base_lot", self.default_lot_size),
+            # 每筆最多承擔的本金百分比。UI 限制 0.01%~5%，後端再做一次
+            # 相同箝制，避免直接修改 settings.json 繞過前端。
+            "risk_percent": min(
+                self.MAX_RISK_PERCENT,
+                _num("risk_percent", self.DEFAULT_RISK_PERCENT),
+            ),
             "multiplier": _num("multiplier", self.martingale_multiplier),
             "max_level": int(_num("max_level", self.martingale_max_level)),
             "lots": [float(x) for x in lots if float(x) > 0]
@@ -709,6 +741,124 @@ class TradeManager:
         logger.info(f"Martingale Level {level}{src_tag}: Lot size = {lot}")
         return lot
 
+    @staticmethod
+    def _decimal_positive(value: Any, field_name: str) -> Decimal:
+        try:
+            parsed = Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError):
+            raise LotSizingError(f"{field_name} 無效", transient=True)
+        if not parsed.is_finite() or parsed <= 0:
+            raise LotSizingError(f"{field_name} 必須大於 0", transient=True)
+        return parsed
+
+    def _dynamic_entry_price(self, signal: 'ParsedSignal') -> Decimal:
+        """Use pending entry, or the executable side of the live market quote."""
+        try:
+            configured = Decimal(str(signal.entry_price))
+        except (InvalidOperation, TypeError, ValueError):
+            configured = Decimal("0")
+        if configured.is_finite() and configured > 0:
+            return configured
+
+        data = self._read_json_file(self.price_file)
+        if not data and self.price_file.name != "XAUUSD_price.json":
+            data = self._read_json_file(self.mt5_files_dir / "XAUUSD_price.json")
+        if not isinstance(data, dict):
+            raise LotSizingError("缺少即時報價，無法計算市價單手數", transient=True)
+        side = str(getattr(signal, "direction", "") or "").lower()
+        key = "ask" if side == "buy" else "bid"
+        return self._decimal_positive(data.get(key), f"即時 {key} 報價")
+
+    def calculate_dynamic_lot(self, signal: 'ParsedSignal', source_window: str = "") -> float:
+        """Calculate a stop-loss-based lot without exceeding the risk budget.
+
+        risk cash = min(balance, equity) * risk_percent
+        loss/lot  = abs(entry - SL) / tick_size * tick_value_loss
+
+        The final volume is always rounded *down* to the broker step.  If that
+        falls below max(0.01, broker volume_min), the signal is rejected instead
+        of being rounded up and silently risking more than the member selected.
+        """
+        account_path = self.mt5_files_dir / "account_info.json"
+        try:
+            age = time.time() - account_path.stat().st_mtime
+        except OSError:
+            raise LotSizingError("找不到 MT5 帳戶資料，請確認 Bridge EA 正在運行", transient=True)
+        if age > self.DYNAMIC_ACCOUNT_STALE_SECONDS:
+            raise LotSizingError(
+                f"MT5 帳戶資料已停止更新（{age:.1f} 秒）",
+                transient=True,
+            )
+        account = self._read_json_file(account_path)
+        if not isinstance(account, dict):
+            raise LotSizingError("暫時讀不到 MT5 帳戶資料", transient=True)
+        if account.get("terminal_connected") is False:
+            raise LotSizingError("MT5 目前未連線券商", transient=True)
+
+        balance = self._decimal_positive(account.get("balance"), "balance")
+        equity = self._decimal_positive(account.get("equity"), "equity")
+        capital = min(balance, equity)
+        profile = self.profile_for(source_window)
+        risk_percent = self._decimal_positive(profile.get("risk_percent"), "risk_percent")
+        risk_cash = capital * risk_percent / Decimal("100")
+
+        entry = self._dynamic_entry_price(signal)
+        try:
+            stop_loss = Decimal(str(signal.stop_loss))
+        except (InvalidOperation, TypeError, ValueError):
+            raise LotSizingError("訊號沒有有效停損，禁止使用動態手數")
+        if not stop_loss.is_finite() or stop_loss <= 0 or stop_loss == entry:
+            raise LotSizingError("訊號停損或進場價無效，禁止使用動態手數")
+        stop_distance = abs(entry - stop_loss)
+
+        symbol = self._read_json_file(self.mt5_files_dir / "symbol_info.json")
+        if not isinstance(symbol, dict):
+            raise LotSizingError("找不到券商商品規格 symbol_info.json", transient=True)
+        tick_size = self._decimal_positive(symbol.get("tick_size"), "tick_size")
+        tick_value = self._decimal_positive(
+            symbol.get("tick_value_loss") or symbol.get("tick_value"),
+            "tick_value_loss",
+        )
+        broker_min = self._decimal_positive(
+            symbol.get("volume_min") or self.MT5_ABSOLUTE_MIN_LOT,
+            "volume_min",
+        )
+        volume_step = self._decimal_positive(
+            symbol.get("volume_step") or self.MT5_ABSOLUTE_MIN_LOT,
+            "volume_step",
+        )
+        absolute_min = Decimal(str(self.MT5_ABSOLUTE_MIN_LOT))
+        effective_min = max(absolute_min, broker_min)
+        # The current bridge serialises/normalises volume to two decimals, so a
+        # broker advertising a smaller step still cannot safely receive <0.01.
+        effective_step = max(absolute_min, volume_step)
+
+        loss_per_lot = stop_distance / tick_size * tick_value
+        raw_lot = risk_cash / loss_per_lot
+        steps = (raw_lot / effective_step).to_integral_value(rounding=ROUND_FLOOR)
+        lot = steps * effective_step
+
+        raw_max = symbol.get("volume_max")
+        if raw_max not in (None, "", 0, 0.0, "0"):
+            volume_max = self._decimal_positive(raw_max, "volume_max")
+            max_steps = (volume_max / effective_step).to_integral_value(rounding=ROUND_FLOOR)
+            lot = min(lot, max_steps * effective_step)
+
+        if lot < effective_min:
+            raise LotSizingError(
+                "依風險上限計算後低於 MT5 最低手數 "
+                f"{float(effective_min):g}（原始 {float(raw_lot):.4f} 手），本筆不下單"
+            )
+
+        result = float(lot)
+        logger.info(
+            "本金比例動態手數 [%s]: capital=min(balance=%s,equity=%s)=%s "
+            "risk=%s%% cash=%s entry=%s sl=%s loss/lot=%s raw=%s → %s 手",
+            source_window or "全域", balance, equity, capital, risk_percent,
+            risk_cash, entry, stop_loss, loss_per_lot, raw_lot, result,
+        )
+        return result
+
     def on_trade_result(self, is_win: bool, signal_id: str = None, source_window: str = ""):
         """
         Update martingale level based on trade result.
@@ -720,16 +870,24 @@ class TradeManager:
         """
         profile = self.profile_for(source_window)
 
-        # 均注來源：輸贏都不進關、也不能去動全域層級，否則會污染跑馬丁的那一群。
-        if profile["mode"] == "flat":
+        # 均注／本金比例來源：輸贏都不進關、也不能去動全域層級，否則會污染
+        # 跑馬丁的那一群。本金比例的下一手一定要等下一則訊號的 SL 才能算，
+        # 這裡不能用基礎手數假裝成「下一手」。
+        if profile["mode"] in ("flat", "risk_percent"):
+            mode_label = "均注" if profile["mode"] == "flat" else "本金比例"
+            next_size = (
+                f"下一手數={profile['base_lot']}"
+                if profile["mode"] == "flat"
+                else f"下一筆風險={profile['risk_percent']}%（收到進場價/SL 後計算）"
+            )
             logger.info(
-                "%s [%s]: 均注模式，不調整馬丁層級",
+                "%s [%s]: %s模式，不調整馬丁層級",
                 "WIN" if is_win else "LOSS", source_window or "全域",
+                mode_label,
             )
             self._write_journal(
                 f"TRADE_CLOSED_{'WIN' if is_win else 'LOSS'}",
-                f"signal_id={signal_id} | 來源={source_window} | 模式=均注 "
-                f"| 下一手數={self.get_martingale_lot_size(source_window)}"
+                f"signal_id={signal_id} | 來源={source_window} | 模式={mode_label} | {next_size}"
             )
             return
 
@@ -905,11 +1063,32 @@ class TradeManager:
 
         signal = order.signal
 
-        # Use martingale lot size if enabled, otherwise use signal's lot size or default
-        if self.use_martingale:
-            lot_size = self.get_martingale_lot_size(order.source_window)
-        else:
-            lot_size = signal.lot_size or self.default_lot_size
+        # A configured source always owns its sizing mode.  The old global
+        # ``use_martingale`` branch accidentally ignored a source's flat base lot
+        # whenever the global switch was off; centralising this also makes the
+        # dynamic mode independent from the martingale switch.
+        profile = self.profile_for(order.source_window)
+        try:
+            if profile["mode"] == "risk_percent":
+                lot_size = self.calculate_dynamic_lot(signal, order.source_window)
+            elif profile["configured"] or self.use_martingale:
+                lot_size = self.get_martingale_lot_size(order.source_window)
+            else:
+                lot_size = signal.lot_size or self.default_lot_size
+        except LotSizingError as exc:
+            with self._lock:
+                current = self.orders.get(signal_id)
+                if current is not None:
+                    current.status = OrderStatus.FAILED if exc.transient else OrderStatus.REJECTED
+                    current.failure_reason = str(exc)
+            action = "DYNAMIC_LOT_WAITING_FOR_MT5" if exc.transient else "DYNAMIC_LOT_REJECTED"
+            level = logger.warning if exc.transient else logger.error
+            level("%s [%s]: %s", action, order.source_window or "全域", exc)
+            self._write_journal(
+                action,
+                f"signal_id={signal_id} | 來源={order.source_window} | 原因={exc}",
+            )
+            return False
 
         tps = signal.take_profit or []
         # 以下兩種模式都依賴 RegexSignalParser 的不變量：take_profit 一律「由近到遠」
@@ -985,9 +1164,11 @@ class TradeManager:
         with self._lock:
             if success:
                 order.status = OrderStatus.SENT
+                order.failure_reason = ""
                 logger.info(f"Order sent to MT5: {signal_id}")
             else:
                 order.status = OrderStatus.FAILED
+                order.failure_reason = "無法寫入 MT5 commands.json"
                 logger.error(f"Failed to send order: {signal_id}")
 
         return success
@@ -1137,12 +1318,17 @@ class TradeManager:
                 time.sleep(5)
 
     def _cleanup_finished_orders(self):
-        """Remove old closed/cancelled/failed orders to prevent memory growth."""
+        """Remove old finished/rejected orders to prevent memory growth."""
         cutoff = time.time() - 3600  # Keep for 1 hour after completion
         with self._lock:
             to_remove = [
                 sid for sid, order in self.orders.items()
-                if order.status in (OrderStatus.CLOSED, OrderStatus.CANCELLED, OrderStatus.FAILED)
+                if order.status in (
+                    OrderStatus.CLOSED,
+                    OrderStatus.CANCELLED,
+                    OrderStatus.REJECTED,
+                    OrderStatus.FAILED,
+                )
                 and order.created_at < cutoff
             ]
             for sid in to_remove:
