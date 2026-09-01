@@ -9,6 +9,7 @@
 產出：
   macOS    dist/installers/GoldCopyTrader-Member-<版本>-macOS.dmg
   Windows  dist/installers/GoldCopyTrader-Member-<版本>-Windows.exe
+  MT5 EA   dist/installers/MT5_File_Bridge_Enhanced.mq5
 
 只有會員端會發出去。訊號中心跑在自己的中央機上，要更新時加 --central 另外建。
 
@@ -41,7 +42,7 @@ for _stream in (sys.stdout, sys.stderr):
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
 OUT = DIST / "installers"
-VERSION = "1.2.2"
+VERSION = "1.2.3"
 
 # slug 只用在發布檔名上。GitHub Release 會把非 ASCII 從資產名稱剝掉，
 # 「黃金跟單會員端_1.0.1_Windows.exe」和「黃金訊號中心_1.0.1_Windows.exe」
@@ -212,6 +213,16 @@ def make_installer(role: str) -> Path | None:
     return None
 
 
+def copy_member_ea() -> Path:
+    """把安裝包內同一份 EA 另外輸出，方便會員直接複製進 MT5。"""
+    source = ROOT / "mt5_ea" / "MT5_File_Bridge_Enhanced.mq5"
+    OUT.mkdir(parents=True, exist_ok=True)
+    target = OUT / source.name
+    shutil.copy2(source, target)
+    log(f"{target.name}（{target.stat().st_size // 1024} KB）")
+    return target
+
+
 # ---------------------------------------------------------------- 冒煙測試
 def smoke_data_dir(instance: str) -> Path:
     """冒煙測試那個實例的資料目錄。
@@ -355,6 +366,11 @@ def main() -> int:
             continue
         made = make_dmg(target, role) if plat == "macos" else make_installer(role)
         results.append((ROLES[role]["label"], made or target))
+
+    # 會員安裝包本身已內含 EA；再放一份獨立原始碼，讓既有會員不必重裝程式
+    # 也能直接更新 MT5。兩份都從同一個 source 複製，避免版本漂移。
+    if "client" in roles:
+        results.append(("MT5 EA", copy_member_ea()))
 
     head("完成")
     for label, path in results:

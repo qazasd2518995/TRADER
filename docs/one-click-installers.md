@@ -15,6 +15,7 @@ dist\黃金訊號中心
 dist\黃金跟單會員端
 dist\installers\GoldCopyTrader-Signal-*-Windows.exe
 dist\installers\GoldCopyTrader-Member-*-Windows.exe
+dist\installers\MT5_File_Bridge_Enhanced.mq5
 ```
 
 若未安裝 Inno Setup，仍會保留可直接執行的 PyInstaller 資料夾。
@@ -33,6 +34,8 @@ bash build_one_click_macos_central.sh
 ```
 
 中央包會帶入 `apsw-sqlite3mc`；會員包不需要 LINE DB extension。圖示位於 `packaging/assets/`，不再依賴舊桌面專案。
+
+會員端建置也會把安裝包內同一份最新版 EA 另外複製為 `dist/installers/MT5_File_Bridge_Enhanced.mq5`，方便既有會員只更新 EA。安裝包與獨立 EA 必須有相同 SHA-256 內容雜湊。
 
 ## 建置後檢查
 
