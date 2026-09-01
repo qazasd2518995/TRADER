@@ -193,12 +193,9 @@
       });
     }
 
-    // 方案價格
+    // 方案幣別。實際月／年價格由 initBilling 統一渲染，不能在這裡先填月費，
+    // 否則年繳預設頁面會先閃一下月價才跳成年價。
     if (cfg.pricing && cfg.pricing.monthly) {
-      Object.keys(cfg.pricing.monthly).forEach(function (k) {
-        var el = $('[data-price="' + k + '"]');
-        if (el) el.textContent = cfg.pricing.monthly[k];
-      });
       $$('[data-currency]').forEach(function (el) { el.textContent = cfg.pricing.currency; });
     }
 
@@ -206,22 +203,151 @@
 
 
   /* -------------------------------------------------- 月 / 年計費切換 ---- */
-  /* 年付不打折，而是「付 12 個月拿 14 個月的可使用時間」——
-     所以月費數字不會變，變的是旁邊那個徽章。這跟一般 SaaS 的年繳折扣不同，
-     要讓人一眼看出差別在哪。 */
-  function initBilling() {
-    var group = $('.billing');
-    if (!group) return;
-    var note = $('#billingNote');
+  /* 年繳顯示採成熟 SaaS 常見的三層資訊：
+       1. 主數字 = 真正會收取的年費
+       2. 原年價刪除線 + 省幾個月
+       3. 平均每月 + 折扣百分比
+     所有數字只從 site-config 的月費、使用月數、付費月數推導，避免文案與價格漂移。 */
+  function priceText(value) {
+    var n = Number(value || 0);
+    if (Math.abs(n - Math.round(n)) < 0.000001) return Math.round(n).toLocaleString('en-US');
+    return n.toFixed(2).replace(/\.00$/, '');
+  }
 
-    $$('button[data-billing]', group).forEach(function (btn) {
-      btn.addEventListener('click', function () {
-        $$('button[data-billing]', group).forEach(function (b) {
-          b.setAttribute('aria-selected', String(b === btn));
+  function billingMath(key, pricing) {
+    var monthly = Number(pricing.monthly[key] || 0);
+    var yearly = pricing.yearly || {};
+    var serviceMonths = Math.max(1, Number(yearly.serviceMonths || 12));
+    var paidMonths = Math.max(1, Math.min(serviceMonths, Number(yearly.paidMonths || serviceMonths)));
+    var original = monthly * serviceMonths;
+    var total = monthly * paidMonths;
+    var saved = original - total;
+    var discount = original > 0 ? Math.round((saved / original) * 100) : 0;
+    return {
+      monthly: monthly,
+      serviceMonths: serviceMonths,
+      paidMonths: paidMonths,
+      savedMonths: serviceMonths - paidMonths,
+      original: original,
+      total: total,
+      saved: saved,
+      average: serviceMonths > 0 ? total / serviceMonths : 0,
+      discount: discount
+    };
+  }
+
+  function ensureBillingDetail(plan) {
+    var detail = $('.plan-billing-detail', plan);
+    if (detail) return detail;
+    detail = document.createElement('div');
+    detail.className = 'plan-billing-detail';
+    detail.setAttribute('aria-live', 'polite');
+    var price = $('.plan-price', plan);
+    if (price) price.insertAdjacentElement('afterend', detail);
+    return detail;
+  }
+
+  function renderPlanDetail(plan, key, mode, pricing) {
+    var detail = ensureBillingDetail(plan);
+    if (!detail) return;
+    var calc = billingMath(key, pricing);
+    var currency = pricing.currency || 'US$';
+    detail.replaceChildren();
+    detail.classList.toggle('is-yearly', mode === 'yearly');
+
+    if (calc.monthly <= 0) {
+      var free = document.createElement('span');
+      free.className = 'plan-billing-free';
+      free.textContent = window.I18N ? window.I18N.t('pricing.freeBilling', '永久免費，不分月繳年繳') : '永久免費，不分月繳年繳';
+      detail.appendChild(free);
+      return;
+    }
+
+    if (mode !== 'yearly') {
+      var monthHint = document.createElement('span');
+      monthHint.className = 'plan-billing-monthly';
+      monthHint.textContent = window.I18N ? window.I18N.t('pricing.monthlyHint', '按月付款，保留最大彈性') : '按月付款，保留最大彈性';
+      detail.appendChild(monthHint);
+      return;
+    }
+
+    var top = document.createElement('div');
+    top.className = 'annual-deal-top';
+    var original = document.createElement('span');
+    original.className = 'annual-original';
+    original.textContent = (window.I18N ? window.I18N.t('pricing.regularAnnual', '原價') : '原價') +
+      ' ' + currency + priceText(calc.original);
+    var saved = document.createElement('strong');
+    saved.className = 'annual-save-pill';
+    saved.textContent = (window.I18N ? window.I18N.t('pricing.saveMonths', '省 {months} 個月') : '省 {months} 個月')
+      .replace('{months}', String(calc.savedMonths));
+    top.append(original, saved);
+
+    var bottom = document.createElement('div');
+    bottom.className = 'annual-deal-bottom';
+    var average = document.createElement('span');
+    average.textContent = (window.I18N ? window.I18N.t('pricing.averageMonthly', '平均每月') : '平均每月') +
+      ' ' + currency + priceText(calc.average);
+    var off = document.createElement('b');
+    off.textContent = calc.discount + '% OFF';
+    bottom.append(average, off);
+    detail.append(top, bottom);
+  }
+
+  function initBilling() {
+    var groups = $$('.billing');
+    var pricing = window.SITE_CONFIG && window.SITE_CONFIG.pricing;
+    if (!groups.length || !pricing || !pricing.monthly) return;
+    var valid = ['monthly', 'yearly'];
+    var mode = valid.indexOf(pricing.defaultBilling) !== -1 ? pricing.defaultBilling : 'monthly';
+
+    var render = function (nextMode) {
+      mode = valid.indexOf(nextMode) !== -1 ? nextMode : 'monthly';
+      document.documentElement.setAttribute('data-billing-mode', mode);
+      $$('button[data-billing]').forEach(function (button) {
+        button.setAttribute('aria-selected', String(button.getAttribute('data-billing') === mode));
+      });
+      $$('[data-billing-note]').forEach(function (note) {
+        note.classList.toggle('is-on', mode === 'yearly');
+        note.setAttribute('aria-hidden', String(mode !== 'yearly'));
+      });
+
+      $$('[data-price]').forEach(function (el) {
+        var key = el.getAttribute('data-price');
+        if (!Object.prototype.hasOwnProperty.call(pricing.monthly, key)) return;
+        var calc = billingMath(key, pricing);
+        el.textContent = priceText(mode === 'yearly' ? calc.total : calc.monthly);
+      });
+      $$('[data-price-period]').forEach(function (el) {
+        var key = mode === 'yearly' ? 'plans.perYear' : 'plans.perMonth';
+        var translated = mode === 'yearly'
+          ? (window.I18N ? window.I18N.t('plans.perYear', '/年') : '/年')
+          : (window.I18N ? window.I18N.t('plans.perMonth', '/月') : '/月');
+        el.setAttribute('data-i18n', key);
+        el.textContent = translated;
+      });
+      $$('.plan').forEach(function (plan) {
+        var amount = $('[data-price]', plan);
+        if (amount) renderPlanDetail(plan, amount.getAttribute('data-price'), mode, pricing);
+      });
+    };
+
+    groups.forEach(function (group) {
+      $$('button[data-billing]', group).forEach(function (btn) {
+        btn.addEventListener('click', function () { render(btn.getAttribute('data-billing')); });
+        btn.addEventListener('keydown', function (event) {
+          if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+          event.preventDefault();
+          var next = btn.getAttribute('data-billing') === 'monthly' ? 'yearly' : 'monthly';
+          render(next);
+          var target = $('button[data-billing="' + next + '"]', group);
+          if (target) target.focus();
         });
-        if (note) note.classList.toggle('is-on', btn.getAttribute('data-billing') === 'yearly');
       });
     });
+
+    document.addEventListener('i18n:changed', function () { render(mode); });
+    render(mode);
   }
 
   /* ---------------------------------------------- 比較表「顯示所有功能」 -- */

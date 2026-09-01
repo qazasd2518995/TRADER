@@ -427,6 +427,19 @@
       <p class="lede" data-i18n="plans.lede">你買的是可以用的時間，不是日曆天。程式沒在跑就不扣，非開盤時段自動暫停。</p>
     </div>
 
+    <div class="billing-switch" data-reveal="0">
+      <div class="billing" role="tablist" data-i18n-attr="aria-label:pricing.billingLabel">
+        <button type="button" role="tab" aria-selected="false" data-billing="monthly">
+          <span data-i18n="pricing.monthly">每月</span>
+        </button>
+        <button type="button" role="tab" aria-selected="true" data-billing="yearly">
+          <span data-i18n="pricing.yearly">每年</span>
+          <small data-i18n="pricing.yearlyTabSave">省 25%</small>
+        </button>
+      </div>
+      <span class="billing-note is-on" data-billing-note data-i18n="pricing.yearlyBadge">年繳只付 9 個月，完整使用 12 個月</span>
+    </div>
+
     <div class="plans" data-reveal="0">
       <article class="plan plan--free">
         <span class="plan-tag plan-tag--ghost" data-i18n="plans.free.tag">7 天 PRO 體驗</span>
@@ -434,7 +447,7 @@
         <div class="plan-price">
           <span class="cur" data-currency>US$</span>
           <span class="amt" data-price="free">0</span>
-          <span class="per" data-i18n="plans.perMonth">/月</span>
+          <span class="per" data-price-period data-i18n="plans.perYear">/年</span>
         </div>
         <ul class="plan-feats">
           <li data-i18n="plans.free.f1">中頻策略，每天跟 1 筆</li>
@@ -449,8 +462,8 @@
         <span class="plan-name" data-i18n="plans.plus.name">PLUS</span>
         <div class="plan-price">
           <span class="cur" data-currency>US$</span>
-          <span class="amt" data-price="plus">49</span>
-          <span class="per" data-i18n="plans.perMonth">/月</span>
+          <span class="amt" data-price="plus">441</span>
+          <span class="per" data-price-period data-i18n="plans.perYear">/年</span>
         </div>
         <ul class="plan-feats">
           <li data-i18n="plans.plus.f1">中頻策略跟到飽，不限次數</li>
@@ -465,8 +478,8 @@
         <span class="plan-name" data-i18n="plans.pro.name">PRO</span>
         <div class="plan-price">
           <span class="cur" data-currency>US$</span>
-          <span class="amt" data-price="pro">99</span>
-          <span class="per" data-i18n="plans.perMonth">/月</span>
+          <span class="amt" data-price="pro">891</span>
+          <span class="per" data-price-period data-i18n="plans.perYear">/年</span>
         </div>
         <ul class="plan-feats">
           <li data-i18n="plans.pro.f1">中頻 + 高頻，兩組都跟</li>
@@ -481,8 +494,8 @@
         <span class="plan-name" data-i18n="plans.premium.name">PREMIUM</span>
         <div class="plan-price">
           <span class="cur" data-currency>US$</span>
-          <span class="amt" data-price="premium">149</span>
-          <span class="per" data-i18n="plans.perMonth">/月</span>
+          <span class="amt" data-price="premium">1,341</span>
+          <span class="per" data-price-period data-i18n="plans.perYear">/年</span>
         </div>
         <ul class="plan-feats">
           <li data-i18n="plans.premium.f1">低頻 + 中頻 + 高頻 + 超高頻，全部都跟</li>
@@ -542,7 +555,7 @@
         <button class="faq-q" type="button" aria-expanded="false">
           <span data-i18n="faq.q5">方案時間怎麼算？</span><span class="plus" aria-hidden="true"></span>
         </button>
-        <div class="faq-a"><div><p data-i18n="faq.a5">算的是程式實際跑了多久，不是日曆天。沒在跑就不扣，非開盤時段自動暫停。一次買一年會多送 2 個月。</p></div></div>
+        <div class="faq-a"><div><p data-i18n="faq.a5">算的是程式實際跑了多久，不是日曆天。沒在跑就不扣，非開盤時段自動暫停。選年繳可完整使用 12 個月，但只收 9 個月費用。</p></div></div>
       </div>
     </div>
 

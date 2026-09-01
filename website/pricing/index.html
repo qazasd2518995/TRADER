@@ -85,11 +85,18 @@
     <h1 style="font-size:var(--t-section)" data-i18n="pricing.title">先免費用，需要再往上加</h1>
     <p class="lede" data-i18n="pricing.lede">不用一開始就決定。想跟更多策略、想把風控調得更細，再換方案就好。</p>
 
-    <div class="billing" role="tablist" data-i18n-attr="aria-label:pricing.title">
-      <button type="button" role="tab" aria-selected="true"  data-billing="monthly" data-i18n="pricing.monthly">每月</button>
-      <button type="button" role="tab" aria-selected="false" data-billing="yearly"  data-i18n="pricing.yearly">每年</button>
+    <div class="billing-switch">
+      <div class="billing" role="tablist" data-i18n-attr="aria-label:pricing.billingLabel">
+        <button type="button" role="tab" aria-selected="false" data-billing="monthly">
+          <span data-i18n="pricing.monthly">每月</span>
+        </button>
+        <button type="button" role="tab" aria-selected="true" data-billing="yearly">
+          <span data-i18n="pricing.yearly">每年</span>
+          <small data-i18n="pricing.yearlyTabSave">省 25%</small>
+        </button>
+      </div>
+      <span class="billing-note is-on" data-billing-note data-i18n="pricing.yearlyBadge">年繳只付 9 個月，完整使用 12 個月</span>
     </div>
-    <span class="billing-note" id="billingNote" data-i18n="pricing.yearlyBadge">一次買一年，多送 2 個月</span>
   </div>
 </section>
 
@@ -103,7 +110,7 @@
         <div class="plan-price">
           <span class="cur" data-currency>US$</span>
           <span class="amt" data-price="free">0</span>
-          <span class="per" data-i18n="plans.perMonth">/月</span>
+          <span class="per" data-price-period data-i18n="plans.perYear">/年</span>
         </div>
         <ul class="plan-feats">
           <li data-i18n="plans.free.f1">中頻策略，每天跟 1 筆</li>
@@ -118,8 +125,8 @@
         <span class="plan-name" data-i18n="plans.plus.name">PLUS</span>
         <div class="plan-price">
           <span class="cur" data-currency>US$</span>
-          <span class="amt" data-price="plus">49</span>
-          <span class="per" data-i18n="plans.perMonth">/月</span>
+          <span class="amt" data-price="plus">441</span>
+          <span class="per" data-price-period data-i18n="plans.perYear">/年</span>
         </div>
         <ul class="plan-feats">
           <li data-i18n="plans.plus.f1">中頻策略跟到飽，不限次數</li>
@@ -134,8 +141,8 @@
         <span class="plan-name" data-i18n="plans.pro.name">PRO</span>
         <div class="plan-price">
           <span class="cur" data-currency>US$</span>
-          <span class="amt" data-price="pro">99</span>
-          <span class="per" data-i18n="plans.perMonth">/月</span>
+          <span class="amt" data-price="pro">891</span>
+          <span class="per" data-price-period data-i18n="plans.perYear">/年</span>
         </div>
         <ul class="plan-feats">
           <li data-i18n="plans.pro.f1">中頻 + 高頻，兩組都跟</li>
@@ -150,8 +157,8 @@
         <span class="plan-name" data-i18n="plans.premium.name">PREMIUM</span>
         <div class="plan-price">
           <span class="cur" data-currency>US$</span>
-          <span class="amt" data-price="premium">149</span>
-          <span class="per" data-i18n="plans.perMonth">/月</span>
+          <span class="amt" data-price="premium">1,341</span>
+          <span class="per" data-price-period data-i18n="plans.perYear">/年</span>
         </div>
         <ul class="plan-feats">
           <li data-i18n="plans.premium.f1">低頻 + 中頻 + 高頻 + 超高頻，全部都跟</li>
@@ -178,10 +185,10 @@
         <thead>
           <tr>
             <th class="feat"><span class="visually-hidden" data-i18n="pricing.cmpTitle">方案比較</span></th>
-            <th class="plan-col p-free">FREE<small><span data-currency>US$</span><span data-price="free">0</span></small></th>
-            <th class="plan-col p-plus">PLUS<small><span data-currency>US$</span><span data-price="plus">49</span></small></th>
-            <th class="plan-col p-pro">PRO<small><span data-currency>US$</span><span data-price="pro">99</span></small></th>
-            <th class="plan-col p-premium">PREMIUM<small><span data-currency>US$</span><span data-price="premium">149</span></small></th>
+            <th class="plan-col p-free">FREE<small><span data-currency>US$</span><span data-price="free">0</span><span data-price-period data-i18n="plans.perYear">/年</span></small></th>
+            <th class="plan-col p-plus">PLUS<small><span data-currency>US$</span><span data-price="plus">441</span><span data-price-period data-i18n="plans.perYear">/年</span></small></th>
+            <th class="plan-col p-pro">PRO<small><span data-currency>US$</span><span data-price="pro">891</span><span data-price-period data-i18n="plans.perYear">/年</span></small></th>
+            <th class="plan-col p-premium">PREMIUM<small><span data-currency>US$</span><span data-price="premium">1,341</span><span data-price-period data-i18n="plans.perYear">/年</span></small></th>
           </tr>
         </thead>
         <tbody>
@@ -576,8 +583,8 @@
       </div>
       <div data-reveal="60">
         <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="13" rx="2"/><path d="M3 12h18M12 8v13"/><path d="M12 8S9.5 3 7 3a2.5 2.5 0 000 5zM12 8s2.5-5 5-5a2.5 2.5 0 010 5z"/></svg></span>
-        <h3 data-i18n="assure.2.h">一次買一年，多送 2 個月</h3>
-        <p data-i18n="assure.2.b">最划算的買法。付 12 個月的錢，拿到 14 個月可以用的時間。</p>
+        <h3 data-i18n="assure.2.h">年繳直接省 3 個月</h3>
+        <p data-i18n="assure.2.b">完整使用 12 個月，只收 9 個月費用，相當於 75 折；每張方案卡都會列出原價、年繳價與平均月費。</p>
       </div>
       <div data-reveal="120">
         <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v.1M11 11h1v5.5h1"/></svg></span>

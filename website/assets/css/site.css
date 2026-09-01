@@ -741,6 +741,47 @@
 }
 .plan-price .per { font-size: var(--t-14); color: var(--c-text-3); }
 
+/* 年繳時不要只換一個大數字：把原價、折扣與月均價排成一個可核對的小收據。 */
+.plan-billing-detail {
+  min-height: 64px;
+  margin-top: var(--s-3);
+  font-size: var(--t-12);
+  line-height: 1.45;
+  color: var(--c-text-3);
+}
+.plan-billing-free,
+.plan-billing-monthly {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+}
+.annual-deal-top,
+.annual-deal-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+}
+.annual-deal-bottom { margin-top: 7px; color: var(--c-text-2); }
+.annual-original { text-decoration: line-through; text-decoration-thickness: 1px; }
+.annual-save-pill {
+  flex: none;
+  padding: 3px 8px;
+  border: 1px solid var(--c-gold-line);
+  border-radius: var(--r-full);
+  background: var(--c-gold-wash);
+  color: var(--c-gold-300);
+  font-weight: 800;
+}
+.annual-deal-bottom b {
+  flex: none;
+  color: var(--c-up-2);
+  font-family: var(--f-display);
+  font-size: var(--t-13);
+  font-weight: 900;
+  letter-spacing: .02em;
+}
+
 .plan-feats { margin: var(--v-5) 0 var(--s-6); display: grid; gap: 12px; }
 .plan-feats li { display: flex; gap: var(--s-2); font-size: var(--t-14); color: var(--c-text-2); line-height: 1.55; }
 .plan-feats li::before {
@@ -925,23 +966,52 @@
 }
 
 /* ============================================================ 月/年切換 == */
+.billing-switch {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-3);
+  margin-top: var(--v-5);
+}
+.billing-switch + .plans { margin-top: var(--v-5); }
 .billing {
   display: inline-flex; align-items: center; gap: 4px;
-  padding: 4px; margin-top: var(--v-5);
+  padding: 4px;
   background: var(--c-surface); border: 1px solid var(--c-line);
   border-radius: var(--r-full);
 }
 .billing button {
-  padding: 9px 20px; border-radius: var(--r-full);
+  display: inline-flex; align-items: center; gap: 8px;
+  min-height: 40px; padding: 8px 18px;
+  border: 1px solid transparent; border-radius: var(--r-full);
   font-family: var(--f-display); font-size: var(--t-14); font-weight: 700;
   color: var(--c-text-2);
-  transition: background-color var(--d-base), color var(--d-base);
+  transition: background-color var(--d-base), border-color var(--d-base), color var(--d-base), box-shadow var(--d-base);
+}
+.billing button small {
+  padding: 3px 7px;
+  border-radius: var(--r-full);
+  background: var(--c-gold-wash);
+  color: var(--c-gold-300);
+  font-size: var(--t-10);
+  font-weight: 900;
+  letter-spacing: .03em;
 }
 .billing button:hover { color: var(--c-text); }
 .billing button[aria-selected="true"] { background: var(--c-surface-3); color: var(--c-text); }
+.billing button[data-billing="yearly"][aria-selected="true"] {
+  border-color: var(--c-gold-line);
+  background: var(--c-gold-wash);
+  color: var(--c-gold-300);
+  box-shadow: var(--glow-gold);
+}
+.billing button[data-billing="yearly"][aria-selected="true"] small {
+  background: var(--c-gold-500);
+  color: var(--c-bg);
+}
 .billing-note {
   display: inline-flex; align-items: center; gap: 7px;
-  margin-left: var(--s-3); padding: 6px 14px;
+  padding: 6px 14px;
   border-radius: var(--r-full);
   background: var(--c-gold-wash); border: 1px solid var(--c-gold-line);
   color: var(--c-gold-300);
@@ -951,7 +1021,17 @@
 }
 .billing-note.is-on { opacity: 1; transform: none; }
 @media (max-width: 560px) {
-  .billing-note { display: flex; margin: var(--s-3) 0 0; }
+  .billing-switch { flex-direction: column; }
+  .billing-note { display: flex; }
+  .billing button { padding-inline: 14px; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .plan-billing-detail.is-yearly { animation: billing-pop var(--d-slow) var(--e-out); }
+}
+@keyframes billing-pop {
+  from { opacity: .3; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
 }
 
 /* ============================================================ 方案比較表 == */
