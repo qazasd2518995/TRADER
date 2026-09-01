@@ -39,6 +39,9 @@ class StrictParseResult:
     profile: str
     signal: ParsedSignal | None = None
     reason: str = ""
+    # True 表示正文具備報單骨架，即使不能安全執行也應通知管理群。
+    # 一般聊天（例如「目前不建議追多」）不能因為出現方向字就被當成掉單。
+    signal_like: bool = False
 
     @property
     def accepted(self) -> bool:
@@ -178,15 +181,34 @@ def parse_strict_signal(text: str, profile: str) -> StrictParseResult:
         return StrictParseResult("rejected_unknown_format", profile, reason="unknown_profile")
 
     if len(entries) > 1:
-        return StrictParseResult("manual_review", profile, reason="multiple_entries")
+        return StrictParseResult(
+            "manual_review",
+            profile,
+            reason="multiple_entries",
+            signal_like=True,
+        )
     if not entries:
-        status = "rejected_missing_entry" if _DIRECTION_HINT.search(body) else "rejected_unknown_format"
-        return StrictParseResult(status, profile, reason="entry_not_found")
+        has_direction = bool(_DIRECTION_HINT.search(body))
+        status = "rejected_missing_entry" if has_direction else "rejected_unknown_format"
+        # 方向 + SL + TP 才足以證明這是一則格式壞掉的報單；只寫「多／空」
+        # 很常是供應者的行情評論，不應發出未掛單告警。
+        signal_like = has_direction and bool(_SL_LABEL.search(body)) and bool(_TP_LABEL.search(body))
+        return StrictParseResult(
+            status,
+            profile,
+            reason="entry_not_found",
+            signal_like=signal_like,
+        )
 
     stop_loss = _first_price_after_label(body, _SL_LABEL)
     take_profits = _tp_prices(body)
     if stop_loss is None or not take_profits:
-        return StrictParseResult("rejected_unknown_format", profile, reason="missing_sl_or_tp")
+        return StrictParseResult(
+            "rejected_unknown_format",
+            profile,
+            reason="missing_sl_or_tp",
+            signal_like=True,
+        )
 
     direction, entry = entries[0]
 
@@ -205,6 +227,13 @@ def parse_strict_signal(text: str, profile: str) -> StrictParseResult:
             profile,
             signal=signal,
             reason="sl_tp_geometry",
+            signal_like=True,
         )
     reason = "tp_repaired_from_spacing" if tp_repaired else ""
-    return StrictParseResult("accepted", profile, signal=signal, reason=reason)
+    return StrictParseResult(
+        "accepted",
+        profile,
+        signal=signal,
+        reason=reason,
+        signal_like=True,
+    )

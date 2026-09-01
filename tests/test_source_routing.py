@@ -59,6 +59,26 @@ class TwoSourceHub:
         ]
 
 
+class RejectionThenTradeHub:
+    hub_url = "https://hub.invalid"
+    last_cursor = 2
+
+    def signals_after(self, _last_seq):
+        return [
+            {
+                "seq": 1,
+                "type": "signal_rejected",
+                "source": HIGH_FREQ,
+                "parse_status": "rejected_invalid_geometry",
+                "signal": {
+                    "direction": "buy", "entry_price": 4374.0,
+                    "stop_loss": 4469.0, "take_profit": [4480.0],
+                },
+            },
+            trade_event(2, HIGH_FREQ, "copy_ln_after_reject"),
+        ]
+
+
 class SourceRoutingTests(unittest.TestCase):
     def test_membership_tiers_filter_mid_and_high_frequency_sources(self):
         records = [
@@ -103,6 +123,19 @@ class SourceRoutingTests(unittest.TestCase):
                 [source for source, _signal_id, _signal in agent.trade_manager.submitted],
                 [MID_FREQ, HIGH_FREQ],
             )
+
+    def test_member_agent_skips_rejection_notice_and_continues_to_next_trade(self):
+        with tempfile.TemporaryDirectory() as directory:
+            agent = MT5ClientAgent.__new__(MT5ClientAgent)
+            agent.hub = RejectionThenTradeHub()
+            agent.state_file = Path(directory) / "client-state.json"
+            agent.state = {"last_seq": 0}
+            agent.trade_manager = RecordingManager()
+
+            self.assertEqual(agent.run_cycle(), 1)
+            self.assertEqual(agent.last_seq, 2)
+            self.assertEqual(len(agent.trade_manager.submitted), 1)
+            self.assertEqual(agent.trade_manager.submitted[0][1], "copy_ln_after_reject")
 
     def test_authorized_sources_appear_before_first_trade(self):
         rows = source_settings(

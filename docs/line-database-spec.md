@@ -152,7 +152,9 @@ _squareMember 或 _contact
 
 `trusted_senders`／綁定後的 sender IDs 為空時採 fail-closed：可以讀 row 做診斷，但不會發布交易或撤單。
 
-中頻報單預設最多補 300 秒，高頻最多 180 秒。超過限制的舊報單會記入總帳但不發布；撤單訊息不套用此報單時效，若總帳中存在已發布 execution，仍會發布撤單以同步狀態。這是斷線安全閥，不是 OCR 時代的模糊過期判斷。
+中頻報單預設最多補 300 秒，高頻最多 180 秒。超過限制的舊報單會記入總帳且不發布 `trade_signal`；系統只發布不具執行能力的 `signal_rejected`，讓 LINE Bot 說明「訊號已過期、未補下」。撤單訊息不套用此報單時效，若總帳中存在已發布 execution，仍會發布撤單以同步狀態。這是斷線安全閥，不是 OCR 時代的模糊過期判斷。
+
+可信任供應者的訊息若具備報單骨架，但因點位幾何錯誤、缺少進場／SL／TP、同則多單或過期而無法執行，也會發布 `signal_rejected`。事件沿用 message ID 衍生的 exact `event_id`，HTTP 重送不會重複通知；會員端只前移 cursor、不建立 MT5 訂單。只有方向評論、一般聊天或非受信任發送者不會觸發未掛單通知，避免誤報與洗版。
 
 Shadow mode 使用相同 DB、身分綁定、parser、幾何驗證與總帳，但 trade/cancel 都不發布 Hub。它不是另一套模擬 parser；正式接 MT5 前應用它比對一至兩週。
 

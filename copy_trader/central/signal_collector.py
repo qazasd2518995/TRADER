@@ -57,6 +57,12 @@ def _signal_payload(signal: ParsedSignal, result: StrictParseResult) -> Dict:
     }
 
 
+def _message_preview(text: str, limit: int = 160) -> str:
+    """Compact trusted-provider text for a human-readable reject notice."""
+    compact = " ".join((text or "").split())
+    return compact if len(compact) <= limit else compact[: limit - 1].rstrip() + "…"
+
+
 class HubPublisher:
     def __init__(self, hub_url: str, token: str = "", timeout: float = 5.0):
         self.hub_url = hub_url.rstrip("/")
@@ -104,6 +110,57 @@ class CentralSignalCollector:
         response = self.publisher.publish(payload)
         if not response.get("ok"):
             raise RuntimeError(f"hub rejected LINE event: {response}")
+        return response
+
+    def _publish_rejection(
+        self,
+        message: LineDatabaseMessage,
+        result: StrictParseResult,
+        *,
+        parse_status: str | None = None,
+        reason: str | None = None,
+        signal: ParsedSignal | None = None,
+        extra: Dict | None = None,
+    ) -> Dict:
+        """Publish a non-executable event so LINE Bot can explain the skipped order.
+
+        Rejections share the Hub's deterministic event identity and transport
+        idempotency. Member agents ignore this event type and advance their cursor;
+        only the notification/audit path renders it.
+        """
+        target = message.chat.target
+        status = str(parse_status or result.status)
+        reason_code = str(reason or result.reason)
+        parsed_signal = signal or result.signal
+        signal_payload = _signal_payload(parsed_signal, result) if parsed_signal else {}
+        if signal_payload:
+            signal_payload["parse_status"] = status
+        payload = {
+            "event_id": line_event_id(message.chat.chat_id, message.message_id, "reject"),
+            "type": "signal_rejected",
+            "source": target.display_name,
+            "source_name": target.name,
+            "sender": message.sender_name,
+            "line_chat_id": message.chat.chat_id,
+            "line_message_id": message.message_id,
+            "line_rowid": message.rowid,
+            "line_revision": message.revision,
+            "message_time": message.timestamp.isoformat(),
+            "parse_status": status,
+            "rejection_reason": reason_code,
+            "message_preview": _message_preview(message.text),
+            "signal": signal_payload,
+        }
+        if extra:
+            payload.update(extra)
+        response = self._publish(payload)
+        logger.warning(
+            "published LINE rejection notice source=%s message=%s status=%s reason=%s",
+            target.display_name,
+            message.message_id,
+            status,
+            reason_code,
+        )
         return response
 
     def _publish_cancel(self, message: LineDatabaseMessage) -> int | None:
@@ -245,6 +302,8 @@ class CentralSignalCollector:
                 result.status,
                 result.reason,
             )
+            if result.signal_like and not self.shadow_mode:
+                self._publish_rejection(message, result)
             return 0
 
         signal = result.signal
@@ -292,6 +351,18 @@ class CentralSignalCollector:
                 age_seconds,
                 target.max_trade_age_seconds,
             )
+            if not self.shadow_mode:
+                self._publish_rejection(
+                    message,
+                    result,
+                    parse_status="rejected_stale_backlog",
+                    reason="stale_backlog",
+                    signal=signal,
+                    extra={
+                        "age_seconds": round(age_seconds, 1),
+                        "max_trade_age_seconds": target.max_trade_age_seconds,
+                    },
+                )
             return 0
         if self.shadow_mode:
             logger.info(

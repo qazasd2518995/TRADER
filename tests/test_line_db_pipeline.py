@@ -433,7 +433,7 @@ class CollectorTests(unittest.TestCase):
         self.assertIsNotNone(recorded)
         self.assertEqual(recorded["parse_status"], "accepted_tp_repaired")
 
-    def test_ocr_aliases_and_multiple_orders_are_not_auto_executed(self):
+    def test_ocr_aliases_and_multiple_orders_emit_rejection_notices_without_orders(self):
         ocr = SIGNAL_TEXT.replace("止損", "止隕").replace("止盈", "止嬴")
         multiple = SIGNAL_TEXT + "\nBuy：4920\n止損：4900\n止盈：4940"
         source = QueueSource([
@@ -444,11 +444,71 @@ class CollectorTests(unittest.TestCase):
         ledger = LineMessageLedger()
 
         self.assertEqual(CentralSignalCollector(source, publisher, ledger).run_cycle(), 0)
-        self.assertEqual(publisher.payloads, [])
+        self.assertEqual(len(publisher.payloads), 2)
+        self.assertEqual(
+            [event["type"] for event in publisher.payloads],
+            ["signal_rejected", "signal_rejected"],
+        )
+        self.assertEqual(
+            [event["parse_status"] for event in publisher.payloads],
+            ["rejected_unknown_format", "manual_review"],
+        )
         self.assertEqual(
             ledger.message_record("unknown-database", "chat-mid", "multiple-message")["parse_status"],
             "manual_review",
         )
+
+    def test_provider_entry_typo_emits_exact_point_rejection_notice(self):
+        # 真實類型：進場 4374 應為 4474，造成買單的 SL 高於進場。
+        # 系統不能猜測修正，但 Bot 必須說清楚哪組點位未掛單。
+        typo = "黃金 4374-4375多\nTp 4480 4485 4490\nSl 4469"
+        target = LineChatTarget(
+            "high_freq_yuyu",
+            "🈲禁言群🈲 Focus forex 焦點利潤",
+            "焦點利潤(yuyu)",
+            ("yuyu（yu__o822",),
+            parser_profile="yuyu_range_v1",
+        )
+        chat = ResolvedLineChat(target, "focus-chat-mid", "openchat")
+        row = message(
+            chat,
+            20,
+            "bad-entry-message",
+            typo,
+            sender_id="yuyu-sender-id",
+            sender_name="yuyu（yu__o822",
+        )
+        source = QueueSource([row])
+        publisher = RecordingPublisher()
+
+        self.assertEqual(CentralSignalCollector(source, publisher).run_cycle(), 0)
+        self.assertEqual(source.acknowledged, ["bad-entry-message"])
+        self.assertEqual(len(publisher.payloads), 1)
+        notice = publisher.payloads[0]
+        self.assertEqual(notice["type"], "signal_rejected")
+        self.assertEqual(notice["parse_status"], "rejected_invalid_geometry")
+        self.assertEqual(notice["rejection_reason"], "sl_tp_geometry")
+        self.assertEqual(notice["signal"]["entry_price"], 4374.0)
+        self.assertEqual(notice["signal"]["stop_loss"], 4469.0)
+        self.assertEqual(notice["signal"]["take_profit"], [4480.0, 4485.0, 4490.0])
+
+    def test_provider_commentary_is_not_misreported_as_a_missed_order(self):
+        source = QueueSource([
+            message(self.chat, 21, "comment-only", "目前不建議追多，先觀望"),
+        ])
+        publisher = RecordingPublisher()
+
+        self.assertEqual(CentralSignalCollector(source, publisher).run_cycle(), 0)
+        self.assertEqual(publisher.payloads, [])
+        self.assertEqual(source.acknowledged, ["comment-only"])
+
+    def test_rejection_notice_publish_failure_does_not_acknowledge_line_row(self):
+        bad = SIGNAL_TEXT.replace("Sell：4903", "Buy：4903")
+        source = QueueSource([message(self.chat, 22, "bad-geometry", bad)])
+
+        with self.assertRaises(OSError):
+            CentralSignalCollector(source, RecordingPublisher(fail=True)).run_cycle()
+        self.assertEqual(source.acknowledged, [])
 
     def test_trailing_direction_comment_does_not_replace_primary_order(self):
         body = SIGNAL_TEXT + "\n目前不建議追多"
@@ -463,7 +523,7 @@ class CollectorTests(unittest.TestCase):
         )
         self.assertEqual(publisher.payloads[0]["signal"]["direction"], "sell")
 
-    def test_stale_backlog_trade_is_recorded_but_not_published(self):
+    def test_stale_backlog_trade_is_not_executed_but_publishes_reason_notice(self):
         old = int((time.time() - 3600) * 1000)
         row = message(
             self.chat,
@@ -476,7 +536,10 @@ class CollectorTests(unittest.TestCase):
         ledger = LineMessageLedger()
 
         self.assertEqual(CentralSignalCollector(QueueSource([row]), publisher, ledger).run_cycle(), 0)
-        self.assertEqual(publisher.payloads, [])
+        self.assertEqual(len(publisher.payloads), 1)
+        self.assertEqual(publisher.payloads[0]["type"], "signal_rejected")
+        self.assertEqual(publisher.payloads[0]["parse_status"], "rejected_stale_backlog")
+        self.assertGreaterEqual(publisher.payloads[0]["age_seconds"], 3599)
         record = ledger.message_record("unknown-database", "chat-mid", "stale-message")
         self.assertEqual(record["parse_status"], "rejected_stale_backlog")
 

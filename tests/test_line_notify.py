@@ -67,6 +67,34 @@ class FormatSignalTests(unittest.TestCase):
         self.assertNotIn("+08:00", text)
         self.assertNotIn(".521000", text)
 
+    def test_invalid_geometry_notice_explains_why_order_was_not_sent(self):
+        text = format_signal_notice({
+            "type": "signal_rejected",
+            "source": "焦點利潤(yuyu)",
+            "message_time": "2026-09-01T15:49:36+08:00",
+            "parse_status": "rejected_invalid_geometry",
+            "rejection_reason": "sl_tp_geometry",
+            "signal": {
+                "symbol": "XAUUSD", "direction": "buy", "entry_price": 4374,
+                "stop_loss": 4469, "take_profit": [4480, 4485, 4490],
+            },
+        })
+        self.assertIn("訊號未掛單", text)
+        self.assertIn("焦點利潤(yuyu)｜點位關係錯誤", text)
+        self.assertIn("進場 4374｜止損 4469｜止盈 4480／4485／4490", text)
+        self.assertIn("買單必須符合「止損 < 進場 < 止盈」", text)
+        self.assertIn("系統未發送掛單", text)
+
+    def test_missing_entry_notice_uses_safe_message_preview(self):
+        text = format_signal_notice({
+            "type": "signal_rejected",
+            "parse_status": "rejected_missing_entry",
+            "rejection_reason": "entry_not_found",
+            "message_preview": "黃金 Buy 止損 4400 止盈 4420",
+        })
+        self.assertIn("找不到進場價", text)
+        self.assertIn("訊息摘要：黃金 Buy 止損 4400 止盈 4420", text)
+
 
 class LineStateTests(unittest.TestCase):
     def setUp(self):
@@ -158,6 +186,30 @@ class WebhookAndBroadcastTests(unittest.TestCase):
         self.assertEqual(gid, "Gmembers")
         self.assertIn("賣出 SELL", text)
         self.assertIn("4445", text)
+
+    def test_rejected_signal_broadcasts_reason_without_becoming_an_order(self):
+        self.line.remember_group("Gmembers")
+        payload = {
+            "event_id": "reject-1",
+            "type": "signal_rejected",
+            "source": "yuyu",
+            "parse_status": "rejected_invalid_geometry",
+            "rejection_reason": "sl_tp_geometry",
+            "signal": {
+                "direction": "buy", "entry_price": 4374,
+                "stop_loss": 4469, "take_profit": [4480],
+            },
+        }
+        self._post("/signals", payload, token="ADMIN")
+        self._post("/signals", payload, token="ADMIN")
+        for _ in range(50):
+            if self.pushed:
+                break
+            import time
+            time.sleep(0.05)
+        self.assertEqual(len(self.pushed), 1)
+        self.assertIn("訊號未掛單", self.pushed[0][1])
+        self.assertIn("點位關係錯誤", self.pushed[0][1])
 
 
 if __name__ == "__main__":

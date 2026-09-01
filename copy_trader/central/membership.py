@@ -800,7 +800,8 @@ def filter_signals_for(records: List[Dict[str, Any]],
     """依會員可存取的來源過濾訊號。這是伺服器端的收費閘門。
 
     比對用中央機發布時的 source / source_name 欄位。兩個都讀是因為
-    cancel_signal 跟 trade_signal 兩種 payload 的欄位習慣不完全一致。
+    cancel_signal、trade_signal 與 signal_rejected 的 payload 欄位習慣
+    不完全一致。
 
     找不到來源標記的紀錄一律**不給** —— 寧可漏送也不要把付費訊號送給
     沒買那個來源的人。

@@ -256,6 +256,41 @@ def _fmt_time(raw: Any) -> str:
     return parsed.strftime("%m/%d %H:%M")
 
 
+def _fmt_point(value: Any) -> str:
+    if value is None:
+        return "—"
+    try:
+        return f"{float(value):g}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _rejection_copy(record: Dict[str, Any], signal: Dict[str, Any]) -> tuple[str, str, str]:
+    """Return a public label, explanation and next action for a skipped signal."""
+    status = str(record.get("parse_status") or "")
+    reason = str(record.get("rejection_reason") or "")
+    direction = str(signal.get("direction") or "").casefold()
+
+    if status == "rejected_invalid_geometry" or reason == "sl_tp_geometry":
+        geometry = {
+            "buy": "買單必須符合「止損 < 進場 < 止盈」",
+            "sell": "賣單必須符合「止盈 < 進場 < 止損」",
+        }.get(direction, "進場、止損與止盈的方向關係必須一致")
+        return "點位關係錯誤", geometry, "請等待訊號來源更正後重新發布"
+    if status == "rejected_missing_entry" or reason == "entry_not_found":
+        return "找不到進場價", "訊息有方向與風控點位，但沒有可辨識的進場價", "請等待訊號來源更正後重新發布"
+    if reason == "missing_sl_or_tp":
+        return "訊號資料不完整", "缺少可辨識的止損或止盈", "請等待訊號來源補齊後重新發布"
+    if status == "manual_review" or reason == "multiple_entries":
+        return "出現多個進場點", "同一則訊息有多個進場方向或價位，系統不會猜測", "需要人工確認或等待訊號來源重發"
+    if status == "rejected_stale_backlog" or reason == "stale_backlog":
+        age = float(record.get("age_seconds") or 0)
+        minutes = max(1, round(age / 60)) if age else 0
+        detail = f"訊號進入系統時已超過時效{f'（約 {minutes} 分鐘）' if minutes else ''}"
+        return "訊號已過期", detail, "這是斷線補讀的舊訊號，系統不會補下歷史單"
+    return "格式無法安全判定", "訊號格式不符合目前來源的執行規則", "系統未猜測下單，請人工確認"
+
+
 def format_signal_notice(record: Dict[str, Any]) -> Optional[str]:
     """把 Hub 訊號 record 轉成給會員看的 LINE 通知文字。None = 不通知。"""
     when = _fmt_time(record.get("message_time"))
@@ -269,6 +304,37 @@ def format_signal_notice(record: Dict[str, Any]) -> Optional[str]:
         head = f"⚠️ 撤單通知{f' · {when}' if when else ''}"
         body = f"{source}｜{label}"
         return head + "\n" + body + (f"\n原掛單進場 {entry}" if entry else "")
+
+    if record.get("type") == "signal_rejected":
+        sig = record.get("signal") if isinstance(record.get("signal"), dict) else {}
+        label, detail, action = _rejection_copy(record, sig)
+        direction = str(sig.get("direction") or "").upper()
+        dir_zh = {"BUY": "買進 BUY", "SELL": "賣出 SELL"}.get(direction, direction)
+        symbol = str(sig.get("symbol") or "XAUUSD")
+        entry = sig.get("entry_price")
+        sl = sig.get("stop_loss")
+        tps = sig.get("take_profit") or []
+        lines = [
+            f"⚠️ 訊號未掛單{f' · {when}' if when else ''}",
+            f"{source}｜{label}",
+        ]
+        if entry is not None or sl is not None or tps:
+            if dir_zh:
+                lines.append(f"{symbol} {dir_zh}")
+            tp_str = "／".join(_fmt_point(value) for value in tps) if tps else "—"
+            lines.append(
+                f"進場 {_fmt_point(entry)}｜止損 {_fmt_point(sl)}｜止盈 {tp_str}"
+            )
+        else:
+            preview = str(record.get("message_preview") or "").strip()
+            if preview:
+                lines.append(f"訊息摘要：{preview}")
+        lines.extend([
+            "❌ 系統未發送掛單",
+            f"原因：{detail}",
+            action,
+        ])
+        return "\n".join(lines)
 
     sig = record.get("signal") if isinstance(record.get("signal"), dict) else {}
     direction = str(sig.get("direction") or "").upper()
@@ -791,10 +857,11 @@ class HubRequestHandler(BaseHTTPRequestHandler):
       for (const item of data.signals || []) {
         after = Math.max(after, Number(item.seq || 0));
         const cancelled = item.type === "cancel_signal";
+        const rejected = item.type === "signal_rejected";
         const sig = cancelled ? ((item.target_signals || [])[0] || {}) : (item.signal || {});
         const eventLabel = cancelled
           ? (item.cancel_reason === "line_unsent" ? "訊息收回" : "引用撤單")
-          : "新報單";
+          : (rejected ? "未掛單" : "新報單");
         const eventTime = item.recall_detected_at
           || (item.published_at ? new Date(item.published_at * 1000).toLocaleString() : "");
         const timeLabel = item.message_time
