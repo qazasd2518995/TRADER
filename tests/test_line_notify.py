@@ -57,6 +57,16 @@ class FormatSignalTests(unittest.TestCase):
         self.assertIn("引用撤單", text)
         self.assertIn("4445", text)
 
+    def test_iso_time_formatted_to_taiwan(self):
+        text = format_signal_notice({
+            "type": "trade_signal", "message_time": "2026-09-01T15:49:36.521000+08:00",
+            "signal": {"direction": "buy", "entry_price": 4420,
+                       "stop_loss": 4414, "take_profit": [4425]}})
+        self.assertIn("09/01 15:49", text)      # 台灣易讀格式
+        self.assertNotIn("T15:49", text)        # 不再出現 ISO 原始格式
+        self.assertNotIn("+08:00", text)
+        self.assertNotIn(".521000", text)
+
 
 class LineStateTests(unittest.TestCase):
     def setUp(self):

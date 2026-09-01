@@ -17,6 +17,7 @@ import threading
 import time
 import urllib.request
 import uuid
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -238,9 +239,26 @@ class LineNotifyState:
             return False
 
 
+_TW_TZ = timezone(timedelta(hours=8))
+
+
+def _fmt_time(raw: Any) -> str:
+    """把訊號時間戳格式化成台灣易讀時間(月/日 時:分)。ISO 8601(可能帶時區
+    與微秒)會轉成 +08:00 顯示;已是短格式或解析不了就原樣返回，不擋通知。"""
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(text)
+    except (ValueError, TypeError):
+        return text
+    parsed = parsed.astimezone(_TW_TZ) if parsed.tzinfo else parsed.replace(tzinfo=_TW_TZ)
+    return parsed.strftime("%m/%d %H:%M")
+
+
 def format_signal_notice(record: Dict[str, Any]) -> Optional[str]:
     """把 Hub 訊號 record 轉成給會員看的 LINE 通知文字。None = 不通知。"""
-    when = str(record.get("message_time") or "").strip()
+    when = _fmt_time(record.get("message_time"))
     source = str(record.get("source") or "訊號").strip()
     if record.get("type") == "cancel_signal":
         reason = record.get("cancel_reason")
