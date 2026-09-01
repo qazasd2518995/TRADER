@@ -1,0 +1,4 @@
+# MT5 source is bundled on both Windows and macOS. Keep byte-for-byte identity
+# so the standalone EA and the copies inside both installers share one hash.
+*.mq5 text eol=lf
+*.mqh text eol=lf
