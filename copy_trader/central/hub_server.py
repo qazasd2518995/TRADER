@@ -32,6 +32,11 @@ from copy_trader.central import membership
 
 logger = logging.getLogger(__name__)
 
+# Hub 下發報單的硬上限（秒）。會員端可能「在線上但卡住」——例如 MT5 沒開，
+# 撤單一直等不到確認而不推進游標；這時 poll tracker 看他每秒都在輪詢，判斷
+# 不出他其實沒在執行。只有訊號自己的年齡擋得住他恢復後補掛一整批過期單。
+SIGNAL_MAX_AGE_SECONDS = float(os.environ.get("COPY_TRADER_SIGNAL_MAX_AGE", "600"))
+
 
 class SignalStore:
     """Append-only JSONL store for hub signals."""
@@ -147,6 +152,37 @@ class MemberStatusStore:
     def snapshot(self) -> Dict[str, Dict[str, Any]]:
         with self._lock:
             return {user: dict(record) for user, record in self._by_user.items()}
+
+
+class MemberPollTracker:
+    """記每位會員上次輪詢 /signals 的時間（純記憶體，不落地）。
+
+    用來判斷「這一次輪詢是不是剛上線／剛從中斷恢復」。會員端正常每秒輪詢一次，
+    超過 RESUME_GAP 沒來過就代表他當時不在線上；那段期間發布的報單一律不補發
+    —— 錯過就錯過。否則會員一開機就會把幾小時前、早該進場甚至早該結束的單
+    全部掛出去（實際踩過：一台離線的會員端累積了 9 筆待補）。
+
+    Hub 自己重啟時這份記錄會清空，所有會員的下一次輪詢都會被當成「剛上線」。
+    方向是保守的：寧可漏掛，不要補掛。
+    """
+
+    # 會員端每秒輪詢，隔這麼久沒來就當作他離線過。
+    RESUME_GAP = 30.0
+
+    def __init__(self, resume_gap: float = RESUME_GAP):
+        self.resume_gap = float(resume_gap)
+        self._lock = threading.Lock()
+        self._last: Dict[str, float] = {}
+
+    def touch(self, key: str) -> bool:
+        """更新輪詢時間；回傳 True 代表這次是「剛上線」。"""
+        if not key:
+            return False
+        now = time.time()
+        with self._lock:
+            previous = self._last.get(key)
+            self._last[key] = now
+        return previous is None or (now - previous) > self.resume_gap
 
 
 class LineNotifyState:
@@ -404,6 +440,10 @@ class HubRequestHandler(BaseHTTPRequestHandler):
     def line(self) -> Optional["LineNotifyState"]:
         return getattr(self.server, "line", None)
 
+    @property
+    def poll_tracker(self) -> Optional["MemberPollTracker"]:
+        return getattr(self.server, "poll_tracker", None)
+
     def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -550,8 +590,42 @@ class HubRequestHandler(BaseHTTPRequestHandler):
             allowed = member["entitlements"]["sources"]
             records = self.store.list_after(after=after, limit=limit)
             visible = membership.filter_signals_for(records, allowed)
+
+            # 會員不在線上時發布的報單，上線後一律不補掛 —— 錯過就錯過。
+            # 撤單是例外：他離線前掛的單可能還在 MT5，期間發的撤單要補上去把
+            # 風險收掉，方向和「不補掛」一致。
+            tracker = self.poll_tracker
+            resumed = tracker.touch(str(member.get("username") or "")) if tracker else False
+            skipped_stale = 0
+            if visible:
+                now_ts = time.time()
+                kept: List[Dict[str, Any]] = []
+                for record in visible:
+                    # 撤單一律放行：他離線前掛的單可能還在 MT5，這筆撤單是去
+                    # 收風險的，方向和「不補掛」一致。
+                    if record.get("type") == "cancel_signal":
+                        kept.append(record)
+                        continue
+                    if resumed:
+                        continue        # 不在線上時發布的報單：錯過就錯過
+                    published = 0.0
+                    try:
+                        published = float(record.get("published_at") or 0)
+                    except (TypeError, ValueError):
+                        published = 0.0
+                    if published and now_ts - published > SIGNAL_MAX_AGE_SECONDS:
+                        continue        # 太舊：可能早就進場甚至結束了
+                    kept.append(record)
+                skipped_stale = len(visible) - len(kept)
+                if skipped_stale:
+                    logger.info("會員 %s：略過 %d 筆不該補掛的報單（resumed=%s）",
+                                member.get("username"), skipped_stale, resumed)
+                visible = kept
+
             self._send_json(200, {
                 "ok": True,
+                "resumed": resumed,
+                "skipped_stale": skipped_stale,
                 # latest_seq 要回「這一批的原始上界」而不是過濾後的最大 seq,
                 # 否則會員端的游標會卡在最後一筆有權限的訊號, 之後每輪都重掃
                 # 同一段區間。過濾掉的 seq 對這個會員來說就是不存在。
@@ -711,6 +785,8 @@ class HubRequestHandler(BaseHTTPRequestHandler):
                 out = store.update_member(user, **fields)
             elif parsed.path == "/admin/members/extend":
                 out = store.extend(user, int(data.get("days") or 30))
+            elif parsed.path == "/admin/members/renew":
+                out = store.renew(user, int(data.get("days") or 7))
             elif parsed.path == "/admin/members/reset-password":
                 out = store.reset_password(user, str(data.get("password") or ""))
             elif parsed.path == "/admin/members/kick":
@@ -906,19 +982,22 @@ class HubHTTPServer(ThreadingHTTPServer):
     def __init__(self, server_address: tuple, handler_class: type, store: SignalStore,
                  token: str, members: Optional["membership.MemberStore"] = None,
                  member_status: Optional["MemberStatusStore"] = None,
-                 line: Optional["LineNotifyState"] = None):
+                 line: Optional["LineNotifyState"] = None,
+                 poll_tracker: Optional["MemberPollTracker"] = None):
         super().__init__(server_address, handler_class)
         self.store = store
         self.token = token
         self.members = members
         self.member_status = member_status
         self.line = line
+        self.poll_tracker = poll_tracker
 
 
 def run_server(host: str, port: int, store_path: Path, token: str = "",
                members_path: Optional[Path] = None) -> None:
     store = SignalStore(store_path)
     member_status = MemberStatusStore()
+    poll_tracker = MemberPollTracker()
     line = LineNotifyState(store_path.parent / "line_notify_state.json")
     if line.enabled:
         logger.info("LINE 通知已啟用（已登記 %d 個群組）", len(line.target_groups()))
@@ -937,7 +1016,8 @@ def run_server(host: str, port: int, store_path: Path, token: str = "",
             logger.error("membership store FAILED to open (%s): %s — "
                          "會員登入將不可用, Hub 僅接受管理 token", members_path, e)
 
-    httpd = HubHTTPServer((host, port), HubRequestHandler, store, token, members, member_status, line)
+    httpd = HubHTTPServer((host, port), HubRequestHandler, store, token, members,
+                          member_status, line, poll_tracker)
     logger.info("signal hub listening on http://%s:%s (store=%s)", host, port, store_path)
     try:
         httpd.serve_forever()

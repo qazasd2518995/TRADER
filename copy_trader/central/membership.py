@@ -530,6 +530,33 @@ class MemberStore:
             row = self._get_row(username)
         return self._row_to_public(row)
 
+    def renew(self, username: str, days: int) -> Dict[str, Any]:
+        """重新發一份額度：把天數「設定」成 days，而不是像 extend 那樣累加。
+
+        試用帳號要「重整成 7 天」時用這支 —— 用 extend 會變成剩餘 4 天再加 7 天
+        = 11 天，不是想要的結果。分母(usage_seconds_total)一起重設，進度條才會
+        回到滿格。日曆制等級則把到期日重新設成從現在起算 days 天。
+        """
+        now = time.time()
+        seconds = float(int(days) * 86400)
+        with self._lock:
+            row = self._get_row(username)
+            if row is None:
+                raise ValueError(f"查無帳號: {username}")
+            if tier_has_time_pause(row["tier"]):
+                self._conn.execute(
+                    "UPDATE members SET usage_seconds_left = ?, usage_seconds_total = ?,"
+                    " expires_at = NULL WHERE username = ? COLLATE NOCASE",
+                    (seconds, seconds, username))
+            else:
+                self._conn.execute(
+                    "UPDATE members SET expires_at = ?, usage_seconds_left = NULL,"
+                    " usage_seconds_total = NULL WHERE username = ? COLLATE NOCASE",
+                    (now + seconds, username))
+            self._conn.commit()
+            row = self._get_row(username)
+        return self._row_to_public(row)
+
     def reset_password(self, username: str, new_password: str = "") -> Dict[str, Any]:
         plain = new_password or generate_password()
         with self._lock:
