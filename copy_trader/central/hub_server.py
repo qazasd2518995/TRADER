@@ -444,6 +444,10 @@ class HubRequestHandler(BaseHTTPRequestHandler):
     def poll_tracker(self) -> Optional["MemberPollTracker"]:
         return getattr(self.server, "poll_tracker", None)
 
+    @property
+    def exness(self):
+        return getattr(self.server, "exness", None)
+
     def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -657,6 +661,21 @@ class HubRequestHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._send_json(401, {"ok": False, "error": "unauthorized"})
             return
+        if parsed.path == "/admin/exness/clients":
+            client = self.exness
+            if client is None:
+                self._send_json(200, {"ok": True, "enabled": False,
+                                      "accounts": {}, "error": "not_configured"})
+                return
+            qs = parse_qs(parsed.query)
+            summary = client.summary_by_account(
+                date_from=(qs.get("from") or [""])[0],
+                date_to=(qs.get("to") or [""])[0],
+                force=bool((qs.get("force") or [""])[0]),
+            )
+            self._send_json(200, {"ok": True, **summary})
+            return
+
         if parsed.path == "/admin/line/status":
             line = self.line
             self._send_json(200, {"ok": True,
@@ -983,7 +1002,8 @@ class HubHTTPServer(ThreadingHTTPServer):
                  token: str, members: Optional["membership.MemberStore"] = None,
                  member_status: Optional["MemberStatusStore"] = None,
                  line: Optional["LineNotifyState"] = None,
-                 poll_tracker: Optional["MemberPollTracker"] = None):
+                 poll_tracker: Optional["MemberPollTracker"] = None,
+                 exness: Optional[Any] = None):
         super().__init__(server_address, handler_class)
         self.store = store
         self.token = token
@@ -991,6 +1011,7 @@ class HubHTTPServer(ThreadingHTTPServer):
         self.member_status = member_status
         self.line = line
         self.poll_tracker = poll_tracker
+        self.exness = exness
 
 
 def run_server(host: str, port: int, store_path: Path, token: str = "",
@@ -998,6 +1019,10 @@ def run_server(host: str, port: int, store_path: Path, token: str = "",
     store = SignalStore(store_path)
     member_status = MemberStatusStore()
     poll_tracker = MemberPollTracker()
+    from copy_trader.central.exness_partner import ExnessPartnerClient
+    exness = ExnessPartnerClient()
+    logger.info("Exness Partnership API：%s",
+                "已設定" if exness.enabled else "未設定(未填 EXNESS_PARTNER_LOGIN/PASSWORD)")
     line = LineNotifyState(store_path.parent / "line_notify_state.json")
     if line.enabled:
         logger.info("LINE 通知已啟用（已登記 %d 個群組）", len(line.target_groups()))
@@ -1017,7 +1042,7 @@ def run_server(host: str, port: int, store_path: Path, token: str = "",
                          "會員登入將不可用, Hub 僅接受管理 token", members_path, e)
 
     httpd = HubHTTPServer((host, port), HubRequestHandler, store, token, members,
-                          member_status, line, poll_tracker)
+                          member_status, line, poll_tracker, exness)
     logger.info("signal hub listening on http://%s:%s (store=%s)", host, port, store_path)
     try:
         httpd.serve_forever()

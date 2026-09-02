@@ -2045,6 +2045,7 @@ body.auth-locked > *:not(#authGate) { display: none; }
         <thead><tr>
           <th>帳號</th><th>等級</th><th>狀態</th><th>到期</th>
           <th>線上</th><th>持倉</th><th>淨值</th><th>浮動損益</th>
+          <th>手數</th><th>佣金</th>
           <th>最後上線</th><th>備註</th><th>操作</th>
         </tr></thead>
         <tbody id="mbrRows"></tbody>
@@ -4979,7 +4980,7 @@ $("viewTabs").addEventListener("click", (evt) => {
 /* ------------------------------------------------------------- 會員管理 */
 /* 只有訊號中心有這一區。瀏覽器不直接打 Hub —— 一律經過本機控制台的
    /api/admin/* 代理，管理 token 才不會落到前端 JS 裡。 */
-const MBR = { list: [], tiers: [], filter: "", status: {} };
+const MBR = { list: [], tiers: [], filter: "", status: {}, exness: {} };
 
 async function adminGet(path) {
   const res = await fetch("/api/admin" + path);
@@ -5033,7 +5034,7 @@ function renderMembers() {
 
   if (!rows.length) {
     $("mbrRows").innerHTML =
-      '<tr><td colspan="11" class="muted" style="padding:22px;text-align:center">' +
+      '<tr><td colspan="13" class="muted" style="padding:22px;text-align:center">' +
       (MBR.list.length ? "沒有符合的會員" : "還沒有任何會員，按右上角「開通會員」新增") +
       "</td></tr>";
     return;
@@ -5063,6 +5064,14 @@ function renderMembers() {
         pnlCell = `<span class="${toneClass(p)}">${money(p, { signed: true })}</span>`;
       }
     }
+    // Exness IB：用會員上報的 MT5 login 對應 client_account，不必手動綁定
+    const acct = st && st.account ? String(st.account.login || "") : "";
+    const ex = acct ? (MBR.exness || {})[acct] : null;
+    const lotCell = ex ? Number(ex.volume_lots || 0).toFixed(2)
+                       : '<span class="muted">—</span>';
+    const cmsCell = ex ? `<span class="${toneClass(Number(ex.reward || 0))}">` +
+                         money(Number(ex.reward || 0)) + "</span>"
+                       : '<span class="muted">—</span>';
     return "<tr>" +
       `<td class="mono"><b>${u}</b></td>` +
       `<td><span class="mbr-tag t-${esc(m.tier)}">${esc(m.tier_label)}</span></td>` +
@@ -5072,6 +5081,8 @@ function renderMembers() {
       `<td class="mono">${posCell}</td>` +
       `<td class="mono">${eqCell}</td>` +
       `<td class="mono">${pnlCell}</td>` +
+      `<td class="mono">${lotCell}</td>` +
+      `<td class="mono">${cmsCell}</td>` +
       `<td class="muted">${esc(seenText(m.last_seen_at))}</td>` +
       `<td class="muted">${esc(m.note || "—")}</td>` +
       '<td><div class="mbr-acts">' +
@@ -5121,13 +5132,20 @@ async function loadMembers() {
     } catch (e) {
       MBR.status = MBR.status || {};
     }
+    // Exness IB 佣金資料。沒設定憑證、或還沒有真實入金客戶時會是空的，
+    // 這一區就顯示「—」，不影響會員清單本身。
+    try {
+      MBR.exness = (await adminGet("/exness/clients")).accounts || {};
+    } catch (e) {
+      MBR.exness = MBR.exness || {};
+    }
     renderMembers();
     renderLogins((await adminGet("/logins?limit=60")).logins);
     $("mbrSubtitle").textContent = "已連上 Hub";
   } catch (e) {
     $("mbrSubtitle").textContent = "讀取失敗：" + e.message;
     $("mbrRows").innerHTML =
-      '<tr><td colspan="11" class="mbr-state bad" style="padding:22px;text-align:center">' +
+      '<tr><td colspan="13" class="mbr-state bad" style="padding:22px;text-align:center">' +
       esc(e.message) + "</td></tr>";
   }
 }
