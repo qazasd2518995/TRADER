@@ -88,6 +88,8 @@ class ExnessPartnerClient:
         self._token_at = 0.0
         self._cache: Dict[str, Any] = {}
         self._cache_at = 0.0
+        self._clients_cache: Dict[str, Any] = {}
+        self._clients_cache_at = 0.0
         self.last_error = ""
 
     @property
@@ -210,4 +212,70 @@ class ExnessPartnerClient:
         }
         with self._lock:
             self._cache, self._cache_at = dict(out), now
+        return out
+
+    def clients_overview(self, *, force: bool = False) -> Dict[str, Any]:
+        """IB 名下所有客戶的總覽。
+
+        跟 summary_by_account 的差別：這支不依賴「會員 ↔ client_account」的
+        對應，所以「註冊了但還沒交易」「入了金但還沒下單」的客戶也看得到 ——
+        那正是需要跟進的名單。clients 報表只有 client_uid、沒有 client_account，
+        本來就對應不到 MT5 login，所以獨立呈現。
+        """
+        if not self.enabled:
+            return {"enabled": False, "clients": [], "totals": {},
+                    "error": "not_configured", "fetched_at": 0.0}
+
+        now = time.time()
+        with self._lock:
+            if not force and self._clients_cache and now - self._clients_cache_at < self.CACHE_TTL:
+                return dict(self._clients_cache)
+
+        token = self._ensure_token()
+        if not token:
+            return {"enabled": True, "clients": [], "totals": {},
+                    "error": self.last_error or "auth_failed", "fetched_at": now}
+
+        rows = self._fetch_rows("/api/v2/reports/clients/", {"limit": 1000}, token)
+        clients: List[Dict[str, Any]] = []
+        totals = {"count": 0, "active": 0, "kyc_passed": 0, "funded": 0,
+                  "volume_lots": 0.0, "reward_usd": 0.0,
+                  "deposit_amount": 0.0, "balance": 0.0}
+        for row in rows:
+            status = str(row.get("client_status") or "").upper()
+            kyc = bool(row.get("kyc_passed"))
+            funded = bool(row.get("ftd_received"))
+            volume = _as_float(row.get("volume_lots"))
+            reward = _as_float(row.get("reward_usd") if row.get("reward_usd") is not None
+                               else row.get("reward"))
+            deposit = _as_float(row.get("deposit_amount"))
+            balance = _as_float(row.get("client_balance"))
+            clients.append({
+                "client_uid": str(row.get("client_uid") or ""),
+                "country": str(row.get("client_country") or ""),
+                "status": status,
+                "kyc_passed": kyc,
+                "funded": funded,
+                "volume_lots": volume,
+                "reward_usd": reward,
+                "deposit_amount": deposit,
+                "balance": balance,
+                "equity": _as_float(row.get("client_equity")),
+                "reg_date": str(row.get("reg_date") or ""),
+            })
+            totals["count"] += 1
+            totals["active"] += 1 if status == "ACTIVE" else 0
+            totals["kyc_passed"] += 1 if kyc else 0
+            totals["funded"] += 1 if funded else 0
+            totals["volume_lots"] += volume
+            totals["reward_usd"] += reward
+            totals["deposit_amount"] += deposit
+            totals["balance"] += balance
+
+        # 有在交易的排前面，方便一眼看到誰值得跟進
+        clients.sort(key=lambda c: (-c["volume_lots"], -c["reward_usd"], c["client_uid"]))
+        out = {"enabled": True, "clients": clients, "totals": totals,
+               "error": "", "fetched_at": now}
+        with self._lock:
+            self._clients_cache, self._clients_cache_at = dict(out), now
         return out

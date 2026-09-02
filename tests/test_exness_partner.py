@@ -74,5 +74,47 @@ class AggregationTests(unittest.TestCase):
         self.assertEqual(out["raw_sample"][0]["unknown_field"], "x")
 
 
+
+class ClientsOverviewTests(unittest.TestCase):
+    """客戶總覽：不依賴會員對應，註冊未交易的客戶也要看得到。"""
+
+    def setUp(self):
+        self.client = ExnessPartnerClient(login="a@b.c", password="pw")
+        self.client._token = "tok"
+        self.client._token_at = 1e18
+
+    def _run(self, rows):
+        self.client._fetch_rows = lambda *a, **k: rows
+        self.client._clients_cache_at = 0.0
+        return self.client.clients_overview(force=True)
+
+    def test_totals_and_sorting(self):
+        out = self._run([
+            {"client_uid": "u_idle", "client_country": "TW", "client_status": "INACTIVE",
+             "kyc_passed": False, "ftd_received": True, "volume_lots": 0.0,
+             "reward_usd": "0.00", "deposit_amount": 4, "client_balance": 4},
+            {"client_uid": "u_active", "client_country": "TW", "client_status": "ACTIVE",
+             "kyc_passed": True, "ftd_received": True, "volume_lots": 0.04,
+             "reward_usd": "0.20", "deposit_amount": 3, "client_balance": 3},
+        ])
+        t = out["totals"]
+        self.assertEqual(t["count"], 2)
+        self.assertEqual(t["active"], 1)
+        self.assertEqual(t["funded"], 2)
+        self.assertEqual(t["kyc_passed"], 1)
+        self.assertAlmostEqual(t["volume_lots"], 0.04)
+        self.assertAlmostEqual(t["reward_usd"], 0.20)   # 字串金額要轉數字
+        self.assertAlmostEqual(t["deposit_amount"], 7)
+        # 有交易的排前面
+        self.assertEqual(out["clients"][0]["client_uid"], "u_active")
+
+    def test_disabled_is_safe(self):
+        c = ExnessPartnerClient(login="", password="")
+        out = c.clients_overview()
+        self.assertFalse(out["enabled"])
+        self.assertEqual(out["clients"], [])
+        self.assertEqual(out["error"], "not_configured")
+
+
 if __name__ == "__main__":
     unittest.main()

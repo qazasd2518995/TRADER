@@ -1372,6 +1372,30 @@ body[data-role="client"]  .central-only { display: none; }
 /* 表格在窄視窗要能自己捲，不要把整頁撐橫 */
 .mbr-scroll { overflow-x: auto; }
 
+/* IB 客戶總覽的統計列 */
+.ib-stats {
+  display: flex; flex-wrap: wrap; gap: var(--s-3);
+  margin-bottom: var(--s-4);
+}
+.ib-stat {
+  flex: 1 1 120px;
+  padding: 10px 12px;
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-md, 8px);
+  background: var(--c-sunk, rgba(255,255,255,.02));
+}
+.ib-stat dt { font-size: var(--t-11); color: var(--c-text-3); margin-bottom: 4px; }
+.ib-stat dd {
+  margin: 0; font-family: var(--f-display); font-size: var(--t-20);
+  font-weight: 800; font-variant-numeric: tabular-nums;
+}
+.ib-pill {
+  display: inline-block; padding: 2px 8px; border-radius: var(--r-full);
+  font-size: var(--t-11); font-weight: 700;
+}
+.ib-pill.on  { background: var(--c-up-wash, rgba(8,153,129,.12)); color: var(--c-up-2); }
+.ib-pill.off { background: var(--sunk, rgba(255,255,255,.05)); color: var(--c-text-3); }
+
 /* ── 會員登入 ─────────────────────────────────────────────────────────
    整頁的門。沒登入時面板是 display:none 而不是模糊 —— 模糊擋不住截圖，
    而且「看得到卻不能動」會讓人以為程式當掉。這裡要像一道乾淨的前門。 */
@@ -2049,6 +2073,23 @@ body.auth-locked > *:not(#authGate) { display: none; }
           <th>最後上線</th><th>備註</th><th>操作</th>
         </tr></thead>
         <tbody id="mbrRows"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section-head">
+    <h2>IB 客戶總覽</h2>
+    <p id="ibSubtitle">Exness 名下客戶 —— 不必是跟單會員也會列出</p>
+  </div>
+  <div class="card">
+    <div class="ib-stats" id="ibStats"></div>
+    <div class="mbr-scroll">
+      <table>
+        <thead><tr>
+          <th>客戶</th><th>國家</th><th>狀態</th><th>KYC</th><th>入金</th>
+          <th>手數</th><th>佣金</th><th>餘額</th><th>註冊日</th>
+        </tr></thead>
+        <tbody id="ibRows"></tbody>
       </table>
     </div>
   </div>
@@ -4980,7 +5021,7 @@ $("viewTabs").addEventListener("click", (evt) => {
 /* ------------------------------------------------------------- 會員管理 */
 /* 只有訊號中心有這一區。瀏覽器不直接打 Hub —— 一律經過本機控制台的
    /api/admin/* 代理，管理 token 才不會落到前端 JS 裡。 */
-const MBR = { list: [], tiers: [], filter: "", status: {}, exness: {} };
+const MBR = { list: [], tiers: [], filter: "", status: {}, exness: {}, ib: null };
 
 async function adminGet(path) {
   const res = await fetch("/api/admin" + path);
@@ -5097,6 +5138,61 @@ function renderMembers() {
   }).join("");
 }
 
+function renderIB() {
+  const box = $("ibStats"), rows = $("ibRows"), sub = $("ibSubtitle");
+  if (!box || !rows) return;
+  const ib = MBR.ib;
+  if (!ib || !ib.enabled) {
+    const why = ib && ib.error === "not_configured"
+      ? "尚未設定 Exness 合夥人憑證"
+      : ("讀取失敗：" + ((ib && ib.error) || "未知"));
+    sub.textContent = why;
+    box.innerHTML = "";
+    rows.innerHTML = '<tr><td colspan="9" class="muted" style="padding:22px;text-align:center">' +
+                     esc(why) + "</td></tr>";
+    return;
+  }
+  const t = ib.totals || {};
+  sub.textContent = "Exness 名下客戶 —— 不必是跟單會員也會列出";
+  const stat = (label, value) =>
+    '<dl class="ib-stat"><dt>' + esc(label) + "</dt><dd>" + value + "</dd></dl>";
+  box.innerHTML =
+    stat("客戶總數", Number(t.count || 0)) +
+    stat("交易中", Number(t.active || 0)) +
+    stat("已入金", Number(t.funded || 0)) +
+    stat("已 KYC", Number(t.kyc_passed || 0)) +
+    stat("累計手數", Number(t.volume_lots || 0).toFixed(2)) +
+    stat("累計佣金", money(Number(t.reward_usd || 0))) +
+    stat("累計入金", money(Number(t.deposit_amount || 0)));
+
+  const list = ib.clients || [];
+  if (!list.length) {
+    rows.innerHTML = '<tr><td colspan="9" class="muted" style="padding:22px;text-align:center">' +
+                     "還沒有任何客戶</td></tr>";
+    return;
+  }
+  const yn = (on) => on ? '<span class="ib-pill on">是</span>'
+                        : '<span class="ib-pill off">否</span>';
+  rows.innerHTML = list.map((c) => {
+    const uid = String(c.client_uid || "");
+    const short = uid.length > 12 ? uid.slice(0, 8) + "…" : uid;
+    const active = String(c.status || "").toUpperCase() === "ACTIVE";
+    return "<tr>" +
+      '<td class="mono" title="' + esc(uid) + '">' + esc(short) + "</td>" +
+      "<td>" + esc(c.country || "—") + "</td>" +
+      '<td class="' + (active ? "mbr-state ok" : "muted") + '">' +
+        (active ? "交易中" : esc(c.status || "—")) + "</td>" +
+      "<td>" + yn(c.kyc_passed) + "</td>" +
+      "<td>" + yn(c.funded) + "</td>" +
+      '<td class="mono">' + Number(c.volume_lots || 0).toFixed(2) + "</td>" +
+      '<td class="mono"><span class="' + toneClass(Number(c.reward_usd || 0)) + '">' +
+        money(Number(c.reward_usd || 0)) + "</span></td>" +
+      '<td class="mono">' + money(Number(c.balance || 0)) + "</td>" +
+      '<td class="muted">' + esc(c.reg_date || "—") + "</td>" +
+    "</tr>";
+  }).join("");
+}
+
 function renderLogins(rows) {
   if (!rows.length) {
     $("mbrLoginRows").innerHTML =
@@ -5135,10 +5231,14 @@ async function loadMembers() {
     // Exness IB 佣金資料。沒設定憑證、或還沒有真實入金客戶時會是空的，
     // 這一區就顯示「—」，不影響會員清單本身。
     try {
-      MBR.exness = (await adminGet("/exness/clients")).accounts || {};
+      const ex = await adminGet("/exness/clients");
+      MBR.exness = ex.accounts || {};
+      MBR.ib = ex;
     } catch (e) {
       MBR.exness = MBR.exness || {};
+      MBR.ib = MBR.ib || null;
     }
+    renderIB();
     renderMembers();
     renderLogins((await adminGet("/logins?limit=60")).logins);
     $("mbrSubtitle").textContent = "已連上 Hub";

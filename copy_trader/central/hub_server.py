@@ -668,12 +668,18 @@ class HubRequestHandler(BaseHTTPRequestHandler):
                                       "accounts": {}, "error": "not_configured"})
                 return
             qs = parse_qs(parsed.query)
+            force = bool((qs.get("force") or [""])[0])
             summary = client.summary_by_account(
                 date_from=(qs.get("from") or [""])[0],
                 date_to=(qs.get("to") or [""])[0],
-                force=bool((qs.get("force") or [""])[0]),
+                force=force,
             )
-            self._send_json(200, {"ok": True, **summary})
+            # 客戶總覽：不依賴「會員 ↔ client_account」對應，註冊了還沒交易的
+            # 客戶也看得到，那才是需要跟進的名單。
+            overview = client.clients_overview(force=force)
+            self._send_json(200, {"ok": True, **summary,
+                                  "clients": overview.get("clients") or [],
+                                  "totals": overview.get("totals") or {}})
             return
 
         if parsed.path == "/admin/line/status":
