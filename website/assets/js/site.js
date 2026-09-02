@@ -247,18 +247,39 @@
     return detail;
   }
 
+  /* 原價刪除線要放在大數字「上面」才有折扣感——把它插在 .plan-price 之前，
+     而不是塞進下方的小字收據裡。月繳時保留空行，卡片高度才不會跳。 */
+  function ensureStrikeRow(plan) {
+    var row = $('.plan-strike', plan);
+    if (row) return row;
+    var price = $('.plan-price', plan);
+    if (!price) return null;
+    row = document.createElement('div');
+    row.className = 'plan-strike';
+    row.setAttribute('aria-live', 'polite');
+    price.insertAdjacentElement('beforebegin', row);
+    return row;
+  }
+
   function renderPlanDetail(plan, key, mode, pricing) {
     var detail = ensureBillingDetail(plan);
     if (!detail) return;
+    var strike = ensureStrikeRow(plan);
     var calc = billingMath(key, pricing);
     var currency = pricing.currency || 'US$';
+    var t = function (key, fallback) {
+      return window.I18N ? window.I18N.t(key, fallback) : fallback;
+    };
     detail.replaceChildren();
+    if (strike) strike.replaceChildren();
     detail.classList.toggle('is-yearly', mode === 'yearly');
+    var showDeal = mode === 'yearly' && calc.monthly > 0;
+    if (strike) strike.classList.toggle('is-on', showDeal);
 
     if (calc.monthly <= 0) {
       var free = document.createElement('span');
       free.className = 'plan-billing-free';
-      free.textContent = window.I18N ? window.I18N.t('pricing.freeBilling', '永久免費，不分月繳年繳') : '永久免費，不分月繳年繳';
+      free.textContent = t('pricing.freeBilling', '永久免費，不分月繳年繳');
       detail.appendChild(free);
       return;
     }
@@ -266,32 +287,36 @@
     if (mode !== 'yearly') {
       var monthHint = document.createElement('span');
       monthHint.className = 'plan-billing-monthly';
-      monthHint.textContent = window.I18N ? window.I18N.t('pricing.monthlyHint', '按月付款，保留最大彈性') : '按月付款，保留最大彈性';
+      monthHint.textContent = t('pricing.monthlyHint', '按月付款，保留最大彈性');
       detail.appendChild(monthHint);
       return;
     }
 
-    var top = document.createElement('div');
-    top.className = 'annual-deal-top';
-    var original = document.createElement('span');
-    original.className = 'annual-original';
-    original.textContent = (window.I18N ? window.I18N.t('pricing.regularAnnual', '原價') : '原價') +
-      ' ' + currency + priceText(calc.original);
-    var saved = document.createElement('strong');
-    saved.className = 'annual-save-pill';
-    saved.textContent = (window.I18N ? window.I18N.t('pricing.saveMonths', '省 {months} 個月') : '省 {months} 個月')
-      .replace('{months}', String(calc.savedMonths));
-    top.append(original, saved);
+    /* 大數字上方：原價劃掉 + 折扣紅標，一眼看到「588 變 441」。 */
+    if (strike) {
+      var original = document.createElement('s');
+      original.className = 'plan-strike-old';
+      original.textContent = currency + priceText(calc.original);
+      original.setAttribute('aria-label',
+        t('pricing.regularAnnual', '原價') + ' ' + currency + priceText(calc.original));
+      var off = document.createElement('b');
+      off.className = 'plan-strike-off';
+      off.textContent = '−' + calc.discount + '%';
+      strike.append(original, off);
+    }
 
+    /* 大數字下方：省幾個月 + 平均每月，讓人自己核對划算在哪。 */
     var bottom = document.createElement('div');
     bottom.className = 'annual-deal-bottom';
+    var saved = document.createElement('strong');
+    saved.className = 'annual-save-pill';
+    saved.textContent = t('pricing.saveMonths', '省 {months} 個月')
+      .replace('{months}', String(calc.savedMonths));
     var average = document.createElement('span');
-    average.textContent = (window.I18N ? window.I18N.t('pricing.averageMonthly', '平均每月') : '平均每月') +
+    average.textContent = t('pricing.averageMonthly', '平均每月') +
       ' ' + currency + priceText(calc.average);
-    var off = document.createElement('b');
-    off.textContent = calc.discount + '% OFF';
-    bottom.append(average, off);
-    detail.append(top, bottom);
+    bottom.append(saved, average);
+    detail.append(bottom);
   }
 
   function initBilling() {
