@@ -747,28 +747,32 @@
   display: flex;
   align-items: center;
   gap: var(--s-2);
-  height: 26px;          /* 固定高度：月繳留空列，切換時卡片高度不跳 */
+  height: 44px;          /* 固定高度：月繳留空列，切換時卡片高度不跳 */
   margin-top: var(--s-4);
 }
+/* 原價要跟售價同一個量級才有對比感。卡片寬度有限（PREMIUM 是 US$1,788），
+   用 clamp 讓它在窄卡片自動縮，不會爆版。 */
 .plan-strike-old {
   font-family: var(--f-display);
-  font-size: var(--t-20);
-  font-weight: 700;
-  line-height: 1.2;
+  font-size: clamp(var(--t-24), 3.2vw, var(--t-40));
+  font-weight: 900;
+  letter-spacing: -.03em;
+  line-height: 1.1;
+  white-space: nowrap;
   font-variant-numeric: tabular-nums;
   color: var(--c-text-3);
   text-decoration: line-through;
   text-decoration-color: var(--c-down);
-  text-decoration-thickness: 2px;
+  text-decoration-thickness: 3px;
 }
 .plan-strike-off {
   flex: none;
-  padding: 2px 8px;
+  padding: 3px 9px;
   border-radius: var(--r-full);
   background: var(--c-down);
   color: #fff;
   font-family: var(--f-display);
-  font-size: var(--t-12);
+  font-size: var(--t-13);
   font-weight: 900;
   letter-spacing: .02em;
 }

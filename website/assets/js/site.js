@@ -332,9 +332,26 @@
       $$('button[data-billing]').forEach(function (button) {
         button.setAttribute('aria-selected', String(button.getAttribute('data-billing') === mode));
       });
+      /* 頁籤上的「省 X%」與「只付 N 個月」以前寫死在 i18n，改了付費月數就會
+         跟卡片上的折扣對不起來。這裡一律從同一組設定算出來再填。 */
+      var head = billingMath(Object.keys(pricing.monthly)[0], pricing);
+      var payKeys = Object.keys(pricing.monthly).filter(function (k) {
+        return Number(pricing.monthly[k]) > 0;
+      });
+      if (payKeys.length) head = billingMath(payKeys[0], pricing);
+      var tt = function (key, fallback) {
+        return window.I18N ? window.I18N.t(key, fallback) : fallback;
+      };
+      $$('[data-billing-save]').forEach(function (el) {
+        el.textContent = tt('pricing.yearlyTabSave', '省 {percent}%')
+          .replace('{percent}', String(head.discount));
+      });
       $$('[data-billing-note]').forEach(function (note) {
         note.classList.toggle('is-on', mode === 'yearly');
         note.setAttribute('aria-hidden', String(mode !== 'yearly'));
+        note.textContent = tt('pricing.yearlyBadge', '年繳只付 {paid} 個月，完整使用 {service} 個月')
+          .replace('{paid}', String(head.paidMonths))
+          .replace('{service}', String(head.serviceMonths));
       });
 
       $$('[data-price]').forEach(function (el) {

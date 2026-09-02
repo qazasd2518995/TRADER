@@ -46,10 +46,10 @@ window.SITE_CONFIG = {
   pricing: {
     currency: 'US$',
     monthly:  { free: 0, plus: 49,  pro: 99,  premium: 149 },
-    // 年繳 = 使用 12 個月、只收 9 個月費用：等於省 3 個月 / 75 折。
+    // 年繳 = 使用 12 個月、只收 10 個月費用：等於省 2 個月 / 約 83 折。
     // 年價、原價、月均價與省下金額全部由 site.js 從這三個值計算，
     // 不在 HTML 各寫一份，避免改月費後折扣數字互相對不起來。
-    yearly: { serviceMonths: 12, paidMonths: 9 },
+    yearly: { serviceMonths: 12, paidMonths: 10 },
     defaultBilling: 'yearly'
   },
 
