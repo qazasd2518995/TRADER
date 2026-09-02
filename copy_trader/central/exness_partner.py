@@ -10,9 +10,21 @@
 沒設憑證就整個停用(查詢回空)，Hub 其他功能不受任何影響 —— 這是加值資訊，
 永遠不能拖垮訊號流。
 
-⚠️ 這份 Swagger spec 沒有定義 response schema(definitions 是空的)，所以
-report 內每一列的實際欄位名要等真實資料才能確定。下面用一組候選鍵去猜，
-並且**原封不動保留整列原始資料**，之後看到真實回應就能對準。
+這份 Swagger spec 沒有定義 response schema(definitions 是空的)，欄位名是
+2026-09-03 用真實帳號打一次 API 確認的：
+
+  /api/reports/rewards/   → client_account, client_uid, volume_lots, reward,
+                            reward_usd, orders_count, reward_date, currency,
+                            platform, country, partner_account
+  /api/v2/reports/clients/ → client_uid, client_status, kyc_passed, ftd_received,
+                            client_balance, client_equity, deposit_amount,
+                            volume_lots, reward_usd, reg_date, client_country
+
+候選鍵保留著當作保險(Exness 改欄位名不會直接壞掉)，raw_sample 也繼續留，
+方便日後對照。注意 reward / reward_usd 回傳的是**字串**，要轉數字。
+
+只有 rewards 同時帶 client_account 與 client_uid；clients 報表只有 client_uid。
+所以「MT5 login → 客戶」的對應必須經由 rewards 這張表。
 """
 from __future__ import annotations
 
@@ -29,6 +41,12 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://my.exnessaffiliates.com"
+
+# Exness 前面掛 Cloudflare，urllib 預設的 "Python-urllib/3.x" 會被 Error 1010
+# 直接擋掉(403)。帶一個一般瀏覽器的 UA 就能通過 —— 實測 curl 的預設 UA 也
+# 沒事，所以擋的是明顯的 bot 標記，不是 TLS 指紋。
+USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 
 # 這份報表每列可能用哪些欄位名表示「客戶帳號 / 交易量 / 佣金」。
 # spec 沒定義 schema，先用候選鍵比對；真實資料進來後可以收斂成確定的那個。
@@ -84,7 +102,8 @@ class ExnessPartnerClient:
         data = json.dumps(payload).encode("utf-8") if payload is not None else None
         req = urllib.request.Request(url, data=data, method=method,
                                      headers={"Content-Type": "application/json",
-                                              "Accept": "application/json"})
+                                              "Accept": "application/json",
+                                              "User-Agent": USER_AGENT})
         if token:
             req.add_header("Authorization", f"JWT {token}")
         try:
