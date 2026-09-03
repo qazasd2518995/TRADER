@@ -66,3 +66,6 @@ line_message_ledger.sqlite3
 #     https://raw.githubusercontent.com/chiron-fonts/chiron-hei-hk/master/VAR_TTF/ChironHeiHKVF.ttf
 # 產出的子集（website/assets/fonts/*.woff2）才是要提交的東西。
 vendor/*.ttf
+
+# 市場歷史快照（K 線資料，體積大且可重新匯出，不進版控）
+data/market_history/
