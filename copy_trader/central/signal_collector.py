@@ -102,12 +102,16 @@ class CentralSignalCollector:
         *,
         clock=time.time,
         shadow_mode: bool = False,
+        on_publish=None,
     ):
         self.source = source
         self.publisher = publisher
         self.ledger = ledger or LineMessageLedger()
         self.clock = clock
         self.shadow_mode = bool(shadow_mode)
+        # 發布成功後的旁觀者（目前是執行設定影子對照）。純觀測，
+        # 出錯絕不能影響發布 —— 所以在 _publish 裡吞掉它的例外。
+        self.on_publish = on_publish
         self._recall_checked_at: dict[str, float] = {}
 
     @staticmethod
@@ -118,6 +122,11 @@ class CentralSignalCollector:
         response = self.publisher.publish(payload)
         if not response.get("ok"):
             raise RuntimeError(f"hub rejected LINE event: {response}")
+        if self.on_publish is not None:
+            try:
+                self.on_publish(payload)
+            except Exception:
+                logger.exception("發布後的旁觀者出錯，訊號本身不受影響")
         return response
 
     def _publish_rejection(

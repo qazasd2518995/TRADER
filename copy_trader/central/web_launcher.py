@@ -165,6 +165,11 @@ class LauncherState:
         # 自動排程：上一次巡檢時「現在該不該在跟單」。None = 還沒巡檢過 /
         # 沒有任何有效排程。只在這個值翻面時動作，見 schedule_tick()。
         self._sched_prev: Optional[bool] = None
+        # 執行設定影子對照。訊號中心啟動時才建；沒啟動時 UI 讀到 None
+        # 就顯示「尚未啟動」，不要噴錯。
+        self.exec_shadow = None
+        self._shadow_bars = None
+        self._shadow_pumped_at = 0.0
         if self.role == "client":
             self._load_session()
 
@@ -733,6 +738,27 @@ class LauncherState:
                 "已啟用" if ultra.config.enabled else "未啟用",
                 ultra.mt5_dir,
             )
+            # 執行設定影子對照：照常發布、照常下單，額外用累積的 M1 K 線
+            # 算「換一組出場設定會是什麼結果」。純觀測，任何一步壞掉都不能
+            # 影響訊號本身，所以整段都包在 try 裡，失敗就當作沒有這功能。
+            self.exec_shadow = None
+            self._shadow_bars = None
+            try:
+                from copy_trader.central.bar_store import BarStore
+                from copy_trader.central.exec_shadow import ExecutionShadow
+
+                self._shadow_bars = BarStore(DATA_DIR / "market_m1_history.json")
+                self.exec_shadow = ExecutionShadow(
+                    DATA_DIR / "exec_shadow.json", self._shadow_bars
+                )
+                logger.info(
+                    "執行設定影子對照已啟用：已累積 %s 根 M1、待定案 %s 筆",
+                    self._shadow_bars.count,
+                    self.exec_shadow.summary()["pending"],
+                )
+            except Exception as exc:
+                logger.warning("執行設定影子對照未啟用（不影響訊號）：%s", exc)
+
             # LINE 與市場模型共用 Hub，但不是同一條資料 pipeline。LINE DB
             # 尚未登入、資料庫暫時鎖住或金鑰錯誤時，模型仍應照常維護掛單與撤單；
             # collector 在背景每十秒重試初始化，不阻擋第三來源。
@@ -758,6 +784,8 @@ class LauncherState:
                             publisher,
                             LineMessageLedger(DATA_DIR / "line_message_ledger.sqlite3"),
                             shadow_mode=_truthy(self.settings.get("shadow_mode")),
+                            on_publish=(self.exec_shadow.record
+                                        if self.exec_shadow else None),
                         )
                         logger.info(
                             "LINE 資料庫已連線：integrity=%s，聊天室=%s",
@@ -795,6 +823,10 @@ class LauncherState:
                         logger.info("本輪發布 %s 筆超高頻事件", strategy_events)
                 except Exception as exc:
                     logger.exception("超高頻策略錯誤：%s", exc)
+                try:
+                    self._pump_exec_shadow()
+                except Exception as exc:
+                    logger.exception("影子對照錯誤（不影響訊號）：%s", exc)
                 self.stop_event.wait(interval)
         except Exception as exc:
             logger.exception("中央訊號中心啟動失敗：%s", exc)
@@ -1122,6 +1154,36 @@ class LauncherState:
     # 帳戶/持倉快照上報間隔（秒）。這是給後台看的旁路，不用太即時；
     # 10 秒足夠讓訊號中心看到會員的持倉變化，又不會壓垮 Hub。
     STATUS_REPORT_SEC = 10.0
+    # 影子對照的輪詢間隔。EA 保留 400 根 M1，只要遠小於 400 分鐘就不會漏 K 線；
+    # 60 秒既安全又不會一直重算。
+    SHADOW_PUMP_SEC = 60.0
+
+    def _pump_exec_shadow(self) -> None:
+        """餵新的 M1 K 線給倉庫，再重算未定案的訊號。
+
+        EA 只留 400 根 M1（約 6.7 小時），評估窗卻有 28 小時，所以一定要自己
+        累積。輪詢間隔遠小於 400 分鐘就不會有缺口。
+        """
+        shadow, store = self.exec_shadow, self._shadow_bars
+        if shadow is None or store is None:
+            return
+        now = time.time()
+        if now - self._shadow_pumped_at < self.SHADOW_PUMP_SEC:
+            return
+        self._shadow_pumped_at = now
+
+        from copy_trader.central.market import _bars_from, _resolve_symbol
+        from copy_trader.central.stats import resolve_mt5_dir
+
+        mt5_dir = resolve_mt5_dir(str(self.settings.get("market_mt5_files_dir") or ""))
+        symbol = _resolve_symbol(self.settings, mt5_dir)
+        frame = _bars_from(mt5_dir / "rates_M1.json")
+        if frame and frame.get("bars"):
+            store.ingest(frame["bars"], frame.get("symbol") or symbol)
+            store.flush()
+        settled = shadow.evaluate()
+        if settled:
+            logger.info("影子對照新定案 %s 筆訊號", settled)
 
     def _report_member_status(self) -> None:
         """讀本機 MT5 三個橋接檔，組精簡快照上報 Hub。整段吞例外——
@@ -1396,6 +1458,22 @@ def make_handler(state: LauncherState):
                                    {"ok": True, "market": build_market(state.settings, tf)})
                 except Exception as exc:
                     logger.exception("market failed: %s", exc)
+                    _json_response(self, 500, {"ok": False, "error": str(exc)})
+                return
+            if parsed.path == "/api/exec-shadow":
+                # 執行設定影子對照。服務沒啟動時 exec_shadow 是 None，
+                # 回 enabled=False 讓前端顯示「尚未啟動」而不是整頁掛掉。
+                try:
+                    shadow = state.exec_shadow
+                    if shadow is None:
+                        _json_response(self, 200, {"ok": True, "enabled": False})
+                        return
+                    q = urllib.parse.parse_qs(parsed.query)
+                    source = (q.get("source") or [""])[0]
+                    _json_response(self, 200, {"ok": True, "enabled": True,
+                                               "shadow": shadow.summary(source)})
+                except Exception as exc:
+                    logger.exception("exec-shadow failed: %s", exc)
                     _json_response(self, 500, {"ok": False, "error": str(exc)})
                 return
             _json_response(self, 404, {"ok": False, "error": "not_found"})

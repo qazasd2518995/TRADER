@@ -2110,6 +2110,27 @@ body.auth-locked > *:not(#authGate) { display: none; }
        會員看到只會困惑或誤判。元素保留在 DOM 裡而不是整段拿掉 —— paintStatus()
        每秒都會寫 #logs / #uptime，拿掉要在好幾處加防呆，用 central-only 把它
        對會員隱藏起來就夠了，也跟這頁其他角色差異的做法一致。 -->
+  <!-- 執行設定影子對照。回測說「TP1 全出 + 停損收緊」比較好，但那是從同一份
+       歷史挑出來的；唯一能證明不是過擬合的辦法是往前累積。這一區就是那份
+       往前累積的帳，數字只會來自「已經走完」的訊號。 -->
+  <div class="section-head central-only" id="secShadow">
+    <h2>執行設定影子對照</h2>
+    <p id="shadowSubtitle">同一批訊號，換一組出場設定會是什麼結果</p>
+  </div>
+  <div class="card central-only" id="shadowCard">
+    <div class="ib-stats" id="shadowStats"></div>
+    <div class="mbr-scroll">
+      <table>
+        <thead><tr>
+          <th>出場設定</th><th>成交</th><th>勝率</th>
+          <th>每筆期望值</th><th>獲利因子</th><th>總損益</th><th>與現行差距</th>
+        </tr></thead>
+        <tbody id="shadowRows"></tbody>
+      </table>
+    </div>
+    <p class="muted" id="shadowNote" style="margin:12px 2px 0;font-size:var(--t-11)"></p>
+  </div>
+
   <div class="section-head central-only" id="secLogs">
     <h2>狀態紀錄</h2>
     <p id="uptime"></p>
@@ -4914,6 +4935,80 @@ async function refreshStats() {
   } catch (e) { /* 同上 */ }
 }
 
+/* ── 執行設定影子對照 ────────────────────────────────────────────────
+   只顯示「已定案」的訊號。還在跑的單納進來就是把未實現當已實現，
+   那比沒有對照更糟，所以未定案的筆數獨立顯示、不進統計。 */
+async function refreshShadow() {
+  if (IS_CLIENT) return;
+  const rows = $("shadowRows"), box = $("shadowStats"), sub = $("shadowSubtitle");
+  if (!rows) return;
+  let payload;
+  try {
+    const res = await fetch("/api/exec-shadow", { cache: "no-store" });
+    payload = await res.json();
+  } catch (e) { return; }              // 服務暫時沒回應時不要洗版
+
+  const blank = (msg) => {
+    if (box) box.innerHTML = "";
+    rows.innerHTML = '<tr><td colspan="7" class="muted" ' +
+      'style="padding:22px;text-align:center">' + esc(msg) + "</td></tr>";
+  };
+  if (!payload || !payload.ok) { blank("讀取失敗"); return; }
+  if (!payload.enabled) {
+    sub.textContent = "訊號中心尚未啟動 —— 開始發布後才會開始累積";
+    blank("尚未啟動");
+    return;
+  }
+
+  const sh = payload.shadow || {};
+  const since = sh.started_at
+    ? new Date(sh.started_at * 1000).toLocaleString("zh-TW",
+        { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })
+    : "—";
+  sub.textContent = "自 " + since + " 起累積，同一批訊號並排記帳";
+
+  const stat = (label, value) =>
+    '<dl class="ib-stat"><dt>' + esc(label) + "</dt><dd>" + value + "</dd></dl>";
+  const bars = sh.bars || {};
+  if (box) box.innerHTML =
+    stat("已定案訊號", Number(sh.settled || 0)) +
+    stat("進行中", Number(sh.pending || 0)) +
+    // K 線有缺口（輪詢停過）而算不出來的筆數。不顯示的話，統計會憑空
+    // 少掉幾筆而沒人發現。
+    stat("資料缺口", Number(sh.unevaluable || 0)) +
+    stat("已累積 K 線", Number(bars.count || 0)) +
+    stat("計入成本", money(Number(sh.cost_usd || 0)) + " / 手");
+
+  const list = sh.variants || [];
+  if (!Number(sh.settled)) {
+    blank(Number(sh.pending)
+      ? ("已收 " + sh.pending + " 筆，等它們走完才會有數字")
+      : "還沒有訊號進來");
+    $("shadowNote").textContent = "";
+    return;
+  }
+  rows.innerHTML = list.map(function (v, i) {
+    const ev = Number(v.ev || 0);
+    const cls = ev > 0 ? "mbr-state good" : (ev < 0 ? "mbr-state bad" : "muted");
+    const delta = (i === 0 || v.delta === null || v.delta === undefined)
+      ? '<span class="muted">基準</span>'
+      : (Number(v.delta) >= 0 ? "+" : "") + Number(v.delta).toFixed(0);
+    return "<tr><td><b>" + esc(v.name) + "</b></td>" +
+      "<td>" + Number(v.n || 0) + "</td>" +
+      "<td>" + Number(v.win_rate || 0).toFixed(1) + "%</td>" +
+      '<td class="' + cls + '">' + (ev >= 0 ? "+" : "") + ev.toFixed(0) + "</td>" +
+      "<td>" + (v.pf === null || v.pf === undefined ? "—" : Number(v.pf).toFixed(2)) + "</td>" +
+      "<td>" + money(Number(v.total || 0)) + "</td>" +
+      "<td>" + delta + "</td></tr>";
+  }).join("");
+
+  // 樣本太小的時候一定要講，不然看到一個漂亮的數字就會去改設定。
+  const n = Number((list[0] || {}).n || 0);
+  $("shadowNote").textContent = n < 40
+    ? "⚠ 只有 " + n + " 筆成交，樣本還太小，任何差距都可能是運氣；建議累積到 100 筆以上再判斷。"
+    : "單位為每 1 手（100 盎司）的美元損益，已扣來回成本。只計入已走完的訊號。";
+}
+
 /* ---------------------------------------------------------------- theme */
 const THEME_KEY = "gold-copy-theme";
 function applyTheme(mode) {
@@ -5490,6 +5585,9 @@ refreshMarket();
 setInterval(refreshStatus, 1000);
 setInterval(refreshStats, 3000);
 setInterval(refreshMarket, 5000);
+// 影子對照的數字以小時為單位變化，30 秒一次綽綽有餘
+refreshShadow();
+setInterval(refreshShadow, 30000);
 </script>
 </body>
 </html>"""
