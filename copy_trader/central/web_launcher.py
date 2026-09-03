@@ -1133,7 +1133,14 @@ class LauncherState:
         if hub is None:
             return
         try:
-            mt5_dir = Path(str(self.settings.get("mt5_files_dir") or ""))
+            # 一定要用 TradeManager 實際在用的目錄，不能直接讀 settings。
+            # settings 可能是空的或填了一個不存在的路徑，Config 會在那時自動
+            # 偵測出真正的 MT5 目錄（config.py 的 _find_mt5_files_dir），下單
+            # 走的是偵測後的結果。先前這裡直接讀 settings，於是「本機一切正常、
+            # 上報卻全是 None」——後台誤判成對方沒接上 MT5。
+            trade_manager = getattr(agent, "trade_manager", None)
+            resolved = str(getattr(trade_manager, "mt5_files_dir", "") or "")
+            mt5_dir = Path(resolved or str(self.settings.get("mt5_files_dir") or ""))
             account = _read_json_dict(mt5_dir / "account_info.json")
             positions_raw = _read_json_dict(mt5_dir / "positions.json").get("positions") or []
             orders_raw = _read_json_dict(mt5_dir / "orders.json").get("orders") or []

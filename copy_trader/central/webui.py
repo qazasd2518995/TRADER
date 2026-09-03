@@ -5094,7 +5094,13 @@ function renderMembers() {
     let eqCell = '<span class="muted">—</span>';
     let pnlCell = '<span class="muted">—</span>';
     if (st && st.mt5_stale) {
-      posCell = '<span class="mbr-state warn">MT5 未開</span>';
+      // 兩種狀況要分開：有帳戶資料只是檔案舊了 = 他把 MT5 關了；完全沒有
+      // 帳戶資料 = 會員端在他自己電腦上根本找不到 MT5 的橋接檔（路徑設錯或
+      // 沒掛 EA）—— 後者連下單都會失敗，是要主動聯繫的對象。
+      const hasAccount = st.account && st.account.login;
+      posCell = hasAccount
+        ? '<span class="mbr-state warn">MT5 未開</span>'
+        : '<span class="mbr-state bad">未接上 MT5</span>';
     } else if (st) {
       const acc = st.account || {};
       posCell = `${st.positions_count || 0} 倉 / ${st.orders_count || 0} 掛`;
