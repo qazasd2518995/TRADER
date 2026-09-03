@@ -160,8 +160,10 @@ class BarLookbackTests(_Fixture):
 
     def test_signal_between_bars_still_evaluates(self):
         base = 1_700_000_000
+        # 成交當根不吃止盈（見 test_range_fade 的前視偏誤），所以三檔止盈
+        # 要多一根才走得完 —— 這裡測的是取 K 線的範圍，不是出場邏輯。
         self.store.ingest(_bars([(3300, 3301), (3300, 3306), (3302, 3311),
-                                 (3302, 3316)], start=base), "XAUUSD")
+                                 (3302, 3316), (3302, 3316)], start=base), "XAUUSD")
         self.now = base + 25          # 落在第一根 K 線中間，不是邊界
         self.shadow.record(_payload())
         self.shadow.evaluate()

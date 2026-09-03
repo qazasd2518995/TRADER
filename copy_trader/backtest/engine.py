@@ -38,6 +38,11 @@ class Rules:
     max_hold_hours: float = MAX_HOLD_HOURS
     trail_after_tp1: float = 0.0      # >0 = 首檔止盈後改用這個距離的移動停損
     partials: tuple[float, ...] = PARTIAL_RATIOS
+    # 成交當根要不要讓止盈觸發。預設不讓 —— 限價單是價格「走到」掛單價
+    # 才成交，那根 K 線的順行極值通常發生在成交之前，拿它判止盈等於用
+    # 成交前就已經發生的價格獲利。止損則照判：價格是朝逆向走過來的，
+    # 同一根裡繼續走下去是完全可能的。
+    tp_on_fill_bar: bool = False
 
 
 @dataclass
@@ -126,12 +131,14 @@ def simulate(
     hit_index = 0
 
     for bar in window:
+        just_filled = False
         # ── 尚未成交：等價格觸及掛單價 ──────────────────────────────
         if fill_ts is None:
             if bar["t"] - ts > rules.pending_hours * 3600:
                 break                                   # 逾時未成交 → 撤單
             if bar["l"] <= entry <= bar["h"]:
                 fill_ts = bar["t"]
+                just_filled = True
                 trade.filled = True
                 trade.minutes_to_fill = (fill_ts - ts) / 60
             else:
@@ -146,6 +153,8 @@ def simulate(
         hit_stop = (bar["l"] <= stop) if is_buy else (bar["h"] >= stop)
         nxt = targets[hit_index] if hit_index < len(targets) else None
         hit_tp = nxt is not None and ((bar["h"] >= nxt) if is_buy else (bar["l"] <= nxt))
+        if just_filled and not rules.tp_on_fill_bar:
+            hit_tp = False
 
         # 假設 1：同一根同時觸及 → 預設保守地當作先觸及停損。
         if hit_stop and hit_tp:
