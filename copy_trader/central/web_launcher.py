@@ -170,6 +170,7 @@ class LauncherState:
         self.exec_shadow = None
         self._shadow_bars = None
         self._shadow_pumped_at = 0.0
+        self._shadow_mt5_dir = None
         if self.role == "client":
             self._load_session()
 
@@ -1172,14 +1173,24 @@ class LauncherState:
             return
         self._shadow_pumped_at = now
 
-        from copy_trader.central.market import _bars_from, _resolve_symbol
-        from copy_trader.central.stats import resolve_mt5_dir
+        from copy_trader.central.bar_store import pick_live_mt5_dir
+        from copy_trader.central.market import _bars_from
 
-        mt5_dir = resolve_mt5_dir(str(self.settings.get("market_mt5_files_dir") or ""))
-        symbol = _resolve_symbol(self.settings, mt5_dir)
-        frame = _bars_from(mt5_dir / "rates_M1.json")
+        # 不能直接用 market_mt5_files_dir：那個設定可能指著一台已經關掉的
+        # MT5（實際踩過），K 線就永遠不會累積。改成挑一台真的還在匯出的，
+        # 而且不動那個設定 —— 它同時被超高頻策略使用，改了會有連帶影響。
+        mt5_dir = pick_live_mt5_dir(
+            str(self.settings.get("market_mt5_files_dir") or ""),
+            self._shadow_mt5_dir,
+        )
+        if mt5_dir is None:
+            return
+        if mt5_dir != self._shadow_mt5_dir:
+            logger.info("影子對照的行情來源：%s", mt5_dir)
+            self._shadow_mt5_dir = mt5_dir
+        frame = _bars_from(Path(mt5_dir) / "rates_M1.json")
         if frame and frame.get("bars"):
-            store.ingest(frame["bars"], frame.get("symbol") or symbol)
+            store.ingest(frame["bars"], frame.get("symbol") or "")
             store.flush()
         settled = shadow.evaluate()
         if settled:

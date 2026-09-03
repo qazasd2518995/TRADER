@@ -157,3 +157,106 @@ def _clean(b: Any) -> Optional[dict]:
     row["h"] = max(row["h"], row["o"], row["c"])
     row["l"] = min(row["l"], row["o"], row["c"])
     return row
+
+
+# ── 挑一個「活的」MT5 ────────────────────────────────────────────────
+STALE_AFTER_SEC = 3600.0        # 超過這麼久沒更新就算停了
+
+
+def _m1_mtime(files_dir: Path) -> Optional[float]:
+    f = Path(files_dir) / "rates_M1.json"
+    try:
+        return f.stat().st_mtime
+    except OSError:
+        return None
+
+
+def _instance_roots() -> List[Path]:
+    """可能放著 instance_* 設定的地方。
+
+    開發時 DATA_DIR 是原始碼目錄，打包後才是 APPDATA —— 兩邊都要找，
+    否則在開發機上測不到真實候選。
+    """
+    roots: List[Path] = []
+    try:
+        from copy_trader.config import DATA_DIR
+
+        roots.extend([Path(DATA_DIR), Path(DATA_DIR).parent])
+    except Exception:                                         # noqa: BLE001
+        pass
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        roots.append(Path(appdata) / "黃金跟單系統")
+    return roots
+
+
+def _candidate_dirs(configured: str = "") -> List[Path]:
+    """所有可能在匯出 K 線的 MT5。
+
+    不寫死路徑：本機每個會員實例的設定裡就記著自己那台 MT5 的位置，
+    拿它們當候選最準 —— 可攜版裝在非標準路徑時，標準偵測找不到。
+    """
+    out: List[Path] = []
+    if configured:
+        out.append(Path(configured))
+    for root in _instance_roots():
+        try:
+            found = sorted(root.glob("instance_*/client_web_launcher_settings.json"))
+        except OSError:
+            continue
+        for settings in found:
+            try:
+                raw = json.loads(settings.read_text(encoding="utf-8")).get("mt5_files_dir")
+            except (OSError, ValueError):
+                continue
+            if raw:
+                out.append(Path(str(raw)))
+    try:
+        from copy_trader.config import _find_mt5_files_dir
+
+        detected = _find_mt5_files_dir()
+        if detected:
+            out.append(Path(detected))
+    except Exception as exc:                                  # noqa: BLE001
+        logger.debug("標準 MT5 偵測失敗：%s", exc)
+
+    seen, unique = set(), []
+    for path in out:
+        key = str(path).lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
+
+
+def pick_live_mt5_dir(
+    configured: str = "",
+    current: Optional[Path] = None,
+    *,
+    clock=time.time,
+) -> Optional[Path]:
+    """挑一個還在匯出 M1 的 MT5 目錄。
+
+    黏著性是刻意的：不同終端可能接不同券商，價格會有些微差異，一直換來換去
+    等於把兩份行情混在一起。所以只有在目前這台明顯停掉、而且有別台是活的
+    時候才換。全部都停（例如週末休市）就沿用原本那台，反正也沒有新 K 線。
+    """
+    now = clock()
+    scored = []
+    for path in _candidate_dirs(configured):
+        mtime = _m1_mtime(path)
+        if mtime is not None:
+            scored.append((now - mtime, path))
+    if not scored:
+        return current
+    scored.sort()
+    freshest_age, freshest = scored[0]
+
+    if current is not None:
+        current_age = _m1_mtime(current)
+        current_age = None if current_age is None else now - current_age
+        if current_age is not None and current_age <= STALE_AFTER_SEC:
+            return current                       # 目前這台還活著就別動
+        if freshest_age > STALE_AFTER_SEC:
+            return current                       # 沒有更好的選擇
+    return freshest
