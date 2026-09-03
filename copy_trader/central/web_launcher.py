@@ -171,6 +171,7 @@ class LauncherState:
         self._shadow_bars = None
         self._shadow_pumped_at = 0.0
         self._shadow_mt5_dir = None
+        self._shadow_tz_offset = None
         if self.role == "client":
             self._load_session()
 
@@ -1173,7 +1174,9 @@ class LauncherState:
             return
         self._shadow_pumped_at = now
 
-        from copy_trader.central.bar_store import pick_live_mt5_dir
+        from copy_trader.central.bar_store import (
+            detect_server_offset, pick_live_mt5_dir,
+        )
         from copy_trader.central.market import _bars_from
 
         # 不能直接用 market_mt5_files_dir：那個設定可能指著一台已經關掉的
@@ -1188,9 +1191,17 @@ class LauncherState:
         if mt5_dir != self._shadow_mt5_dir:
             logger.info("影子對照的行情來源：%s", mt5_dir)
             self._shadow_mt5_dir = mt5_dir
+        # K 線時間戳用的是券商伺服器時間；這台機器上 Exness 三台快 3 小時，
+        # 另一家是 0。訊號時間是真實 epoch，不換算就會靜靜地錯開三小時。
+        offset = detect_server_offset(mt5_dir)
+        if offset is None:
+            return                       # 量不出偏移就別併，髒資料比沒資料糟
+        if offset != self._shadow_tz_offset:
+            logger.info("行情時間偏移：%+.1f 小時（已換算成真實時間）", offset / 3600)
+            self._shadow_tz_offset = offset
         frame = _bars_from(Path(mt5_dir) / "rates_M1.json")
         if frame and frame.get("bars"):
-            store.ingest(frame["bars"], frame.get("symbol") or "")
+            store.ingest(frame["bars"], frame.get("symbol") or "", offset)
             store.flush()
         settled = shadow.evaluate()
         if settled:

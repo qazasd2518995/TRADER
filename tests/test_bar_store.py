@@ -12,7 +12,9 @@ import unittest
 from pathlib import Path
 
 from copy_trader.central import bar_store
-from copy_trader.central.bar_store import BarStore, pick_live_mt5_dir
+from copy_trader.central.bar_store import (
+    BarStore, detect_server_offset, pick_live_mt5_dir,
+)
 
 
 def _bar(t, o=1.0, h=2.0, l=0.5, c=1.5):
@@ -90,6 +92,63 @@ class StoreTests(unittest.TestCase):
         self.assertTrue(s.covers(0, 1.0))
         self.assertFalse(s.covers(0, 2.0))
         self.assertFalse(BarStore(self.path.with_name("empty.json")).covers(0, 1.0))
+
+
+class ServerTimeOffsetTests(unittest.TestCase):
+    """K 線時間戳是券商伺服器時間，不同券商差好幾小時。
+
+    這台機器上 Exness 三台快 3 小時、另一家是 0。訊號時間是真實 epoch，
+    不換算就會靜靜地錯開三小時 —— 成交率和勝率會變成隨機數字，而且完全
+    看不出哪裡不對。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _terminal(self, offset_sec, now=1_788_458_700):
+        import os
+        d = self.root / f"mt5_{int(offset_sec)}"
+        d.mkdir(parents=True, exist_ok=True)
+        newest = int(now + offset_sec)
+        newest -= newest % 60                       # 形成中那根的分鐘起點
+        bars = [{"t": newest - 60 * i, "o": 1, "h": 2, "l": 0.5, "c": 1.5}
+                for i in range(5)]
+        f = d / "rates_M1.json"
+        f.write_text(json.dumps({"symbol": "XAUUSD", "bars": bars}), encoding="utf-8")
+        os.utime(f, (now, now))                     # 檔案時間 = 真實當下
+        return d
+
+    def test_detects_a_three_hour_broker_offset(self):
+        self.assertEqual(detect_server_offset(self._terminal(3 * 3600)), 10800.0)
+
+    def test_detects_no_offset(self):
+        self.assertEqual(detect_server_offset(self._terminal(0)), 0.0)
+
+    def test_returns_none_when_it_cannot_measure(self):
+        """量不出來就要說量不出來，不能猜一個把倉庫弄髒。"""
+        self.assertIsNone(detect_server_offset(self.root / "missing"))
+        bad = self.root / "bad"
+        bad.mkdir()
+        (bad / "rates_M1.json").write_text("{}", encoding="utf-8")
+        self.assertIsNone(detect_server_offset(bad))
+
+    def test_ingest_shifts_bars_back_to_real_time(self):
+        s = BarStore(self.root / "m1.json")
+        s.ingest([{"t": 1000 + 10800, "o": 1, "h": 2, "l": 0.5, "c": 1.5}],
+                 "XAUUSD", offset_sec=10800.0)
+        self.assertEqual(s.bars_since(0)[0]["t"], 1000)
+
+    def test_two_terminals_land_on_one_timeline(self):
+        """換終端不能讓倉庫裡混著兩種時基。"""
+        s = BarStore(self.root / "m1.json")
+        s.ingest([{"t": 1000 + 10800, "o": 1, "h": 2, "l": 0.5, "c": 1.5}],
+                 offset_sec=10800.0)
+        s.ingest([{"t": 1060, "o": 1, "h": 2, "l": 0.5, "c": 1.5}], offset_sec=0.0)
+        self.assertEqual([b["t"] for b in s.bars_since(0)], [1000, 1060])
 
 
 class LiveDirTests(unittest.TestCase):

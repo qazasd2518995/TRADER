@@ -93,9 +93,16 @@ class BarStore:
         return True
 
     # ── 併入與查詢 ──────────────────────────────────────────────────
-    def ingest(self, bars: Sequence[dict], symbol: str = "") -> int:
-        """併入一批 K 線，回傳新增（不含更新）的根數。"""
+    def ingest(self, bars: Sequence[dict], symbol: str = "",
+               offset_sec: float = 0.0) -> int:
+        """併入一批 K 線，回傳新增（不含更新）的根數。
+
+        offset_sec 是這個終端的伺服器時間偏移（見 detect_server_offset）。
+        併進來之前一律換算成真實時間，倉庫裡就不會混著兩種時基 —— 訊號
+        時間是真實 epoch，對不上的話整個評估會靜靜地錯開好幾小時。
+        """
         added = 0
+        shift = float(offset_sec or 0.0)
         with self._lock:
             if symbol:
                 self.symbol = symbol
@@ -103,6 +110,8 @@ class BarStore:
                 row = _clean(b)
                 if not row:
                     continue
+                if shift:
+                    row["t"] = int(row["t"] - shift)
                 if row["t"] not in self._bars:
                     added += 1
                 # 形成中的 K 線會被後到的版本覆蓋，這是刻意的
@@ -260,3 +269,34 @@ def pick_live_mt5_dir(
         if freshest_age > STALE_AFTER_SEC:
             return current                       # 沒有更好的選擇
     return freshest
+
+
+def detect_server_offset(files_dir: Path) -> Optional[float]:
+    """量出這個終端的 K 線時間戳比真實時間快多少秒。
+
+    MT5 寫進 rates 檔的是**伺服器時間**當成整數，不同券商差好幾個小時
+    （這台機器上 Exness 三台是 +3 小時，另一家是 0）。訊號時間是真實
+    epoch，兩者不換算就會錯開整整三小時 —— 而且不會有任何徵兆，只是
+    成交率和勝率變成隨機數字。
+
+    量法：最新那根 K 線是「正在形成中」的，它的時間就是伺服器當下的分鐘
+    起點；檔案的 mtime 則是真實當下。兩者相減就是偏移。伺服器時區都是
+    整點或半點，所以取整到 15 分鐘來吃掉那不到一分鐘的誤差。
+
+    回傳 None 代表量不出來（檔案不在或內容壞掉）—— 這時寧可不要併入，
+    也不要用一個猜的偏移把倉庫弄髒。
+    """
+    path = Path(files_dir) / "rates_M1.json"
+    try:
+        mtime = path.stat().st_mtime
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    bars = data.get("bars")
+    if not isinstance(bars, list) or not bars:
+        return None
+    try:
+        newest = max(int(b["t"]) for b in bars)
+    except (KeyError, TypeError, ValueError):
+        return None
+    return round((newest - mtime) / 900.0) * 900.0
