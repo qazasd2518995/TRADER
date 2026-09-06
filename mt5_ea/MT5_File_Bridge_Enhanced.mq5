@@ -18,6 +18,7 @@ input bool   DetailedLogging = true;
 // === 行情輸出（給會員端的圖表用）=================================
 input bool   ExportChartData = true;                          // 輸出多週期 K 線給會員端畫圖
 input int    ChartBarCount   = 400;                           // 每個週期輸出幾根
+input int    MaxExportBars   = 3000;                          // 輸出根數硬上限（防呆，見 WriteRates）
 input string WatchlistSymbols = "XAGUSD,USOIL,BTCUSD,EURUSD"; // 市場總覽的自選商品（逗號分隔）
 
 // === Cloud Hub auto-trading (members poll the central hub directly) ===
@@ -610,6 +611,9 @@ void WriteRatesM1(string sym, int count)
 void WriteRates(string sym, ENUM_TIMEFRAMES tf, int count, string outfile)
 {
    MqlRates rates[];
+   // 上限保護：這是給控制台畫圖用的，超過這個數量沒有意義，只會拖慢輪詢。
+   // 要匯出長歷史請另外做，不要調高這裡（見下方那次 out of memory 事故）。
+   if(count > MaxExportBars) count = MaxExportBars;
    int copied = CopyRates(sym, tf, 0, count, rates);
    if(copied<=0) return;
 
@@ -617,24 +621,36 @@ void WriteRates(string sym, ENUM_TIMEFRAMES tf, int count, string outfile)
    int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
    if(digits <= 0) digits = 5;
 
-   string j = "{\"symbol\":\""+sym+"\",\"timeframe\":\""+TimeframeName(tf)+"\""
-            + ",\"digits\":"+IntegerToString(digits)
-            + ",\"server_time\":"+IntegerToString((long)TimeCurrent())
-            + ",\"bars\":[";
+   // 邊組邊寫，不要先串成一個大字串。
+   //
+   // 2026-09-06 實際事故：ChartBarCount 被調到 25000 做歷史匯出，這個迴圈
+   // 就要對同一個字串連續附加兩萬多次；MQL5 每次附加都可能重新配置整段
+   // 記憶體，機器的認可額度一緊就直接
+   //     out of memory in 'MT5_File_Bridge_Enhanced.mq5'
+   // EA 整支當掉，那台實單終端從此不再輸出、也不再處理下單命令。
+   //
+   // 匯出行情只是報告功能，絕不該有能力弄掛下單。改成每根寫一次檔，
+   // 記憶體用量就跟 K 線根數無關了。
+   int h = FileOpen(outfile, FILE_WRITE|FILE_TXT|FILE_ANSI);
+   if(h == INVALID_HANDLE) return;
+
+   FileWriteString(h, "{\"symbol\":\""+sym+"\",\"timeframe\":\""+TimeframeName(tf)+"\""
+                    + ",\"digits\":"+IntegerToString(digits)
+                    + ",\"server_time\":"+IntegerToString((long)TimeCurrent())
+                    + ",\"bars\":[");
    for(int i=copied-1;i>=0;i--)  // oldest -> newest
    {
-      if(i != copied-1) j+=",";
-      j+="{\"t\":"+IntegerToString((long)rates[i].time)
+      if(i != copied-1) FileWriteString(h, ",");
+      FileWriteString(h,
+         "{\"t\":"+IntegerToString((long)rates[i].time)
         +",\"o\":"+DoubleToString(rates[i].open,digits)
         +",\"h\":"+DoubleToString(rates[i].high,digits)
         +",\"l\":"+DoubleToString(rates[i].low,digits)
         +",\"c\":"+DoubleToString(rates[i].close,digits)
-        +",\"tv\":"+IntegerToString((long)rates[i].tick_volume)+"}";
+        +",\"tv\":"+IntegerToString((long)rates[i].tick_volume)+"}");
    }
-   j+="]}";
-
-   int h=FileOpen(outfile, FILE_WRITE|FILE_TXT|FILE_ANSI);
-   if(h!=INVALID_HANDLE){ FileWrite(h, j); FileClose(h); }
+   FileWriteString(h, "]}");
+   FileClose(h);
 }
 
 string TimeframeName(ENUM_TIMEFRAMES tf)
