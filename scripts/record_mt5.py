@@ -70,6 +70,36 @@ def _exe_of(hwnd: int) -> str:
     return ""
 
 
+def find_chart(parent: int) -> Optional[Tuple[int, str, int, int]]:
+    """在終端底下找出圖表那個子視窗。
+
+    直接錄整個終端會連功能表、工具列、終端機面板一起錄進去 —— 那裡有帳號
+    與餘額，而且畫面大半是無關的介面。圖表是 MDI 子視窗，EnumWindows 只列
+    最上層視窗，找不到它，要用 EnumChildWindows 往下找。
+    """
+    best: Optional[Tuple[int, str, int, int]] = None
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+    def cb(hwnd, _):
+        nonlocal best
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        cls = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd, cls, 256)
+        r = wintypes.RECT()
+        user32.GetWindowRect(hwnd, ctypes.byref(r))
+        w, h = r.right - r.left, r.bottom - r.top
+        # 圖表視窗的類別名是 AfxFrameOrView*，而且是畫面上最大的那塊
+        if "AfxFrameOrView" not in cls.value or w < 400 or h < 300:
+            return True
+        if best is None or w * h > best[2] * best[3]:
+            best = (hwnd, cls.value, w, h)
+        return True
+
+    user32.EnumChildWindows(parent, cb, 0)
+    return best
+
+
 def find_windows(exe: str = "terminal64.exe") -> List[Tuple[int, str, int, int]]:
     """靠執行檔找視窗，不靠標題。
 
@@ -186,6 +216,8 @@ def main() -> None:
                     metavar="像素",
                     help="從下緣裁掉幾個像素（終端機面板會顯示餘額與權益；"
                          "建議 340）")
+    ap.add_argument("--chart-only", dest="chart_only", action="store_true",
+                    help="只錄圖表子視窗（不含功能表、工具列、終端機面板）")
     ap.add_argument("--out", default="", help="輸出目錄")
     args = ap.parse_args()
 
@@ -199,9 +231,17 @@ def main() -> None:
         return
 
     hwnd, title, w, h = wins[0]
-    print(f"目標：{title[:80]}")
+    if args.chart_only:
+        chart = find_chart(hwnd)
+        if chart is None:
+            print("  找不到圖表子視窗，改錄整個終端")
+        else:
+            hwnd, title, w, h = chart
+            print(f"圖表子視窗：{w}x{h}（{title}）")
+    if not args.chart_only:
+        print(f"目標：{title[:80]}")
     out = Path(args.out) if args.out else OUT_DIR / time.strftime("%Y%m%d_%H%M%S")
-    if not (args.crop_title or args.crop_bottom):
+    if not (args.crop_title or args.crop_bottom or args.chart_only):
         print("  ⚠ 沒有裁切：標題列有帳號與券商、底部面板有餘額。"
               "要對外的話加 --crop-title 90 --crop-bottom 340")
     record(hwnd, args.seconds, args.fps, out, args.crop_title, args.crop_bottom)

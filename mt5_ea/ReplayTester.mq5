@@ -24,7 +24,9 @@
 #include <Trade/Trade.mqh>
 
 input string JobFile        = "replay_job.csv";  // 報單清單
-input bool   TakeShots      = true;              // 每根 K 棒截一張圖
+// ChartScreenShot 實測不可用：圖表狀態明明捲到 8/19，它畫出來的還是資料
+// 尾端那天。所以影格改用外部錄製（scripts/record_mt5.py），這個預設關掉。
+input bool   TakeShots      = false;             // 每根 K 棒截一張圖（已知不可靠）
 input string ShotPrefix     = "frame";          // 影格檔名前綴（不要放子目錄，MQL5 不會自動建）
 input int    ShotWidth      = 1280;
 input int    ShotHeight     = 720;
@@ -38,6 +40,7 @@ input int    RedrawMs       = 40;                // 每格等重繪多久（太�
 input int    MaxJobs        = 3;                 // 一次最多做幾筆（先看效果用）
 input int    LabelSize      = 11;                // 標示文字大小
 input int    HoldFrames     = 8;                 // 關鍵瞬間多停幾格
+input string TriggerFile    = "replay_go.txt";   // 放這個檔就開始（共用資料夾）
 
 struct Job
 {
@@ -126,12 +129,16 @@ void OnDeinit(const int reason)
 //| 圖表模式：在真實圖表上逐根捲動並截圖。                            |
 //| 只做一次 —— 做完就把計時器關掉，不要一直重畫使用者的圖表。        |
 //+------------------------------------------------------------------+
+//| 掛著等觸發檔。這樣 EA 掛一次就好，要重跑只要再放一次檔案 ——
+//| 每改一版就要人重新拖一次 EA，迭代成本太高，也容易忘記步驟。
 void OnTimer()
 {
-   if(g_in_tester || g_chart_done)
+   if(g_in_tester)
       return;
-   g_chart_done = true;
-   EventKillTimer();
+   if(!FileIsExist(TriggerFile, FILE_COMMON))
+      return;
+   FileDelete(TriggerFile, FILE_COMMON);
+   LoadJobs();                       // 每次重跑都重讀，清單改了不用重掛 EA
    RenderAll();
 }
 
@@ -143,12 +150,33 @@ void RenderAll()
    bool  old_shift = (bool)ChartGetInteger(chart, CHART_SHIFT);
    long  old_scale = ChartGetInteger(chart, CHART_SCALE);
 
+   // 原本的配色也要記下來還原 —— 這是使用者在看的圖表，不能改完就丟著
+   long old_bg   = ChartGetInteger(chart, CHART_COLOR_BACKGROUND);
+   long old_fg   = ChartGetInteger(chart, CHART_COLOR_FOREGROUND);
+   long old_bull = ChartGetInteger(chart, CHART_COLOR_CANDLE_BULL);
+   long old_bear = ChartGetInteger(chart, CHART_COLOR_CANDLE_BEAR);
+   long old_up   = ChartGetInteger(chart, CHART_COLOR_CHART_UP);
+   long old_down = ChartGetInteger(chart, CHART_COLOR_CHART_DOWN);
+   long old_line = ChartGetInteger(chart, CHART_COLOR_CHART_LINE);
+   long old_grid = ChartGetInteger(chart, CHART_COLOR_GRID);
+
    ChartSetInteger(chart, CHART_AUTOSCROLL, false);
    ChartSetInteger(chart, CHART_SHIFT, false);
    ChartSetInteger(chart, CHART_MODE, CHART_CANDLES);
    ChartSetInteger(chart, CHART_SHOW_GRID, false);
    ChartSetInteger(chart, CHART_SHOW_VOLUMES, CHART_VOLUME_HIDE);
    ChartSetInteger(chart, CHART_SHOW_PERIOD_SEP, false);
+   ChartSetInteger(chart, CHART_COLOR_BACKGROUND,  C'14,16,22');
+   ChartSetInteger(chart, CHART_COLOR_FOREGROUND,  C'200,206,218');
+   ChartSetInteger(chart, CHART_COLOR_GRID,        C'30,34,44');
+   ChartSetInteger(chart, CHART_COLOR_CANDLE_BULL, C'28,190,140');
+   ChartSetInteger(chart, CHART_COLOR_CANDLE_BEAR, C'238,84,96');
+   ChartSetInteger(chart, CHART_COLOR_CHART_UP,    C'28,190,140');
+   ChartSetInteger(chart, CHART_COLOR_CHART_DOWN,  C'238,84,96');
+   ChartSetInteger(chart, CHART_COLOR_CHART_LINE,  C'28,190,140');
+
+   ChartRedraw(chart);
+   Sleep(400);          // 上面那些 ChartSetInteger 是非同步的，先讓它們生效
 
    int done = 0;
    for(int j = 0; j < ArraySize(g_jobs) && done < MaxJobs; j++)
@@ -158,6 +186,14 @@ void RenderAll()
    ChartSetInteger(chart, CHART_AUTOSCROLL, old_auto);
    ChartSetInteger(chart, CHART_SHIFT, old_shift);
    ChartSetInteger(chart, CHART_SCALE, old_scale);
+   ChartSetInteger(chart, CHART_COLOR_BACKGROUND,  old_bg);
+   ChartSetInteger(chart, CHART_COLOR_FOREGROUND,  old_fg);
+   ChartSetInteger(chart, CHART_COLOR_GRID,        old_grid);
+   ChartSetInteger(chart, CHART_COLOR_CANDLE_BULL, old_bull);
+   ChartSetInteger(chart, CHART_COLOR_CANDLE_BEAR, old_bear);
+   ChartSetInteger(chart, CHART_COLOR_CHART_UP,    old_up);
+   ChartSetInteger(chart, CHART_COLOR_CHART_DOWN,  old_down);
+   ChartSetInteger(chart, CHART_COLOR_CHART_LINE,  old_line);
    ChartNavigate(chart, CHART_END, 0);
    ChartRedraw(chart);
    PrintFormat("圖表回放完成：%d 筆、%d 張影格（失敗 %d）", done, g_shots, g_fails);
@@ -195,6 +231,21 @@ bool RenderOne(long chart, Job &job, int index)
    bool checked = false;
    int shot = 0;
 
+   // 鎖定價格範圍。自動縮放只看 K 棒，止損／止盈常常落在畫面外 ——
+   // 先前止損 4371 就完全看不到，觀眾會以為那張單沒有停損。
+   // 上方多留一段給 HUD，文字才不會壓在價位線上。
+   double hi = MathMax(job.entry, MathMax(job.stop, job.target));
+   double lo = MathMin(job.entry, MathMin(job.stop, job.target));
+   for(int k = to; k <= from && k < total; k++)
+   {
+      hi = MathMax(hi, iHigh(_Symbol, PERIOD_CURRENT, k));
+      lo = MathMin(lo, iLow(_Symbol, PERIOD_CURRENT, k));
+   }
+   double pad = MathMax((hi - lo) * 0.06, 0.5);
+   ChartSetInteger(chart, CHART_SCALEFIX, true);
+   ChartSetDouble(chart, CHART_FIXED_MAX, hi + pad * 3.0);   // 上方留給 HUD
+   ChartSetDouble(chart, CHART_FIXED_MIN, lo - pad);
+
    for(int i = from; i >= to; i--)
    {
       ChartNavigate(chart, CHART_END, -i);
@@ -203,7 +254,8 @@ bool RenderOne(long chart, Job &job, int index)
       else
          ObjectsDeleteAll(chart, "rp_");
       ChartRedraw(chart);
-      Sleep(RedrawMs);
+      // 第一格是大跳躍（可能上萬根），要多給時間讓它真的捲過去並重繪
+      Sleep(i == from ? MathMax(RedrawMs, 600) : RedrawMs);
 
       // 只驗第一格：ChartNavigate 是非同步的，捲不到位就整段畫錯位置，
       // 而且畫面上完全看不出哪裡不對（先前整批停在最新的日期）。
@@ -213,10 +265,9 @@ bool RenderOne(long chart, Job &job, int index)
          long first_vis = ChartGetInteger(chart, CHART_FIRST_VISIBLE_BAR);
          long visible   = ChartGetInteger(chart, CHART_VISIBLE_BARS);
          long landed    = first_vis - visible + 1;      // 最右邊那根的索引
-         if(MathAbs(landed - i) > 2)
-            PrintFormat("⚠ 捲動沒到位：要 %d，實際落在 %d"
-                        "（可見 %d 根）—— 圖表可能沒載入那麼多歷史",
-                        i, (int)landed, (int)visible);
+         PrintFormat("捲動檢查：要 %d，落在 %d（可見 %d 根，畫面左緣 %s）",
+                     i, (int)landed, (int)visible,
+                     TimeToString(iTime(_Symbol, PERIOD_CURRENT, (int)first_vis)));
       }
 
       // 掛單出現、成交、出場這三個瞬間各多停幾格。一格就閃過去的話，
@@ -243,6 +294,7 @@ bool RenderOne(long chart, Job &job, int index)
       }
    }
    ObjectsDeleteAll(chart, "rp_");
+   ChartSetInteger(chart, CHART_SCALEFIX, false);
    return true;
 }
 
@@ -295,10 +347,12 @@ void Level(long chart, string name, double price, color clr, int style,
    ObjectSetInteger(chart, name, OBJPROP_WIDTH, 2);
    ObjectSetInteger(chart, name, OBJPROP_BACK, true);
 
-   // 文字釘在畫面左緣，跟著捲動走，永遠看得到
+   // 文字釘在畫面左側偏右一點 —— 貼齊左緣會跟左上角的 HUD 疊在一起
    string tag = name + "_txt";
+   long first_vis = ChartGetInteger(chart, CHART_FIRST_VISIBLE_BAR);
+   long visible   = MathMax(ChartGetInteger(chart, CHART_VISIBLE_BARS), 20);
    datetime anchor = iTime(_Symbol, PERIOD_CURRENT,
-                           (int)ChartGetInteger(chart, CHART_FIRST_VISIBLE_BAR) - 2);
+                           (int)MathMax(first_vis - visible / 5, 1));
    if(ObjectFind(chart, tag) < 0)
       ObjectCreate(chart, tag, OBJ_TEXT, 0, anchor, price);
    ObjectMove(chart, tag, 0, anchor, price);
@@ -355,24 +409,25 @@ void DrawHUD(long chart, Job &job, int now_bar)
       state_clr = (job.outcome == "TP") ? clrSpringGreen : clrTomato;
    }
 
-   Hud(chart, "rp_hud1", 26, StringFormat("%s  %s",
+   Hud(chart, "rp_hud0", 22, _Symbol + "  M1", clrSilver, 14);
+   Hud(chart, "rp_hud1", 50, StringFormat("%s  %s",
        job.is_buy ? "買進" : "賣出", DoubleToString(job.entry, 2)),
        job.is_buy ? clrSpringGreen : clrTomato, 22);
-   Hud(chart, "rp_hud2", 60, state, state_clr, 17);
+   Hud(chart, "rp_hud2", 86, state, state_clr, 17);
 
    // 浮動損益：成交之後才有意義。收盤後就固定在出場價，不要再跳。
    if(filled)
    {
       double ref = closed ? job.exit_price : price;
       double pnl = (ref - job.entry) * (job.is_buy ? 1 : -1) * 100.0;
-      Hud(chart, "rp_hud3", 100,
+      Hud(chart, "rp_hud3", 124,
           StringFormat("%s%.0f USD / 手", pnl >= 0 ? "+" : "", pnl),
           pnl >= 0 ? clrSpringGreen : clrTomato, 30);
    }
    else
       ObjectDelete(chart, "rp_hud3");
 
-   Hud(chart, "rp_hud4", 148, TimeToString(now, TIME_DATE|TIME_MINUTES),
+   Hud(chart, "rp_hud4", 176, TimeToString(now, TIME_DATE|TIME_MINUTES),
        clrSilver, 13);
 }
 
@@ -437,6 +492,8 @@ void Shoot()
 
 bool LoadJobs()
 {
+   ArrayResize(g_jobs, 0);           // 重跑時要清掉舊的，不然會越疊越多
+   g_next = 0;
    // 一定要 FILE_COMMON：測試器的每個 agent 有自己的沙箱
    // （Tester\Agent-...\MQL5\Files），讀不到終端那份 MQL5\Files。
    // 少了這個旗標，EA 會在 OnInit 就因為「找不到清單」而中止。
