@@ -34,6 +34,12 @@ _CENTRAL = [
     "copy_trader.line_db.source",
     "copy_trader.line_db.sqlite_provider",
     "copy_trader.line_db.windows_credentials",
+    # 執行設定影子對照。web_launcher 是在函式裡才 import（壞掉也不能影響
+    # 訊號），這種延遲 import 不保證被靜態分析抓到，明確列出來。
+    "copy_trader.central.bar_store",
+    "copy_trader.central.exec_shadow",
+    "copy_trader.backtest",
+    "copy_trader.backtest.engine",
     "apsw",
 ]
 
