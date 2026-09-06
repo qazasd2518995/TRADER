@@ -83,17 +83,24 @@ def _schedule_active(sched: Dict[str, Any], now: time.struct_time) -> bool:
     return False
 
 
+ROLES = {"central", "client", "admin"}
+
+
 def _infer_role(default_role: Optional[str] = None) -> str:
-    if default_role in {"central", "client"}:
+    if default_role in ROLES:
         return default_role
     if "--role" in sys.argv:
         try:
             role = sys.argv[sys.argv.index("--role") + 1].strip().lower()
-            if role in {"central", "client"}:
+            if role in ROLES:
                 return role
         except Exception:
             pass
     name = Path(sys.argv[0]).stem.lower()
+    # admin 要先比對：「管理端」裡沒有那些關鍵字，但將來檔名若同時含有
+    # 「訊號」和「管理」，管理端絕不能被誤判成會發訊號的那一個。
+    if any(token in name for token in ("admin", "管理")):
+        return "admin"
     if any(token in name for token in ("central", "signal", "hub", "訊號")):
         return "central"
     return "client"
@@ -129,7 +136,8 @@ class QueueLogHandler(logging.Handler):
 class LauncherState:
     def __init__(self, role: str):
         self.role = role
-        self.title = "黃金訊號中心" if role == "central" else "黃金跟單會員端"
+        self.title = {"central": "黃金訊號中心", "admin": "黃金管理端"}.get(
+            role, "黃金跟單會員端")
         # 多開時把實例名稱掛進標題 — 兩個控制台長得一模一樣, 分頁上分不出來
         # 就很容易對著錯的那個改設定 (見 config._instance_name)。
         _inst = _instance_name()
@@ -172,6 +180,13 @@ class LauncherState:
         self._shadow_pumped_at = 0.0
         self._shadow_mt5_dir = None
         self._shadow_tz_offset = None
+        # 訊號端心跳。管理端在另一台，看不到這台的日誌 —— 沒有心跳的話
+        # 分機器反而降低可觀測性，那台死了完全不會知道。
+        self._collector = None
+        self._last_publish_at: Optional[float] = None
+        self._published_today = 0
+        self._published_day = ""
+        self._heartbeat_at = 0.0
         if self.role == "client":
             self._load_session()
 
@@ -564,6 +579,12 @@ class LauncherState:
             self.status = "請先登入"
             self._log("尚未登入，無法啟動跟單")
             raise PermissionError("not_logged_in")
+        # 管理端結構上不能發訊號。它跟訊號端連的是同一個 Hub，只要有辦法
+        # 啟動，超高頻策略就會對同一個 Hub 發單 —— 兩台同時發 = 會員重複
+        # 下單。這裡直接擋死，不靠「記得不要按」。
+        if self.role == "admin":
+            self.status = "管理端不發布訊號"
+            raise PermissionError("admin_cannot_publish")
         self.stop_event.clear()
         target = self._run_central if self.role == "central" else self._run_client
         self.worker = threading.Thread(target=target, daemon=True)
@@ -786,9 +807,9 @@ class LauncherState:
                             publisher,
                             LineMessageLedger(DATA_DIR / "line_message_ledger.sqlite3"),
                             shadow_mode=_truthy(self.settings.get("shadow_mode")),
-                            on_publish=(self.exec_shadow.record
-                                        if self.exec_shadow else None),
+                            on_publish=self._on_signal_published,
                         )
+                        self._collector = collector
                         logger.info(
                             "LINE 資料庫已連線：integrity=%s，聊天室=%s",
                             line_status.get("integrity_check"),
@@ -829,6 +850,10 @@ class LauncherState:
                     self._pump_exec_shadow()
                 except Exception as exc:
                     logger.exception("影子對照錯誤（不影響訊號）：%s", exc)
+                try:
+                    self._report_central_status()
+                except Exception as exc:
+                    logger.exception("心跳回報錯誤（不影響訊號）：%s", exc)
                 self.stop_event.wait(interval)
         except Exception as exc:
             logger.exception("中央訊號中心啟動失敗：%s", exc)
@@ -1159,6 +1184,76 @@ class LauncherState:
     # 影子對照的輪詢間隔。EA 保留 400 根 M1，只要遠小於 400 分鐘就不會漏 K 線；
     # 60 秒既安全又不會一直重算。
     SHADOW_PUMP_SEC = 60.0
+    # 心跳間隔。管理端要能分辨「剛剛還在」和「已經死了」，一分鐘夠細了；
+    # 太密只是白白打 Hub。
+    HEARTBEAT_SEC = 60.0
+
+    def _on_signal_published(self, payload: Dict[str, Any]) -> None:
+        """每發布一筆訊號就走這裡。純觀測，collector 那端已經包好 try。"""
+        now = time.time()
+        self._last_publish_at = now
+        today = time.strftime("%Y-%m-%d", time.localtime(now))
+        if today != self._published_day:
+            self._published_day = today
+            self._published_today = 0
+        self._published_today += 1
+        shadow = self.exec_shadow
+        if shadow is not None:
+            shadow.record(payload)
+
+    def _report_central_status(self) -> None:
+        """把訊號端的健康狀態回報給 Hub，讓另一台的管理端看得到死活。
+
+        失敗只記一行 debug：Hub 暫時連不上不該在日誌裡洗版，更不該影響發布。
+        """
+        now = time.time()
+        if now - self._heartbeat_at < self.HEARTBEAT_SEC:
+            return
+        self._heartbeat_at = now
+
+        collector = self._collector
+        line_ok = collector is not None
+        line_detail = ""
+        line_cursor = ""
+        if line_ok:
+            try:
+                status = collector.source.status()
+                chats = status.get("chats") or []
+                line_detail = "、".join(c.get("display_name", "") for c in chats)
+                line_cursor = str(status.get("integrity_check") or "")
+            except Exception as exc:                      # noqa: BLE001
+                line_ok = False
+                line_detail = f"讀取失敗：{exc}"
+        else:
+            line_detail = "尚未連上 LINE 資料庫"
+
+        shadow_summary = {}
+        if self.exec_shadow is not None:
+            try:
+                s = self.exec_shadow.summary()
+                shadow_summary = {"settled": s.get("settled"), "pending": s.get("pending"),
+                                  "bars": (s.get("bars") or {}).get("count")}
+            except Exception:                             # noqa: BLE001
+                pass
+
+        payload = {
+            "device": self._device_label(),
+            "status": self.status,
+            "started_at": self.service_started_at,
+            "last_publish_at": self._last_publish_at,
+            "published_today": self._published_today,
+            "line_ok": line_ok,
+            "line_detail": line_detail,
+            "line_cursor": line_cursor,
+            "ultra_enabled": _truthy(self.settings.get("ultra_enabled")),
+            "shadow": shadow_summary,
+        }
+        status_code, body = self._hub_call(
+            "/report/central", payload,
+            token=str(self.settings.get("token") or ""),
+            base=self._admin_base(), timeout=8.0)
+        if status_code != 200:
+            logger.debug("心跳回報失敗（不影響發布）：%s %s", status_code, body)
 
     def _pump_exec_shadow(self) -> None:
         """餵新的 M1 K 線給倉庫，再重算未定案的訊號。
@@ -1445,7 +1540,7 @@ def make_handler(state: LauncherState):
             # 只有訊號中心能用，而且控制台只綁本機（對外的 Cloudflare
             # Tunnel 開的是 Hub 那個 port，不是這個控制台）。
             if parsed.path.startswith("/api/admin/"):
-                if state.role != "central":
+                if state.role not in ("central", "admin"):
                     _json_response(self, 403, {"ok": False, "error": "central_only"})
                     return
                 q = f"?{parsed.query}" if parsed.query else ""
@@ -1504,7 +1599,7 @@ def make_handler(state: LauncherState):
             parsed = urllib.parse.urlparse(self.path)
             try:
                 if parsed.path.startswith("/api/admin/"):
-                    if state.role != "central":
+                    if state.role not in ("central", "admin"):
                         _json_response(self, 403, {"ok": False, "error": "central_only"})
                         return
                     status, body = state.admin_proxy(parsed.path[len("/api"):],

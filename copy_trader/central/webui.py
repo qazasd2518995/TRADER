@@ -40,6 +40,23 @@ CLIENT_FIELDS = """
       </div>
 """
 
+# 管理端只需要「連到哪個 Hub、用什麼身分」。LINE、MT5、超高頻那些欄位一個
+# 都不給 —— 它結構上就不會發訊號，留著只會讓人以為那台也該設定。
+ADMIN_FIELDS = """
+      <div class="field-group">
+        <h3>連線</h3>
+        <div class="field-grid">
+          <label>雲端 Hub URL<input id="hub_url" placeholder="https://gold-signal-hub-tw.fly.dev" /></label>
+          <label>Hub 密碼<input id="token" type="password" /></label>
+        </div>
+        <div class="inline-actions">
+          <button class="btn" id="testHub" type="button">測試連線</button>
+          <span class="hint" id="hubResult"></span>
+        </div>
+        <p class="hint">管理端只讀寫雲端 Hub 上的會員資料，不擷取訊號、也不發布任何報單。訊號發布只在訊號端那台進行。</p>
+      </div>
+"""
+
 CENTRAL_FIELDS = """
       <div class="field-group">
         <h3>LINE 本機資料庫</h3>
@@ -1303,6 +1320,11 @@ tbody tr:hover { background: var(--sunk); }
 
 body[data-role="central"] .client-only { display: none; }
 body[data-role="client"]  .central-only { display: none; }
+/* 管理端：看得到會員相關的一切（那些資料都在雲端 Hub），但看不到任何
+   跟「這台機器」綁定的東西 —— LINE 擷取、MT5 圖表、影子對照、發布按鈕。
+   .signal-only 標的就是那些只有訊號端才有意義的區塊。 */
+body[data-role="admin"] .client-only,
+body[data-role="admin"] .signal-only { display: none; }
 
 /* 時區註記：表格裡的時間是「券商牆上時間」，不是使用者電腦的時間。
    兩者可能差好幾個小時（本機是 GMT+8、券商 GMT+3，差 5 小時），
@@ -1672,8 +1694,8 @@ body.auth-locked > *:not(#authGate) { display: none; }
     <a href="#secPending" class="chip is-off client-only" id="chipPending"><span class="dot"></span><span>掛單</span></a>
   </div>
   <div class="rail-actions">
-    <button class="btn btn-go" id="start"><span class="client-only">開始跟單</span><span class="central-only">開始發布</span></button>
-    <button class="btn" id="stop">停止</button>
+    <button class="btn btn-go signal-only" id="start"><span class="client-only">開始跟單</span><span class="central-only">開始發布</span></button>
+    <button class="btn signal-only" id="stop">停止</button>
     __EXTRA_BUTTON__
     <button class="btn btn-quiet" id="themeToggle" title="切換日夜模式" aria-label="切換日夜模式">☾</button>
     <button class="btn" id="toggleSettings" aria-expanded="false">設定</button>
@@ -1735,7 +1757,7 @@ body.auth-locked > *:not(#authGate) { display: none; }
 
   <!-- 只有設定過「其他策略(EA)」才出現；沒用這功能的人畫面完全不變 -->
   <div class="view-tabs" id="viewTabs" hidden>
-    <button type="button" class="view-tab is-on" data-view="signals">__TAB1__</button>
+    <button type="button" class="view-tab is-on signal-only" data-view="signals">__TAB1__</button>
     <button type="button" class="view-tab client-only" data-view="ea">趨勢線策略</button>
     <button type="button" class="view-tab central-only" data-view="members">會員管理</button>
   </div>
@@ -2027,6 +2049,17 @@ body.auth-locked > *:not(#authGate) { display: none; }
 </div><!-- /viewEA -->
 
 <div id="viewMembers" class="central-only" hidden>
+  <!-- 訊號端心跳。管理端在另一台，看不到訊號端的日誌 —— 沒有這一區的話，
+       分兩台反而讓人看不到那台的死活，只會覺得「今天怎麼都沒訊號」。 -->
+  <div class="section-head">
+    <h2>訊號端狀態</h2>
+    <p id="cenSubtitle">另一台常駐擷取 LINE 訊號的機器</p>
+  </div>
+  <div class="card">
+    <div class="ib-stats" id="cenStats"></div>
+    <p class="muted" id="cenDetail" style="margin:12px 2px 0;font-size:var(--t-11)"></p>
+  </div>
+
   <div class="section-head">
     <h2>會員管理</h2>
     <p id="mbrSubtitle">從雲端 Hub 讀取</p>
@@ -2113,11 +2146,11 @@ body.auth-locked > *:not(#authGate) { display: none; }
   <!-- 執行設定影子對照。回測說「TP1 全出 + 停損收緊」比較好，但那是從同一份
        歷史挑出來的；唯一能證明不是過擬合的辦法是往前累積。這一區就是那份
        往前累積的帳，數字只會來自「已經走完」的訊號。 -->
-  <div class="section-head central-only" id="secShadow">
+  <div class="section-head central-only signal-only" id="secShadow">
     <h2>執行設定影子對照</h2>
     <p id="shadowSubtitle">同一批訊號，換一組出場設定會是什麼結果</p>
   </div>
-  <div class="card central-only" id="shadowCard">
+  <div class="card central-only signal-only" id="shadowCard">
     <div class="ib-stats" id="shadowStats"></div>
     <div class="mbr-scroll">
       <table>
@@ -2214,7 +2247,10 @@ body.auth-locked > *:not(#authGate) { display: none; }
 <script>
 "use strict";
 const ROLE = __ROLE_JSON__;
-const IS_CLIENT = ROLE !== "central";
+const IS_CLIENT = ROLE === "client";
+// 管理端在另一台電腦，只管會員與客戶：跟訊號端連同一個 Hub，但沒有 LINE、
+// 沒有 MT5、也不能發布。大部分行為跟訊號中心一樣，差別由 IS_ADMIN 挑出來。
+const IS_ADMIN = ROLE === "admin";
 /* 密碼最短長度由後端的 membership.MIN_PASSWORD_LENGTH 帶過來，
    前後端才不會各自寫死一個數字然後慢慢對不上。 */
 const PW_MIN = __PWMIN__;
@@ -2271,6 +2307,8 @@ const entHas = (name) => !!name && (ENT.sources || []).indexOf(name) !== -1;
 
 
 function ids() {
+  // 管理端只有連線設定。送多餘的鍵會把它沒有的欄位存成空字串。
+  if (IS_ADMIN) return ["hub_url", "token"];
   return ROLE === "central"
     ? ["line_database_path", "line_keychain_service", "line_chats", "market_mt5_files_dir",
        "ultra_strategy_enabled", "ultra_max_signals_per_day", "ultra_cooldown_seconds",
@@ -4346,7 +4384,7 @@ function paintStatus() {
 /* 訊號中心的儀表板。它沒有 MT5、沒有成交紀錄，能講的是
    「服務有沒有在跑、訊號發到哪、會員連不連得到我」。 */
 function paintCentralDash(snap) {
-  if (IS_CLIENT) return;
+  if (IS_CLIENT || IS_ADMIN) return;
   const settings = snap.settings || {};
   const running = !!snap.running;
 
@@ -4939,7 +4977,7 @@ async function refreshStats() {
    只顯示「已定案」的訊號。還在跑的單納進來就是把未實現當已實現，
    那比沒有對照更糟，所以未定案的筆數獨立顯示、不進統計。 */
 async function refreshShadow() {
-  if (IS_CLIENT) return;
+  if (IS_CLIENT || IS_ADMIN) return;   // 影子對照讀的是訊號端本機的 K 線
   const rows = $("shadowRows"), box = $("shadowStats"), sub = $("shadowSubtitle");
   if (!rows) return;
   let payload;
@@ -5007,6 +5045,61 @@ async function refreshShadow() {
   $("shadowNote").textContent = n < 40
     ? "⚠ 只有 " + n + " 筆成交，樣本還太小，任何差距都可能是運氣；建議累積到 100 筆以上再判斷。"
     : "單位為每 1 手（100 盎司）的美元損益，已扣來回成本。只計入已走完的訊號。";
+}
+
+/* ── 訊號端心跳 ──────────────────────────────────────────────────────
+   資料來自 Hub 的 /admin/central/status，訊號端每分鐘回報一次。
+   Hub 不會編一個假的「正常」出來：沒回報過就是空的，這裡照實說。 */
+async function refreshCentralStatus() {
+  const box = $("cenStats");
+  if (!box) return;
+  let data;
+  try {
+    data = await adminGet("/central/status");
+  } catch (e) {
+    box.innerHTML = "";
+    $("cenDetail").textContent = "讀取失敗：" + e.message;
+    return;
+  }
+  const c = data.central || {};
+  const now = Number(data.now || Date.now() / 1000);
+  const stat = (label, value, cls) =>
+    '<dl class="ib-stat"><dt>' + esc(label) + '</dt><dd class="' + (cls || "") +
+    '">' + value + "</dd></dl>";
+  const ago = (ts) => {
+    if (!ts) return "—";
+    const m = Math.max(0, (now - Number(ts)) / 60);
+    if (m < 1) return "剛剛";
+    if (m < 60) return Math.round(m) + " 分鐘前";
+    if (m < 1440) return (m / 60).toFixed(1) + " 小時前";
+    return (m / 1440).toFixed(1) + " 天前";
+  };
+
+  if (!c.reported_at) {
+    box.innerHTML = stat("連線", "從未回報", "mbr-state bad");
+    $("cenDetail").textContent =
+      "訊號端還沒回報過。可能是那台還沒更新到有心跳的版本，或 Hub 位址／密碼不一致。";
+    return;
+  }
+  // 心跳每分鐘一次，超過 5 分鐘沒來就當作失聯 —— 少數幾次漏報不該報警。
+  const silent = (now - Number(c.reported_at)) / 60;
+  const alive = silent < 5;
+  box.innerHTML =
+    stat("心跳", ago(c.reported_at), alive ? "mbr-state good" : "mbr-state bad") +
+    stat("服務狀態", esc(c.status || "—"), alive && c.status === "運行中" ? "mbr-state good" : "") +
+    stat("最後發布", ago(c.last_publish_at)) +
+    stat("今日發布", Number(c.published_today || 0)) +
+    stat("LINE 擷取", c.line_ok ? "正常" : "異常", c.line_ok ? "mbr-state good" : "mbr-state bad") +
+    stat("已開機", ago(c.started_at).replace("前", ""));
+
+  const bits = [];
+  if (c.device) bits.push("機器 " + c.device);
+  if (c.line_detail) bits.push(c.line_detail);
+  if (c.ultra_enabled) bits.push("超高頻已啟用");
+  const sh = c.shadow || {};
+  if (sh.settled != null) bits.push("影子對照 已定案 " + sh.settled + " / 進行中 " + sh.pending);
+  if (!alive) bits.unshift("⚠ 已失聯 " + Math.round(silent) + " 分鐘 —— 那台可能當掉或斷網");
+  $("cenDetail").textContent = bits.join("　·　");
 }
 
 /* ---------------------------------------------------------------- theme */
@@ -5110,7 +5203,7 @@ $("viewTabs").addEventListener("click", (evt) => {
   $("viewSignals").hidden = view !== "signals";
   $("viewEA").hidden = view !== "ea";
   $("viewMembers").hidden = view !== "members";
-  if (view === "members") loadMembers();
+  if (view === "members") { loadMembers(); refreshCentralStatus(); }
 });
 
 /* ------------------------------------------------------------- 會員管理 */
@@ -5394,7 +5487,17 @@ if (!IS_CLIENT) {
   // 訊號中心固定就是「訊號發布 / 會員管理」兩個分頁。會員端那邊是看有沒有
   // 設定第二顆 EA 才決定要不要出現分頁列，中央機沒有那個條件。
   $("viewTabs").hidden = false;
-  $("mbrRefresh").onclick = loadMembers;
+  if (IS_ADMIN) {
+    // 管理端沒有「訊號發布」那一頁（那是訊號端本機的狀態），一進來就是會員管理
+    $("viewSignals").hidden = true;
+    $("viewMembers").hidden = false;
+    [...$("viewTabs").children].forEach((c) =>
+      c.classList.toggle("is-on", c.dataset.view === "members"));
+    loadMembers();
+    refreshCentralStatus();
+    setInterval(refreshCentralStatus, 60000);
+  }
+  $("mbrRefresh").onclick = () => { loadMembers(); refreshCentralStatus(); };
   $("mbrSearch").oninput = (e) => { MBR.filter = e.target.value; renderMembers(); };
   $("mbrNewToggle").onclick = () => {
     const f = $("mbrNewForm");
@@ -5595,15 +5698,20 @@ setInterval(refreshShadow, 30000);
 
 def render(state: Any) -> str:
     """把 LauncherState 塞進樣板。state 需要 role 與 title。"""
-    is_central = getattr(state, "role", "client") == "central"
+    role = str(getattr(state, "role", "client"))
+    is_central = role == "central"
+    is_admin = role == "admin"
     # 會員端不放「測試 Hub」與「關閉程式」：連線狀態上方的狀態列已經在顯示，
     # 而關程式走視窗關閉即可，避免會員誤按停掉跟單。
-    extra_button = '<button class="btn" id="openHub">開啟 Hub 頁面</button>' if is_central else ""
-    subtitle = "訊號發布中心" if is_central else "XAUUSD · 訊號自動跟單"
+    extra_button = ('<button class="btn" id="openHub">開啟 Hub 頁面</button>'
+                    if is_central or is_admin else "")
+    subtitle = {"central": "訊號發布中心",
+                "admin": "會員與客戶管理（不發布訊號）"}.get(
+                    role, "XAUUSD · 訊號自動跟單")
 
     # 初始鎖定狀態由伺服器決定，不要等前端第一次 /api/status 回來才蓋上去 ——
     # 那之間會閃過一眼交易面板，未登入的人會以為程式壞了。
-    locked = (not is_central) and not getattr(state, "auth", None)
+    locked = role == "client" and not getattr(state, "auth", None)
 
     return (
         PAGE.replace("__TITLE__", str(getattr(state, "title", "黃金跟單")))
@@ -5612,7 +5720,8 @@ def render(state: Any) -> str:
         .replace("__SUBTITLE__", subtitle)
         .replace("__ROLE_JSON__", json.dumps(getattr(state, "role", "client")))
         .replace("__ROLE__", str(getattr(state, "role", "client")))
-        .replace("__FIELDS__", CENTRAL_FIELDS if is_central else CLIENT_FIELDS)
+        .replace("__FIELDS__", {"central": CENTRAL_FIELDS,
+                                "admin": ADMIN_FIELDS}.get(role, CLIENT_FIELDS))
         .replace("__EXTRA_BUTTON__", extra_button)
         .replace("__HIGH_FREQ_SOURCE_JSON__", json.dumps(HIGH_FREQ, ensure_ascii=False))
         .replace("__MID_FREQ_SOURCE_JSON__", json.dumps(MID_FREQ, ensure_ascii=False))
@@ -5621,6 +5730,7 @@ def render(state: Any) -> str:
         .replace("__SCHEDULE_LIMIT__", str(SCHEDULE_LIMIT))
         # 會員端的設定一律攤開來（在會員權益上方），不用先按「設定」才看得到；
         # 訊號中心維持收合 —— 那邊的欄位多半是裝好一次就不再動的連線設定。
+        # 管理端的設定就兩個欄位，攤開來比收合合理（第一次裝就是要填它們）。
         .replace("__SETTINGS_HIDDEN__", "hidden" if is_central else "")
         .replace("__TAB1__", "訊號發布" if is_central else "訊號跟單")
         .replace("__PWMIN__", str(MIN_PASSWORD_LENGTH))

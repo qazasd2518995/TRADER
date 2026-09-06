@@ -43,6 +43,10 @@ _CENTRAL = [
     "apsw",
 ]
 
+# 管理端：只跟雲端 Hub 講話，會員資料全在那邊。沒有 LINE、沒有 MT5，
+# 也沒有任何發布路徑 —— 它連 signal_collector 都不打包，結構上就發不了訊號。
+_ADMIN: list[str] = []
+
 _EXCLUDES = [
     "PySide6", "PyQt5", "PyQt6", "tkinter",
     "PIL", "cv2", "numpy", "onnxruntime", "rapidocr", "pytesseract",
@@ -55,11 +59,21 @@ def excludes(role: str) -> list[str]:
     values = list(_EXCLUDES)
     if role == "client":
         values.extend(["apsw", "copy_trader.line_db"])
+    if role == "admin":
+        # 把訊號擷取與發布整段排除。這是安全設計不是瘦身：管理端跟訊號端
+        # 連同一個 Hub，只要打包進去就有機會被啟動，兩台同時發單 = 會員
+        # 重複下單。少一份程式碼就少一種出錯方式。
+        values.extend(["apsw", "copy_trader.line_db",
+                       "copy_trader.central.signal_collector",
+                       "copy_trader.central.ultra_strategy",
+                       "copy_trader.central.exec_shadow",
+                       "copy_trader.central.bar_store",
+                       "copy_trader.backtest", "copy_trader.strategy"])
     return values
 
 
 def hidden(role: str, _platform: str) -> list[str]:
-    modules = _CORE + (_CLIENT if role == "client" else _CENTRAL)
+    modules = _CORE + {"client": _CLIENT, "admin": _ADMIN}.get(role, _CENTRAL)
     return list(dict.fromkeys(modules))
 
 

@@ -154,6 +154,52 @@ class MemberStatusStore:
             return {user: dict(record) for user, record in self._by_user.items()}
 
 
+class CentralHeartbeat:
+    """訊號端自報的健康狀態，只有一台，所以只存一筆。
+
+    為什麼需要
+      訊號端和管理端分開兩台之後，管理端就看不到訊號端的日誌了。沒有心跳的話，
+      分機器反而降低可觀測性 —— 那台死了你在另一台完全不會知道，只會覺得
+      「今天怎麼都沒訊號」。
+
+    跟 MemberStatusStore 一樣只放記憶體：這是每分鐘覆寫的即時值，Hub 重啟後
+    訊號端很快又報一次。「多久沒回報」由前端依 reported_at 自己判斷。
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._record: Dict[str, Any] = {}
+
+    def update(self, payload: Dict[str, Any]) -> None:
+        record = {
+            "device": str(payload.get("device") or ""),
+            "status": str(payload.get("status") or ""),
+            "started_at": _as_float(payload.get("started_at")),
+            "last_publish_at": _as_float(payload.get("last_publish_at")),
+            "published_today": int(_as_float(payload.get("published_today")) or 0),
+            "line_ok": bool(payload.get("line_ok")),
+            "line_detail": str(payload.get("line_detail") or "")[:200],
+            "line_cursor": str(payload.get("line_cursor") or "")[:80],
+            "ultra_enabled": bool(payload.get("ultra_enabled")),
+            "shadow": payload.get("shadow") if isinstance(payload.get("shadow"), dict) else {},
+            "version": str(payload.get("version") or "")[:40],
+            "reported_at": time.time(),
+        }
+        with self._lock:
+            self._record = record
+
+    def snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            return dict(self._record)
+
+
+def _as_float(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class MemberPollTracker:
     """記每位會員上次輪詢 /signals 的時間（純記憶體，不落地）。
 
@@ -437,6 +483,10 @@ class HubRequestHandler(BaseHTTPRequestHandler):
         return getattr(self.server, "member_status", None)
 
     @property
+    def heartbeat(self) -> Optional["CentralHeartbeat"]:
+        return getattr(self.server, "heartbeat", None)
+
+    @property
     def line(self) -> Optional["LineNotifyState"]:
         return getattr(self.server, "line", None)
 
@@ -682,6 +732,15 @@ class HubRequestHandler(BaseHTTPRequestHandler):
                                   "totals": overview.get("totals") or {}})
             return
 
+        if parsed.path == "/admin/central/status":
+            beat = self.heartbeat
+            record = beat.snapshot() if beat is not None else {}
+            # 沒回報過就是空的 —— 讓前端自己說「從未回報」，Hub 不編一個假的
+            # 「正常」出來。
+            self._send_json(200, {"ok": True, "central": record,
+                                  "now": time.time()})
+            return
+
         if parsed.path == "/admin/line/status":
             line = self.line
             self._send_json(200, {"ok": True,
@@ -869,6 +928,25 @@ class HubRequestHandler(BaseHTTPRequestHandler):
             self._handle_admin_post(parsed)
             return
 
+        if parsed.path == "/report/central":
+            # 訊號端自報健康狀態。用管理 token 認身分 —— 只有訊號端持有它，
+            # 會員的 session token 不能冒充。
+            beat = self.heartbeat
+            # 先把 body 讀掉再驗證，否則被拒時 body 沒消化，Windows 端會收到
+            # connection abort 而不是乾淨的 401（會員上報那條踩過同樣的坑）。
+            data = self._read_body()
+            if data is None:
+                return
+            if not self._authorized():
+                self._send_json(401, {"ok": False, "error": "unauthorized"})
+                return
+            if beat is None:
+                self._send_json(503, {"ok": False, "error": "heartbeat_unavailable"})
+                return
+            beat.update(data)
+            self._send_json(200, {"ok": True})
+            return
+
         if parsed.path == "/report/status":
             # 會員端自報 MT5 帳戶／持倉。用會員自己的 session token 認身分,
             # 不是管理 token —— 只能報自己那份, 報不到別人的。
@@ -1009,7 +1087,8 @@ class HubHTTPServer(ThreadingHTTPServer):
                  member_status: Optional["MemberStatusStore"] = None,
                  line: Optional["LineNotifyState"] = None,
                  poll_tracker: Optional["MemberPollTracker"] = None,
-                 exness: Optional[Any] = None):
+                 exness: Optional[Any] = None,
+                 heartbeat: Optional["CentralHeartbeat"] = None):
         super().__init__(server_address, handler_class)
         self.store = store
         self.token = token
@@ -1018,6 +1097,7 @@ class HubHTTPServer(ThreadingHTTPServer):
         self.line = line
         self.poll_tracker = poll_tracker
         self.exness = exness
+        self.heartbeat = heartbeat
 
 
 def run_server(host: str, port: int, store_path: Path, token: str = "",
@@ -1029,6 +1109,7 @@ def run_server(host: str, port: int, store_path: Path, token: str = "",
     exness = ExnessPartnerClient()
     logger.info("Exness Partnership API：%s",
                 "已設定" if exness.enabled else "未設定(未填 EXNESS_PARTNER_LOGIN/PASSWORD)")
+    heartbeat = CentralHeartbeat()
     line = LineNotifyState(store_path.parent / "line_notify_state.json")
     if line.enabled:
         logger.info("LINE 通知已啟用（已登記 %d 個群組）", len(line.target_groups()))
@@ -1048,7 +1129,7 @@ def run_server(host: str, port: int, store_path: Path, token: str = "",
                          "會員登入將不可用, Hub 僅接受管理 token", members_path, e)
 
     httpd = HubHTTPServer((host, port), HubRequestHandler, store, token, members,
-                          member_status, line, poll_tracker, exness)
+                          member_status, line, poll_tracker, exness, heartbeat)
     logger.info("signal hub listening on http://%s:%s (store=%s)", host, port, store_path)
     try:
         httpd.serve_forever()
