@@ -479,14 +479,29 @@ def write_mt5_job(terminal: Path, orders: Sequence[Order], day: str = "") -> Pat
     # MQL5/Files（實際踩過 —— EA 在 OnInit 就因為找不到清單而中止）。
     out = _common_files() / "replay_job.csv"
     # 這個檔是給 EA 讀的（FILE_ANSI），表頭一律 ASCII —— 中文進去會亂碼
-    lines = [f"# server time, offset {offset / 3600:+.0f}h "
-             f"| when,direction,entry,stop,target"]
+    lines = [f"# server time, offset {offset / 3600:+.0f}h | when,direction,"
+             f"entry,stop,target,fill,exit,exit_price,outcome"]
+    # 順便把「後來怎麼了」一起給 EA。成交點與出場點是我們用回測引擎算的，
+    # EA 在真實圖表上沒有訂單，自己算不出來。
+    bars = load_bars()
     for o in rows:
         # 只取最後一檔止盈：MT5 一張單只有一個 TP，分批平倉要另外做，
         # 而畫面上要的就是「這單的目標在哪」。
         target = o.targets[-1] if o.targets else o.entry
-        stamp = _server_stamp(o.when, offset)
-        lines.append(f"{stamp},{o.direction},{o.entry:.2f},{o.stop:.2f},{target:.2f}")
+        start = next((i for i, b in enumerate(bars) if b["t"] >= o.when), None)
+        pb = trace(o, bars, start) if start is not None else Playback()
+        fill = (_server_stamp(bars[pb.fill_index]["t"], offset)
+                if pb.fill_index is not None else "-")
+        exit_at = (_server_stamp(bars[pb.exit_index]["t"], offset)
+                   if pb.exit_index is not None else "-")
+        # 沒成交過就沒有出場價 —— 逾時撤單那幾筆若填當下市價，畫面上會多
+        # 一條跟這張單無關的線，看的人會以為那是成交價。
+        exit_px = (_exit_price(o, bars, pb)
+                   if (pb.fill_index is not None and pb.exit_index is not None)
+                   else 0.0)
+        lines.append(f"{_server_stamp(o.when, offset)},{o.direction},"
+                     f"{o.entry:.2f},{o.stop:.2f},{target:.2f},"
+                     f"{fill},{exit_at},{exit_px:.2f},{_ascii_outcome(pb.outcome)}")
     out.write_text(chr(10).join(lines) + chr(10), encoding="ascii")
 
     first, last = rows[0].when, rows[-1].when
@@ -502,6 +517,16 @@ def write_mt5_job(terminal: Path, orders: Sequence[Order], day: str = "") -> Pat
     if probe:
         print(f"  對照 K 線：{probe}")
     return out
+
+
+# EA 用 FILE_ANSI 讀檔，中文會亂碼，所以結果代碼走 ASCII，由 EA 那邊翻譯。
+_OUTCOME_CODE = {"全部止盈": "TP", "止損": "SL", "保本出場": "BE",
+                 "逾時撤單": "EXPIRED", "逾時平倉": "TIMEOUT",
+                 "未成交": "NOFILL", "資料結束": "OPEN"}
+
+
+def _ascii_outcome(outcome: str) -> str:
+    return _OUTCOME_CODE.get(outcome, "OPEN")
 
 
 def _common_files() -> Path:
