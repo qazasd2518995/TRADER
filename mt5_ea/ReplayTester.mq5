@@ -25,7 +25,7 @@
 
 input string JobFile        = "replay_job.csv";  // 報單清單
 input bool   TakeShots      = true;              // 每根 K 棒截一張圖
-input string ShotPrefix     = "replay/frame";    // 影格檔名前綴
+input string ShotPrefix     = "frame";          // 影格檔名前綴（不要放子目錄，MQL5 不會自動建）
 input int    ShotWidth      = 1280;
 input int    ShotHeight     = 720;
 input double Lots           = 0.10;
@@ -45,6 +45,7 @@ struct Job
 Job      g_jobs[];
 int      g_next  = 0;
 int      g_shots = 0;
+int      g_fails = 0;
 int      g_bars  = 0;
 datetime g_last_bar = 0;
 CTrade   g_trade;
@@ -95,7 +96,7 @@ void OnTick()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-   PrintFormat("回放結束：掛出 %d 筆、截圖 %d 張", g_next, g_shots);
+   PrintFormat("回放結束：掛出 %d 筆、截圖 %d 張（失敗 %d）", g_next, g_shots, g_fails);
 }
 
 //+------------------------------------------------------------------+
@@ -126,19 +127,30 @@ void PlaceOrder(Job &job)
 void Shoot()
 {
    string file = StringFormat("%s_%05d.png", ShotPrefix, g_shots);
-   if(ChartScreenShot(ChartID(), file, ShotWidth, ShotHeight, ALIGN_RIGHT))
-      g_shots++;
-   else if(g_shots == 0)
-      PrintFormat("ChartScreenShot 失敗 err=%d —— 測試器可能不是視覺模式",
-                  GetLastError());
+   ResetLastError();
+   bool ok = ChartScreenShot(ChartID(), file, ShotWidth, ShotHeight, ALIGN_RIGHT);
+   if(ok) g_shots++; else g_fails++;
+   // 前幾次無論成敗都印出來：ChartScreenShot 可能回報成功卻沒寫出檔案
+   // （測試器不是真的在算圖時就會這樣），只看回傳值會被騙。
+   if(g_shots + g_fails <= 3)
+      PrintFormat("截圖 %s -> %s  err=%d  chart=%I64d", file,
+                  ok ? "回報成功" : "失敗", GetLastError(), ChartID());
 }
 
 //+------------------------------------------------------------------+
 bool LoadJobs()
 {
-   int h = FileOpen(JobFile, FILE_READ|FILE_TXT|FILE_ANSI);
+   // 一定要 FILE_COMMON：測試器的每個 agent 有自己的沙箱
+   // （Tester\Agent-...\MQL5\Files），讀不到終端那份 MQL5\Files。
+   // 少了這個旗標，EA 會在 OnInit 就因為「找不到清單」而中止。
+   int h = FileOpen(JobFile, FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON);
    if(h == INVALID_HANDLE)
+   {
+      PrintFormat("開不了共用資料夾裡的 %s（err=%d）—— 那份檔要放在 %s",
+                  JobFile, GetLastError(),
+                  TerminalInfoString(TERMINAL_COMMONDATA_PATH));
       return false;
+   }
 
    while(!FileIsEnding(h))
    {

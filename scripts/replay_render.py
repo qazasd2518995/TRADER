@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -474,7 +475,9 @@ def write_mt5_job(terminal: Path, orders: Sequence[Order], day: str = "") -> Pat
     if not rows:
         raise SystemExit(f"{day or '全部'} 沒有可用的報單")
 
-    out = files / "replay_job.csv"
+    # 一定要寫進共用資料夾：測試器的 agent 有自己的沙箱，讀不到終端的
+    # MQL5/Files（實際踩過 —— EA 在 OnInit 就因為找不到清單而中止）。
+    out = _common_files() / "replay_job.csv"
     # 這個檔是給 EA 讀的（FILE_ANSI），表頭一律 ASCII —— 中文進去會亂碼
     lines = [f"# server time, offset {offset / 3600:+.0f}h "
              f"| when,direction,entry,stop,target"]
@@ -499,6 +502,16 @@ def write_mt5_job(terminal: Path, orders: Sequence[Order], day: str = "") -> Pat
     if probe:
         print(f"  對照 K 線：{probe}")
     return out
+
+
+def _common_files() -> Path:
+    """MT5 的共用資料夾。終端與測試器 agent 都看得到這裡。"""
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        raise SystemExit("讀不到 APPDATA，找不到 MT5 共用資料夾")
+    path = Path(appdata) / "MetaQuotes" / "Terminal" / "Common" / "Files"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _server_stamp(epoch: float, offset: float) -> str:
