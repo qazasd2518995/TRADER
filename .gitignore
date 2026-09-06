@@ -72,3 +72,4 @@ data/market_history/
 # 縮時素材是產生出來的，一支 GIF 就 1.6 MB，不進版控
 data/replays/
 data/recordings/
+data/android/
