@@ -20,7 +20,7 @@ import argparse
 import json
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Sequence
 
@@ -450,6 +450,83 @@ def render_day(day: str, bars: Sequence[dict], orders: Sequence[Order],
     return made
 
 
+# ── 給 MT5 策略測試器用的報單清單 ────────────────────────────────────
+def write_mt5_job(terminal: Path, orders: Sequence[Order], day: str = "") -> Path:
+    """把報單寫成 ReplayTester 讀得懂的 CSV。
+
+    時間一定要換算成該終端的伺服器時間 —— 測試器的 StringToTime 是用
+    伺服器時區解讀的，而訊號時間是真實 epoch。這台機器上 Exness 三台快
+    3 小時、另一家是 0，不換算整批就會錯開好幾小時（見 bar_store 的
+    detect_server_offset）。
+    """
+    from copy_trader.central.bar_store import detect_server_offset
+
+    files = Path(terminal) / "MQL5" / "Files"
+    if not files.is_dir():
+        raise SystemExit(f"找不到 {files}（終端路徑對嗎？）")
+    offset = detect_server_offset(files)
+    if offset is None:
+        raise SystemExit(f"量不出 {terminal} 的伺服器時間偏移 —— "
+                         f"那台要開著、而且 EA 有在寫 rates_M1.json")
+
+    rows = [o for o in orders
+            if not day or datetime.fromtimestamp(o.when).strftime("%Y-%m-%d") == day]
+    if not rows:
+        raise SystemExit(f"{day or '全部'} 沒有可用的報單")
+
+    out = files / "replay_job.csv"
+    # 這個檔是給 EA 讀的（FILE_ANSI），表頭一律 ASCII —— 中文進去會亂碼
+    lines = [f"# server time, offset {offset / 3600:+.0f}h "
+             f"| when,direction,entry,stop,target"]
+    for o in rows:
+        # 只取最後一檔止盈：MT5 一張單只有一個 TP，分批平倉要另外做，
+        # 而畫面上要的就是「這單的目標在哪」。
+        target = o.targets[-1] if o.targets else o.entry
+        stamp = _server_stamp(o.when, offset)
+        lines.append(f"{stamp},{o.direction},{o.entry:.2f},{o.stop:.2f},{target:.2f}")
+    out.write_text(chr(10).join(lines) + chr(10), encoding="ascii")
+
+    first, last = rows[0].when, rows[-1].when
+    print(f"寫出 {out}")
+    print(f"  {len(rows)} 筆 · 伺服器時間偏移 {offset / 3600:+.0f} 小時")
+    print(f"  測試器日期範圍請設："
+          f"{_server_stamp(first, offset)[:10]} ~ "
+          f"{_server_stamp(last + 30 * 3600, offset)[:10]}")
+
+    # 自我驗證：拿第一筆去對真實 K 線。時間換算錯了整批就會錯開好幾小時，
+    # 而且錯了不會有任何徵兆 —— 測試器照樣跑完，只是掛在錯的位置。
+    probe = _verify_against_bars(rows[0], offset)
+    if probe:
+        print(f"  對照 K 線：{probe}")
+    return out
+
+
+def _server_stamp(epoch: float, offset: float) -> str:
+    """真實 epoch -> 伺服器時間字串。
+
+    MQL5 的 datetime 是「秒數，但用 UTC 的方式解讀」。所以要先把真實 epoch
+    加上伺服器偏移，再以 UTC 格式化 —— 用本機時區格式化會再多套一次時差。
+    """
+    return datetime.fromtimestamp(epoch + offset, timezone.utc).strftime(
+        "%Y.%m.%d %H:%M:%S")
+
+
+def _verify_against_bars(order: Order, offset: float) -> str:
+    """把換算後的時間拿去對 M1 歷史，看掛單價是否落在那根附近。"""
+    try:
+        bars = load_bars()
+    except SystemExit:
+        return ""
+    hit = [b for b in bars if b["t"] <= order.when]
+    if not hit:
+        return ""
+    bar = hit[-1]
+    gap = abs(order.entry - bar["c"])
+    verdict = "合理" if gap < 30 else "⚠ 差太多，時間可能對不上"
+    return (f"{_server_stamp(order.when, offset)} 那根收盤 {bar['c']:,.1f}，"
+            f"掛單 {order.entry:,.1f}，差 {gap:.1f} 美元 —— {verdict}")
+
+
 # ── CLI ─────────────────────────────────────────────────────────────
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -460,11 +537,19 @@ def main() -> None:
                     dest="keep_frames", help="保留 PNG 影格（要轉 MP4 時用）")
     ap.add_argument("--date", help="做這一天的全部報單，格式 YYYY-MM-DD")
     ap.add_argument("--today", action="store_true", help="做今天的（給排程用）")
+    ap.add_argument("--mt5-job", dest="mt5_job", metavar="終端路徑",
+                    help=r"改成產生 MT5 策略測試器用的報單清單，例如 D:\MT5-5")
     args = ap.parse_args()
 
     bars = load_bars()
     lo, hi = bars[0]["t"], bars[-1]["t"]
     orders = [o for o in load_orders() if lo <= o.when <= hi]
+
+    if args.mt5_job:
+        write_mt5_job(Path(args.mt5_job), orders,
+                      args.date or ("" if not args.today
+                                    else datetime.now().strftime("%Y-%m-%d")))
+        return
 
     if args.today or args.date:
         day = args.date or datetime.now().strftime("%Y-%m-%d")
