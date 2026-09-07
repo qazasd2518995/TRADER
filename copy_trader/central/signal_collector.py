@@ -113,6 +113,9 @@ class CentralSignalCollector:
         # 出錯絕不能影響發布 —— 所以在 _publish 裡吞掉它的例外。
         self.on_publish = on_publish
         self._recall_checked_at: dict[str, float] = {}
+        # 「已發布但這輪在資料庫裡查不到」的訊息，值是第一次發現消失的時間。
+        # 要連續兩輪都查不到才當成收回 —— 見 _reconcile_recalls 的說明。
+        self._vanished_since: dict[tuple[str, str], float] = {}
 
     @staticmethod
     def _database_id(message: LineDatabaseMessage) -> str:
@@ -429,6 +432,22 @@ class CentralSignalCollector:
     def _local_iso(timestamp: float) -> str:
         return datetime.fromtimestamp(timestamp).astimezone().isoformat()
 
+    @staticmethod
+    def _database_readable(provider, chat) -> bool:
+        """資料庫現在讀得到嗎？
+
+        用來區分「訊息被刪掉」和「整個資料庫讀不到」。後者在換 LINE 帳號、
+        檔案被鎖住、金鑰不對時都會發生 —— 那時候把查不到當成收回，會把一批
+        有效掛單全部撤掉。探不出來就回 False，寧可漏撤也不要誤撤。
+        """
+        probe = getattr(provider, "latest_rowid", None)
+        if not callable(probe):
+            return False
+        try:
+            return int(probe(chat) or 0) > 0
+        except Exception:                                    # noqa: BLE001
+            return False
+
     def _reconcile_recalls(self) -> int:
         """Detect in-place LINE UNSENT transitions for ledgered trades."""
         provider = getattr(self.source, "provider", None)
@@ -462,11 +481,50 @@ class CentralSignalCollector:
                         [str(row["message_id"]) for row in batch],
                     )
                 }
+                # 要確認「資料庫本身是好的」，才能把查不到解讀成訊息被刪。
+                # 不能只看這一批有沒有回傳 —— 觀察窗裡可能就只有那一則訊息，
+                # 它一消失整批就是空的，那樣永遠判不出來。所以批次空的時候
+                # 另外去探一次資料庫。
+                batch_readable = bool(metadata_by_id) or self._database_readable(
+                    provider, chat)
+
                 for row in batch:
                     message_id = str(row["message_id"])
                     metadata = metadata_by_id.get(message_id)
-                    if metadata is None or not metadata.unsent:
-                        continue
+                    key = (chat.chat_id, message_id)
+
+                    if metadata is not None:
+                        self._vanished_since.pop(key, None)
+                        if not metadata.unsent:
+                            continue
+                        vanished = False
+                    else:
+                        # 第三種收回形態：整列從 _message 消失。
+                        #
+                        # 2026-09-07 實測：中頻 14:04:28 貼了「Buy 4388」，31 秒後
+                        # 收回改貼 4385。那一列被整個刪掉，fetch_message_metadata
+                        # 的 WHERE _id IN (...) 就查不到它 —— 原本的
+                        # `if metadata is None: continue` 把它當成「沒事」跳過，
+                        # 於是 4388 那張單留在會員那裡變成幽靈單。
+                        #
+                        # 但「查不到」不能直接等於「被收回」，它也可能是資料庫
+                        # 暫時讀不到、或訊息老到被 LINE 自己清掉。誤撤一張有效
+                        # 掛單比漏撤更糟，所以要三個條件同時成立：
+                        #   1. 同批還有別的訊息讀得到（證明資料庫是好的）
+                        #   2. 訊息還在收回觀察窗內（watched_messages 已經濾過）
+                        #   3. 連續兩輪都查不到（避開 LINE 正在改寫那一列的瞬間）
+                        if not batch_readable:
+                            continue
+                        first_seen = self._vanished_since.get(key)
+                        if first_seen is None:
+                            self._vanished_since[key] = detected_at
+                            logger.info(
+                                "訊息從資料庫消失，先觀察一輪再決定："
+                                "source=%s message=%s",
+                                chat.target.display_name, message_id,
+                            )
+                            continue
+                        vanished = True
                     # 不要求 revision 增加。原本假設收回時 _rev 會從 1 跳到 2
                     # （macOS 版 LINE 的行為），但 Windows 版 LINE 26.3 收回是
                     # 「就地把 _text 清空、_contentMetadata 設 UNSENT，_rev 停在 1」
@@ -478,6 +536,12 @@ class CentralSignalCollector:
                     # 冪等性不靠 revision：下面的 recall_recorded() 記錄過就跳過，
                     # target_execution_ids 又保證只撤真的發布過訂單的訊息。所以
                     # 拿掉這個閘門既修好 Windows、對 macOS 也無害（rev=2 一樣過）。
+                    # metadata 可能是 None（整列被刪），revision 就取不到。
+                    # 帳本那欄是 INTEGER NOT NULL，不能塞 None —— 用 -1 表示
+                    # 「訊息已消失，讀不到版本號」，事後查帳分得出來。
+                    revision = metadata.revision if metadata is not None else -1
+                    reason = "line_deleted" if vanished else "line_unsent"
+
                     recall_event_id = line_event_id(chat.chat_id, message_id, "recall")
                     if self.ledger.recall_recorded(recall_event_id):
                         continue
@@ -497,17 +561,18 @@ class CentralSignalCollector:
                             chat_id=chat.chat_id,
                             message_id=message_id,
                             target_execution_ids=target_execution_ids,
-                            observed_revision=metadata.revision,
+                            observed_revision=revision,
                             original_message_time_ms=int(row["created_time_ms"] or 0),
                             observation_window_started_at=previous_check,
                             detected_at=detected_at,
                             state="shadow",
                         )
                         logger.info(
-                            "shadow LINE recall source=%s message=%s revision=%s",
+                            "shadow LINE recall source=%s message=%s reason=%s revision=%s",
                             chat.target.display_name,
                             message_id,
-                            metadata.revision,
+                            reason,
+                            revision,
                         )
                         continue
 
@@ -521,8 +586,8 @@ class CentralSignalCollector:
                         "target_line_message_id": message_id,
                         "target_execution_ids": target_execution_ids,
                         "target_signals": self.ledger.execution_signals(target_execution_ids),
-                        "cancel_reason": "line_unsent",
-                        "line_revision": metadata.revision,
+                        "cancel_reason": reason,
+                        "line_revision": revision,
                         "message_time": self._local_iso(
                             int(row["created_time_ms"] or 0) / 1000
                         ),
@@ -539,7 +604,7 @@ class CentralSignalCollector:
                         chat_id=chat.chat_id,
                         message_id=message_id,
                         target_execution_ids=target_execution_ids,
-                        observed_revision=metadata.revision,
+                        observed_revision=revision,
                         original_message_time_ms=int(row["created_time_ms"] or 0),
                         observation_window_started_at=previous_check,
                         detected_at=detected_at,
@@ -547,12 +612,15 @@ class CentralSignalCollector:
                         hub_response=response,
                     )
                     published += 1
+                    self._vanished_since.pop(key, None)
                     logger.info(
-                        "published LINE recall-cancel source=%s message=%s orders=%s revision=%s",
+                        "published LINE recall-cancel source=%s message=%s orders=%s "
+                        "reason=%s revision=%s",
                         chat.target.display_name,
                         message_id,
                         len(target_execution_ids),
-                        metadata.revision,
+                        reason,
+                        revision,
                     )
             self._recall_checked_at[chat.chat_id] = detected_at
         return published
