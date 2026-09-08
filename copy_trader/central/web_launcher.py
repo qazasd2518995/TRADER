@@ -173,6 +173,10 @@ class LauncherState:
         # 自動排程：上一次巡檢時「現在該不該在跟單」。None = 還沒巡檢過 /
         # 沒有任何有效排程。只在這個值翻面時動作，見 schedule_tick()。
         self._sched_prev: Optional[bool] = None
+        # 上一輪從 Hub 拿到的期望設定（手機遠端控制）。None = 還沒問過。
+        # 用來分辨「手機改了」還是「本機自己改了」：期望值沒變、本機值卻跟它
+        # 不同，那個差異就是本機造成的，要推上去而不是被蓋掉。
+        self._last_desired: Optional[Dict[str, Any]] = None
         # 執行設定影子對照。訊號中心啟動時才建；沒啟動時 UI 讀到 None
         # 就顯示「尚未啟動」，不要噴錯。
         self.exec_shadow = None
@@ -441,8 +445,12 @@ class LauncherState:
             self.auth_error = "尚未設定訊號伺服器，請聯繫管理員"
             return {"ok": False, "error": self.auth_error}
 
+        # scope=agent: 這是會員的電腦，要收訊號、要下單。手機控制台走的是另一格
+        # (console)，兩邊互不踢下線。不帶這個欄位時 Hub 也會當成 agent，所以
+        # 舊版會員端照樣能用 —— 這裡寫明只是讓意圖不必靠預設值來猜。
         status, body = self._hub_call("/auth/login", {
-            "username": username, "password": password, "device": self._device_label()})
+            "username": username, "password": password,
+            "device": self._device_label(), "scope": "agent"})
 
         if status == 0:
             self.auth_error = "連不上伺服器，請檢查網路"
@@ -1302,13 +1310,118 @@ class LauncherState:
         if settled:
             logger.info("影子對照新定案 %s 筆訊號", settled)
 
+    # 上報的績效統計只取最近這麼多筆做走勢圖。手機上畫不了更多，
+    # payload 也不該為了一條迷你走勢線變胖。
+    CURVE_POINTS = 30
+    RECENT_TRADES = 5
+
+    @staticmethod
+    def _trade_stats(mt5_dir: Path) -> Dict[str, Any]:
+        """從 MT5 的已平倉紀錄算一份精簡績效，給手機控制台顯示。
+
+        **時間一律用券商時鐘。** closed_trades.json 的 close_timestamp 和檔案自己的
+        timestamp 都是 MT5 伺服器時間（實測比本機快 3 小時），拿本機時鐘去切
+        「今天」會整整錯開三小時、把昨晚的單算進今天。兩個都用券商時鐘互相比，
+        偏移就自己抵消掉了。
+
+        只算 magic 999999（本系統下的單）。會員自己手動下的單不該混進來 ——
+        這一頁講的是跟單績效，不是他的總損益。
+        """
+        data = _read_json_dict(mt5_dir / "closed_trades.json")
+        trades = [t for t in (data.get("trades") or [])
+                  if isinstance(t, dict) and int(t.get("magic") or 0) == 999999]
+        out: Dict[str, Any] = {
+            "total": 0, "wins": 0, "losses": 0, "win_rate": None,
+            "profit_total": 0.0, "profit_today": 0.0, "profit_week": 0.0,
+            "curve": [], "recent": [],
+        }
+        if not trades:
+            return out
+
+        def close_ts(t):
+            try:
+                return float(t.get("close_timestamp") or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        trades.sort(key=close_ts)
+        # 檔案沒寫 timestamp 時退回「最後一筆成交時間」當現在 —— 同一個時鐘，
+        # 頂多讓「今日」的範圍保守一點，不會算錯到別天去。
+        now = float(data.get("timestamp") or 0) or close_ts(trades[-1])
+        day_start = now - (now % 86400)
+        week_start = day_start - 6 * 86400
+
+        cum = 0.0
+        curve = []
+        for t in trades:
+            try:
+                p = float(t.get("profit") or 0.0)
+            except (TypeError, ValueError):
+                p = 0.0
+            cum += p
+            curve.append(round(cum, 2))
+            ts = close_ts(t)
+            out["total"] += 1
+            if p > 0:
+                out["wins"] += 1
+            elif p < 0:
+                out["losses"] += 1
+            if ts >= day_start:
+                out["profit_today"] += p
+            if ts >= week_start:
+                out["profit_week"] += p
+
+        decided = out["wins"] + out["losses"]
+        out["win_rate"] = round(out["wins"] / decided * 100, 1) if decided else None
+        out["profit_total"] = round(cum, 2)
+        out["profit_today"] = round(out["profit_today"], 2)
+        out["profit_week"] = round(out["profit_week"], 2)
+        out["curve"] = curve[-LauncherState.CURVE_POINTS:]
+        out["recent"] = [{
+            "symbol": t.get("symbol"), "type": t.get("type"),
+            "volume": t.get("volume"), "profit": t.get("profit"),
+            "close_time": t.get("close_time"),
+        } for t in trades[-LauncherState.RECENT_TRADES:][::-1]]
+        return out
+
+    def _idle_hub(self):
+        """沒在跟單時用的臨時 Hub 連線。
+
+        跟單中時 client_agent 自己有一條；停止時它會被設成 None，但我們仍然
+        需要跟 Hub 講話 —— 否則手機上按「開始跟單」永遠不會有人聽見，
+        遠端控制就只剩「暫停」做得到，而「恢復」才是會員在外面最想按的那個。
+        """
+        if self.role != "client" or not self.auth:
+            return None
+        base = self._hub_base()
+        token = str((self.auth or {}).get("session_token") or "")
+        if not base or not token:
+            return None
+        # 區域匯入 —— 這個檔案裡所有用到 HubClient 的地方都是這樣（見 _run_client）。
+        # 先前這裡少了這一行，NameError 被下面的 except 吞掉，_idle_hub 永遠回 None，
+        # 於是「停止跟單時同步設定」整條路靜靜地沒作用，日誌一行都沒有。
+        from copy_trader.central.mt5_client_agent import HubClient
+        try:
+            return HubClient(base, token)
+        except (OSError, ValueError) as exc:
+            # 只吞連線/參數問題。程式錯誤要讓它炸出來被上層記錄，
+            # 不然又是一個查半天的無聲失敗。
+            logger.warning("建立閒置 Hub 連線失敗：%s", exc)
+            return None
+
     def _report_member_status(self) -> None:
-        """讀本機 MT5 三個橋接檔，組精簡快照上報 Hub。整段吞例外——
-        這是旁路，任何失敗都不能影響跟單。"""
-        agent = self.client_agent
-        if agent is None or self.role != "client":
+        """讀本機 MT5 三個橋接檔，組精簡快照上報 Hub，並取回期望設定。
+
+        跟單中每 10 秒一次（由跟單迴圈驅動），沒跟單時每 20 秒一次（由排程
+        迴圈驅動）。兩種情況都要報：停止跟單和「電腦根本沒開」在手機上必須
+        分得出來，否則會員看到「掛機端離線」會以為是網路壞了。
+
+        整段吞例外 —— 這是旁路，任何失敗都不能影響跟單。
+        """
+        if self.role != "client":
             return
-        hub = getattr(agent, "hub", None)
+        agent = self.client_agent
+        hub = getattr(agent, "hub", None) if agent is not None else self._idle_hub()
         if hub is None:
             return
         try:
@@ -1317,7 +1430,10 @@ class LauncherState:
             # 偵測出真正的 MT5 目錄（config.py 的 _find_mt5_files_dir），下單
             # 走的是偵測後的結果。先前這裡直接讀 settings，於是「本機一切正常、
             # 上報卻全是 None」——後台誤判成對方沒接上 MT5。
-            trade_manager = getattr(agent, "trade_manager", None)
+            # 沒跟單時沒有 TradeManager，只好退回 settings 裡的路徑。這時
+            # 上報的 MT5 欄位可能是空的，但「有沒有在跟單」與設定同步照樣正常，
+            # 那才是這條路徑存在的目的。
+            trade_manager = getattr(agent, "trade_manager", None) if agent else None
             resolved = str(getattr(trade_manager, "mt5_files_dir", "") or "")
             mt5_dir = Path(resolved or str(self.settings.get("mt5_files_dir") or ""))
             account = _read_json_dict(mt5_dir / "account_info.json")
@@ -1340,16 +1456,116 @@ class LauncherState:
                 mt5_stale = age > 120
             except OSError:
                 mt5_stale = True
-            hub.report_status({
+            payload = {
                 "account": account_slim,
                 "positions": positions,
                 "positions_count": len(positions),
                 "orders_count": len(orders_raw),
                 "device": self._device_label(),
                 "mt5_stale": mt5_stale,
-            })
+                # 待成交掛單也送出去 —— 手機上「有沒有單在等進場」是會員最常
+                # 想確認的一件事，只給數字不夠。
+                "orders": [{
+                    "symbol": o.get("symbol"), "type": o.get("type"),
+                    "volume": o.get("volume"), "price": o.get("price"),
+                    "sl": o.get("sl"), "tp": o.get("tp"),
+                } for o in orders_raw if isinstance(o, dict)][:20],
+            }
+            try:
+                payload["stats"] = self._trade_stats(mt5_dir)
+            except Exception as exc:                 # noqa: BLE001
+                logger.debug("算績效統計失敗（不影響上報）：%s", exc)
+            # 遠端設定是後來疊上去的旁路，自己再包一層 —— 它壞掉不該連累帳戶
+            # 快照上報，那是更早、更重要的功能（後台靠它看會員死活）。
+            try:
+                local = self._local_remote_settings()
+                payload["settings_applied"] = local
+                # 會員在自己電腦上按了開始/停止或改了手數 —— 推上去當新的期望值。
+                # 不推的話 Hub 還記著舊值，下一輪就把他剛按的東西改回去。
+                #
+                # 判斷方式：期望設定跟上一輪比沒變（手機沒動過），但本機值跟它
+                # 不同 → 那個差異一定是本機這邊造成的。
+                #
+                # **只比對 Hub 有意見的鍵。** Hub 從沒設過的鍵，本機是什麼都
+                # 不算「變更」—— 沒有東西可以跟它牴觸。拿整包比的話，會員從沒
+                # 在手機上碰過手數時，本機的手數會每一輪都被推上去，把 Hub
+                # 原本「沒意見」的欄位硬變成有意見。
+                last = getattr(self, "_last_desired", None)
+                if last:
+                    diff = {k: local[k] for k in last
+                            if k in local and local[k] != last[k]}
+                    if diff:
+                        payload["settings_push"] = diff
+            except Exception as exc:             # noqa: BLE001
+                logger.debug("組遠端設定失敗（不影響上報）：%s", exc)
+
+            response = hub.report_status(payload)
+
+            try:
+                if isinstance(response, dict):
+                    self._sync_remote_settings(response.get("settings"))
+            except Exception as exc:             # noqa: BLE001
+                logger.debug("套用遠端設定失敗（不影響跟單）：%s", exc)
         except Exception as exc:                 # noqa: BLE001
             logger.debug("上報帳戶狀態失敗（不影響跟單）：%s", exc)
+
+    # ── 手機遠端設定 ────────────────────────────────────────────────────
+    # 期望狀態同步，不是指令佇列。掛機端關了兩小時再開，佇列裡躺著一串
+    # 「暫停/繼續/暫停」照順序重播毫無意義；期望狀態只要收斂到最後一次的
+    # 意圖就好，重複讀取也是冪等的。
+    def _local_remote_settings(self) -> Dict[str, Any]:
+        """本機目前「實際是什麼樣子」——手機頁面拿它跟期望值比對顯示已套用。"""
+        agent = getattr(self, "client_agent", None)
+        tm = getattr(agent, "trade_manager", None) if agent else None
+        lot = getattr(tm, "default_lot_size", None)
+        if lot is None:
+            try:
+                lot = float(self.settings.get("default_lot_size") or 0) or None
+            except (TypeError, ValueError):
+                lot = None
+        out: Dict[str, Any] = {"following": bool(getattr(self, "worker", None)
+                                                 and self.worker.is_alive())}
+        if lot:
+            out["lot_size"] = round(float(lot), 2)
+        return out
+
+    def _sync_remote_settings(self, desired: Any) -> None:
+        """把 Hub 上的期望設定套到本機。只動「有出現的鍵」。
+
+        沒出現的鍵代表「遠端對這件事沒有意見」，本機維持原樣 —— 所以這個功能
+        上線的當下不會改變任何人的行為，要等會員真的在手機上按了什麼。
+        """
+        if not isinstance(desired, dict):
+            return
+        first_sight = self._last_desired is None
+        changed = desired != self._last_desired
+        self._last_desired = dict(desired)
+        if not changed and not first_sight:
+            return
+
+        # 手數：寫進設定檔並即時套用到執行中的交易引擎（save_settings 會做）。
+        lot = desired.get("lot_size")
+        if lot is not None:
+            try:
+                if abs(float(lot) - float(self.settings.get("default_lot_size") or 0)) > 1e-9:
+                    self.save_settings({"default_lot_size": str(lot)})
+                    self._log(f"手機遠端設定：基礎手數 → {lot}")
+            except (TypeError, ValueError):
+                pass
+
+        # 跟單開關。啟動失敗（沒登入、額度用盡）只記錄，不能讓它把整個
+        # 上報執行緒炸掉 —— 這是旁路。
+        want = desired.get("following")
+        if isinstance(want, bool) and want != self.is_running():
+            try:
+                if want:
+                    self.start_service()
+                    self._log("手機遠端設定：開始跟單")
+                else:
+                    self.stop_service()
+                    self._log("手機遠端設定：暫停跟單")
+            except Exception as exc:            # noqa: BLE001
+                self._log(f"手機遠端設定套用失敗：{exc}")
 
     def drain_logs(self) -> None:
         while True:
@@ -1790,12 +2006,22 @@ def main(default_role: Optional[str] = None) -> None:
 
 def _schedule_loop(state: LauncherState) -> None:
     """每 20 秒巡一次排程。20 秒的誤差對「幾點開始跟單」來說看不出來，
-    又不會讓一支背景執行緒每秒醒過來。"""
+    又不會讓一支背景執行緒每秒醒過來。
+
+    順便在「沒跟單」時做設定同步。跟單中的同步是跟單迴圈每 10 秒做的，
+    但那個迴圈停下來時 client_agent 就沒了 —— 沒有這一段的話，會員在手機上
+    按「開始跟單」永遠不會有人聽見，遠端控制就只剩暫停做得到。
+    """
     while True:
         try:
             state.schedule_tick()
         except Exception:                            # noqa: BLE001
             logger.debug("排程巡檢失敗", exc_info=True)
+        try:
+            if state.role == "client" and state.auth and not state.is_running():
+                state._report_member_status()        # noqa: SLF001
+        except Exception:                            # noqa: BLE001
+            logger.debug("閒置時的設定同步失敗", exc_info=True)
         time.sleep(20)
 
 

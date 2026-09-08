@@ -121,6 +121,112 @@ SESSION_IDLE_TIMEOUT = 24 * 3600
 # 「每次輪詢都寫磁碟」降成「每 30 秒才寫一次」的節流閥。
 LAST_SEEN_WRITE_INTERVAL = 30.0
 
+# ── 連線種類 ────────────────────────────────────────────────────────────────
+# 一個帳號有兩條互不干擾的連線, 各自只能有一個:
+#
+#   agent   會員的電腦。收訊號、下單。「一個帳號只有一台電腦在跟單」這條
+#           授權管控就是靠這一格 —— 新登入覆蓋舊的, 語意完全沒變。
+#   console 手機／瀏覽器。只能讀自己的狀態、寫自己的設定。
+#
+# **console 永遠拿不到 /signals。** 這是付費閘門, 不能因為多開一條連線就漏;
+# 也因為它拿不到訊號, 多這一格不會讓帳號共用變得有利可圖。
+# 連帶地, 用量計費(consume)只發生在 agent —— 否則會員在手機上滑一滑就在燒
+# 自己買的時數。
+SCOPE_AGENT = "agent"
+SCOPE_CONSOLE = "console"
+SCOPES = (SCOPE_AGENT, SCOPE_CONSOLE)
+
+# 每一格對應的欄位名。所有 SQL 都從這裡取, 免得哪裡漏改一個欄位就串到另一格。
+_SESSION_COLUMNS = {
+    SCOPE_AGENT: ("session_token", "session_device",
+                  "session_started_at", "last_seen_at"),
+    SCOPE_CONSOLE: ("console_session_token", "console_session_device",
+                    "console_session_started_at", "console_last_seen_at"),
+}
+
+
+def normalize_scope(scope: Optional[str]) -> str:
+    """不認得的一律當 agent —— 舊版會員端不會帶這個欄位, 必須照舊運作。"""
+    return scope if scope in SCOPES else SCOPE_AGENT
+
+
+# ── 遠端設定（手機控制掛機端）────────────────────────────────────────────────
+# 只放「會員在外面會想動」的東西。hub_url / token / MT5 路徑那些是基礎設定,
+# 沒理由出現在手機上, 也不該讓一條被偷走的連線改得動。
+#
+# **預設是空的 {}**, 不是「一組預設值」。這很重要: 會員端只套用「有出現的鍵」,
+# 所以這個功能上線的當下不會改變任何人的行為 —— 要等會員真的按了什麼,
+# 那個鍵才會出現。否則升級的瞬間會把所有停著的掛機端通通打開。
+SETTING_KEYS = ("following", "lot_size")
+
+# 手數的絕對上下限。等級上限(max_lot)另外夾, 這裡只擋明顯荒謬的值。
+LOT_MIN = 0.01
+LOT_MAX = 100.0
+
+
+def sanitize_settings(patch: Any, *, max_lot: Optional[float] = None
+                      ) -> Tuple[Dict[str, Any], List[str]]:
+    """把外面送進來的設定濾成乾淨的一份, 回傳 (可用的設定, 被拒絕的原因)。
+
+    認不得的鍵一律丟掉 —— 不是報錯, 是丟掉。這樣舊版手機頁面送新欄位、
+    或新版送舊 Hub 認不得的欄位, 都只會少生效一項, 不會整包失敗。
+
+    max_lot 是這個等級的手數上限(None = 不限)。**這裡是唯一可信的地方** ——
+    會員端在自己的電腦上, 設定檔他想改就改, 擋不住也不用擋(那只影響他自己的
+    風險)。但從我們的伺服器發出去的值必須是合規的, 否則等級就沒有意義了。
+    """
+    out: Dict[str, Any] = {}
+    rejected: List[str] = []
+    if not isinstance(patch, dict):
+        return out, ["not_a_dict"]
+
+    for key, value in patch.items():
+        if key not in SETTING_KEYS:
+            rejected.append(f"unknown:{key}")
+            continue
+        if key == "following":
+            if isinstance(value, bool):
+                out[key] = value
+            elif isinstance(value, (int, float)) and value in (0, 1):
+                out[key] = bool(value)
+            elif isinstance(value, str) and value.lower() in ("true", "false"):
+                out[key] = value.lower() == "true"
+            else:
+                rejected.append("following:not_a_bool")
+        elif key == "lot_size":
+            try:
+                lot = float(value)
+            except (TypeError, ValueError):
+                rejected.append("lot_size:not_a_number")
+                continue
+            if lot != lot or lot in (float("inf"), float("-inf")):
+                rejected.append("lot_size:not_finite")
+                continue
+            if lot < LOT_MIN:
+                rejected.append("lot_size:below_min")
+                lot = LOT_MIN
+            ceiling = LOT_MAX if max_lot is None else min(float(max_lot), LOT_MAX)
+            if lot > ceiling:
+                # 夾住而不是拒絕: 會員把手數拉到超過等級上限時, 給他上限值並
+                # 告訴他被夾了, 比整個操作失敗、他不知道發生什麼事好。
+                rejected.append("lot_size:capped_by_tier")
+                lot = ceiling
+            out[key] = round(lot, 2)
+    return out, rejected
+
+
+def _row_get(row: Any, key: str, default: Any = None) -> Any:
+    """sqlite3.Row 沒有 .get()，欄位不存在會丟 IndexError。
+
+    遷移保證欄位一定在，但 _row_to_public 也吃得到測試裡手做的 dict，
+    少一個欄位就整個炸掉不值得。
+    """
+    try:
+        value = row[key]
+    except (IndexError, KeyError, TypeError):
+        return default
+    return default if value is None and default is not None else value
+
 # 密碼雜湊參數。PBKDF2-HMAC-SHA256, 迭代次數取 OWASP 2023 對此演算法的建議值。
 _PBKDF2_ITERATIONS = 600_000
 _SALT_BYTES = 16
@@ -260,7 +366,8 @@ CREATE TABLE IF NOT EXISTS members (
     status             TEXT    NOT NULL DEFAULT 'active',   -- active | suspended
     note               TEXT    NOT NULL DEFAULT '',
     created_at         REAL    NOT NULL,
-    -- 單一裝置: 一個帳號同時只認一組 session, 新登入直接覆蓋舊的
+    -- 跟單連線: 一個帳號同時只認一組, 新登入直接覆蓋舊的。這是授權管控 ——
+    -- 一個帳號只能有一台電腦在跟單。控制台連線另有一組(見 _migrate)。
     session_token      TEXT,
     session_device     TEXT    NOT NULL DEFAULT '',
     session_started_at REAL,
@@ -314,6 +421,11 @@ class MemberStore:
           帳號第一天就會顯示 7/30 = 23%, 看起來像快到期了。
         last_active_at: 上次「有在跟單且開盤」而扣時間的時間點, 用來算兩次輪詢的
           間隔。與 last_seen_at(閒置斷線/最後上線顯示)分開, 語意才不會打架。
+
+        console_session_*: 手機／瀏覽器控制台的連線, 跟跟單連線完全分開。
+          會員在手機上登入不能把自己的電腦踢下線 —— 那會直接停掉跟單。
+          控制台這條線拿不到訊號(見 SCOPE_CONSOLE 的說明), 所以多開一組
+          不會破壞「一個帳號只有一台電腦在跟單」的授權管控。
         """
         cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(members)")}
         if "usage_seconds_left" not in cols:
@@ -322,6 +434,28 @@ class MemberStore:
             self._conn.execute("ALTER TABLE members ADD COLUMN last_active_at REAL")
         if "usage_seconds_total" not in cols:
             self._conn.execute("ALTER TABLE members ADD COLUMN usage_seconds_total REAL")
+        if "settings_json" not in cols:
+            # 遠端設定必須落地。即時狀態(MemberStatusStore)是放記憶體的, Hub 一
+            # 重啟就沒了無所謂 —— 十秒內會員端就補回來。設定不行: 會員按了暫停,
+            # Hub 重啟後如果忘記, 他的掛機端就自己跑起來了。
+            self._conn.execute("ALTER TABLE members ADD COLUMN settings_json TEXT")
+            self._conn.execute("ALTER TABLE members ADD COLUMN settings_updated_at REAL")
+            self._conn.execute(
+                "ALTER TABLE members ADD COLUMN settings_updated_by TEXT"
+                " NOT NULL DEFAULT ''")
+        if "console_session_token" not in cols:
+            self._conn.execute(
+                "ALTER TABLE members ADD COLUMN console_session_token TEXT")
+            self._conn.execute(
+                "ALTER TABLE members ADD COLUMN console_session_device TEXT"
+                " NOT NULL DEFAULT ''")
+            self._conn.execute(
+                "ALTER TABLE members ADD COLUMN console_session_started_at REAL")
+            self._conn.execute(
+                "ALTER TABLE members ADD COLUMN console_last_seen_at REAL")
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_members_console_session"
+                " ON members(console_session_token)")
 
     def close(self) -> None:
         with self._lock:
@@ -343,7 +477,12 @@ class MemberStore:
             "last_seen_at": row["last_seen_at"],
             "session_device": row["session_device"],
             "session_started_at": row["session_started_at"],
+            # online 一律是「跟單連線在不在」。後台那欄的意思是「這個人正在跟單」,
+            # 不能因為他手機開著就變成在線 —— 那會讓人以為訊號有送到。
             "online": bool(row["session_token"]),
+            "console_device": _row_get(row, "console_session_device", ""),
+            "console_started_at": _row_get(row, "console_session_started_at"),
+            "console_online": bool(_row_get(row, "console_session_token")),
             "expired": _row_expired(row),
             # 用量計時: 進階版以上, 方案時間是一份「使用額度」(秒), 只有開盤+跟單才扣。
             "time_pause": time_pause,
@@ -562,9 +701,10 @@ class MemberStore:
         with self._lock:
             if self._get_row(username) is None:
                 raise ValueError(f"查無帳號: {username}")
-            # 改密碼等於強制登出所有裝置
+            # 改密碼等於強制登出所有裝置（兩格都清）
             self._conn.execute(
-                "UPDATE members SET password_hash = ?, session_token = NULL"
+                "UPDATE members SET password_hash = ?, session_token = NULL,"
+                " console_session_token = NULL"
                 " WHERE username = ? COLLATE NOCASE", (hash_password(plain), username))
             self._conn.commit()
             row = self._get_row(username)
@@ -580,11 +720,15 @@ class MemberStore:
         return cur.rowcount > 0
 
     def kick(self, username: str) -> bool:
-        """把該帳號目前的 session 作廢（不改密碼）。"""
+        """把該帳號的所有連線作廢（不改密碼）。
+
+        兩格都清 —— 管理員按「踢下線」的意思是「這個人現在給我離線」,
+        留一條手機連線著不符合那個意圖。
+        """
         with self._lock:
             cur = self._conn.execute(
-                "UPDATE members SET session_token = NULL WHERE username = ? COLLATE NOCASE",
-                (username,))
+                "UPDATE members SET session_token = NULL, console_session_token = NULL"
+                " WHERE username = ? COLLATE NOCASE", (username,))
             self._conn.commit()
         return cur.rowcount > 0
 
@@ -597,12 +741,19 @@ class MemberStore:
 
     # ── 會員端 ──────────────────────────────────────────────────────────
     def login(self, username: str, password: str, *, device: str = "",
-              ip: str = "") -> Tuple[Optional[Dict[str, Any]], str]:
+              ip: str = "", scope: str = SCOPE_AGENT
+              ) -> Tuple[Optional[Dict[str, Any]], str]:
         """回傳 (結果, 錯誤碼)。成功時結果含 session_token 與額度。
 
         錯誤碼刻意不區分「帳號不存在」與「密碼錯誤」—— 都回 bad_credentials,
         免得變成帳號列舉的工具。
+
+        scope 決定寫進哪一格連線(見 SCOPE_AGENT / SCOPE_CONSOLE)。兩格各自
+        只認一組、各自覆蓋, 但互不影響 —— 手機登入不會把電腦踢下線。
+        舊版會員端不會帶 scope, normalize 之後就是 agent, 行為完全照舊。
         """
+        scope = normalize_scope(scope)
+        tok_col, dev_col, started_col, seen_col = _SESSION_COLUMNS[scope]
         username = (username or "").strip()
         with self._lock:
             row = self._get_row(username)
@@ -627,13 +778,15 @@ class MemberStore:
 
             token = secrets.token_urlsafe(32)
             now = time.time()
-            kicked = bool(row["session_token"])
+            kicked = bool(row[tok_col])
             self._conn.execute(
-                "UPDATE members SET session_token = ?, session_device = ?,"
-                " session_started_at = ?, last_seen_at = ? WHERE id = ?",
+                f"UPDATE members SET {tok_col} = ?, {dev_col} = ?,"
+                f" {started_col} = ?, {seen_col} = ? WHERE id = ?",
                 (token, device[:120], now, now, row["id"]))
-            self._log_event(username, True, device, ip,
-                            "kicked_previous" if kicked else "ok")
+            # 事件記下是哪一種連線 —— 「我沒有共用帳號」的爭議要分得出
+            # 「他從手機看了一下」和「另一台電腦在跟單」。
+            detail = "kicked_previous" if kicked else "ok"
+            self._log_event(username, True, device, ip, f"{scope}:{detail}")
             self._conn.commit()
             row = self._get_row(username)
             # 登入即初始化使用額度(舊帳號從剩餘日曆時間換算)。登入不扣時間。
@@ -642,6 +795,7 @@ class MemberStore:
 
         out = self._row_to_public(row)
         out["session_token"] = token
+        out["session_scope"] = scope
         out["entitlements"] = tier_entitlements(row["tier"])
         out["kicked_previous"] = kicked
         if tier_has_time_pause(row["tier"]):
@@ -659,6 +813,9 @@ class MemberStore:
         consume=True: 這一次呼叫代表「會員正在跟單」(只有 /signals 輪詢會傳, 而
           會員端只在跟單時才輪詢 /signals)。對用量制會員, 會依「開盤與否」扣掉自上次
           扣款以來的時間。非跟單的呼叫(/auth/me 續期)一律 consume=False, 只讀不扣。
+
+        回傳的 member 帶 session_scope, 呼叫端據此決定給不給訊號。**控制台連線
+        一律不計費** —— 不管呼叫端傳什麼, 在手機上滑不該燒掉會員買的時數。
         """
         if not token:
             return None, "no_token"
@@ -668,17 +825,27 @@ class MemberStore:
         with self._lock:
             row = self._conn.execute(
                 "SELECT * FROM members WHERE session_token = ?", (token,)).fetchone()
+            scope = SCOPE_AGENT
+            if row is None:
+                row = self._conn.execute(
+                    "SELECT * FROM members WHERE console_session_token = ?",
+                    (token,)).fetchone()
+                scope = SCOPE_CONSOLE
             if row is None:
                 # 找不到 = 要嘛沒登入過, 要嘛被新裝置踢掉了
                 return None, "session_invalid"
+            tok_col, _dev_col, _started_col, seen_col = _SESSION_COLUMNS[scope]
+            # 控制台不計費, 不管呼叫端傳什麼
+            if scope == SCOPE_CONSOLE:
+                consume = False
             if row["status"] != "active":
                 return None, "suspended"
             if _row_expired(row):
                 return None, "expired"
-            last = float(row["last_seen_at"] or 0)
+            last = float(row[seen_col] or 0)
             if last and now - last > SESSION_IDLE_TIMEOUT:
                 self._conn.execute(
-                    "UPDATE members SET session_token = NULL WHERE id = ?", (row["id"],))
+                    f"UPDATE members SET {tok_col} = NULL WHERE id = ?", (row["id"],))
                 self._conn.commit()
                 return None, "session_expired"
 
@@ -710,9 +877,12 @@ class MemberStore:
                             self._conn.commit()
                             consuming = market and billed > 0
                             if fresh_left <= 0:
-                                # 額度用盡 → 立刻作廢 session, 會員端會被登出並提示續費
+                                # 額度用盡 → 立刻作廢跟單連線, 會員端會被登出並提示續費。
+                                # 控制台那格不動 —— 只有 agent 會走到這裡(console
+                                # 上面已強制 consume=False), 而且讓他還能在手機上
+                                # 看到「額度用盡」比直接斷線清楚。
                                 self._conn.execute(
-                                    "UPDATE members SET session_token = NULL WHERE id = ?",
+                                    f"UPDATE members SET {tok_col} = NULL WHERE id = ?",
                                     (row["id"],))
                                 self._conn.commit()
                                 return None, "expired"
@@ -730,10 +900,11 @@ class MemberStore:
             # 後台「最後上線」顯示。兩者都不在乎 30 秒的誤差。
             if now - last >= LAST_SEEN_WRITE_INTERVAL:
                 self._conn.execute(
-                    "UPDATE members SET last_seen_at = ? WHERE id = ?", (now, row["id"]))
+                    f"UPDATE members SET {seen_col} = ? WHERE id = ?", (now, row["id"]))
                 self._conn.commit()
 
         member = self._row_to_public(row)
+        member["session_scope"] = scope
         member["entitlements"] = tier_entitlements(row["tier"])
         if usage_block is not None:
             member["usage"] = usage_block
@@ -748,9 +919,10 @@ class MemberStore:
 
         1. 要驗舊密碼。否則有人趁會員電腦沒鎖就能把帳號整個接管過去
            —— session 已經在那台機器上了，不驗舊密碼等於零門檻。
-        2. **保留呼叫者當下的 session**。單一裝置模式下就只有這一個
-           session，改完密碼還把自己踢掉會很莫名其妙。其他裝置本來就
-           不可能有 session（新登入會覆蓋），所以不必額外清。
+        2. **兩格連線都保留**。改完密碼把自己踢掉很莫名其妙；而且會員多半
+           是在手機上改密碼，若順手清掉跟單那格，等於改個密碼就把跟單停了
+           —— 那是比「多留一條自己的連線」嚴重得多的故障。真的要清乾淨時
+           走管理員的 reset_password，那個兩格都清。
         """
         if not token:
             return False, "no_token"
@@ -759,17 +931,25 @@ class MemberStore:
             return False, "too_short"
 
         with self._lock:
-            row = self._conn.execute(
-                "SELECT * FROM members WHERE session_token = ?", (token,)).fetchone()
+            row = None
+            scope = SCOPE_AGENT
+            for cand in SCOPES:
+                tok_col = _SESSION_COLUMNS[cand][0]
+                row = self._conn.execute(
+                    f"SELECT * FROM members WHERE {tok_col} = ?", (token,)).fetchone()
+                if row is not None:
+                    scope = cand
+                    break
             if row is None:
                 return False, "session_invalid"
+            dev_col = _SESSION_COLUMNS[scope][1]
             if row["status"] != "active":
                 return False, "suspended"
             if _row_expired(row):
                 return False, "expired"
             if not verify_password(old_password, row["password_hash"]):
-                self._log_event(row["username"], False, row["session_device"], "",
-                                "change_pw_bad_old")
+                self._log_event(row["username"], False, row[dev_col], "",
+                                f"{scope}:change_pw_bad_old")
                 self._conn.commit()
                 return False, "bad_old_password"
             if verify_password(new_password, row["password_hash"]):
@@ -778,19 +958,92 @@ class MemberStore:
             self._conn.execute(
                 "UPDATE members SET password_hash = ? WHERE id = ?",
                 (hash_password(new_password), row["id"]))
-            self._log_event(row["username"], True, row["session_device"], "",
-                            "password_changed")
+            self._log_event(row["username"], True, row[dev_col], "",
+                            f"{scope}:password_changed")
             self._conn.commit()
         return True, ""
 
+    # ── 遠端設定 ────────────────────────────────────────────────────────
+    def get_settings(self, username: str) -> Dict[str, Any]:
+        """回傳這個帳號目前的期望設定。從沒設過就是空的 {}。
+
+        空的代表「沒有任何遠端意見」, 會員端維持它本機原本的行為 ——
+        不是「預設全關」也不是「預設全開」。
+        """
+        with self._lock:
+            row = self._get_row(username)
+        if row is None:
+            return {}
+        return self._settings_of(row)
+
+    @staticmethod
+    def _settings_of(row: Any) -> Dict[str, Any]:
+        raw = _row_get(row, "settings_json")
+        if not raw:
+            return {}
+        try:
+            value = json.loads(raw)
+        except (TypeError, ValueError):
+            logger.warning("settings_json 壞掉, 當成沒設定: %r", raw)
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def settings_meta(self, username: str) -> Dict[str, Any]:
+        """設定本身 + 誰在什麼時候改的。手機頁面要顯示「幾分鐘前由手機變更」。"""
+        with self._lock:
+            row = self._get_row(username)
+        if row is None:
+            return {"settings": {}, "updated_at": None, "updated_by": ""}
+        return {
+            "settings": self._settings_of(row),
+            "updated_at": _row_get(row, "settings_updated_at"),
+            "updated_by": _row_get(row, "settings_updated_by", "") or "",
+        }
+
+    def update_settings(self, username: str, patch: Any, *, source: str = "console"
+                        ) -> Tuple[Dict[str, Any], List[str]]:
+        """合併一份設定變更, 回傳 (合併後的完整設定, 被拒絕/夾住的項目)。
+
+        是合併不是取代 —— 手機上只改手數時不該把跟單開關一起洗掉。
+
+        手數上限依「當下的等級」夾。等級是即時查的, 所以後台把人降級之後,
+        他下一次改設定就會被新的上限夾住, 不必等他重新登入。
+        """
+        with self._lock:
+            row = self._get_row(username)
+            if row is None:
+                return {}, ["no_such_member"]
+            max_lot = tier_entitlements(row["tier"]).get("max_lot")
+            clean, rejected = sanitize_settings(patch, max_lot=max_lot)
+            if not clean:
+                return self._settings_of(row), rejected
+            merged = self._settings_of(row)
+            merged.update(clean)
+            self._conn.execute(
+                "UPDATE members SET settings_json = ?, settings_updated_at = ?,"
+                " settings_updated_by = ? WHERE id = ?",
+                (json.dumps(merged, ensure_ascii=False), time.time(),
+                 str(source)[:40], row["id"]))
+            self._conn.commit()
+        return merged, rejected
+
     def logout(self, token: str) -> bool:
+        """只登出這個 token 自己那一格。
+
+        手機登出不該把電腦的跟單也停掉 —— 那是兩條各自獨立的連線。
+        """
         if not token:
             return False
         with self._lock:
-            cur = self._conn.execute(
-                "UPDATE members SET session_token = NULL WHERE session_token = ?", (token,))
+            for scope in SCOPES:
+                tok_col = _SESSION_COLUMNS[scope][0]
+                cur = self._conn.execute(
+                    f"UPDATE members SET {tok_col} = NULL WHERE {tok_col} = ?", (token,))
+                if cur.rowcount > 0:
+                    self._conn.commit()
+                    return True
             self._conn.commit()
-        return cur.rowcount > 0
+        return False
 
 
 def _is_expired(expires_at: Optional[float]) -> bool:

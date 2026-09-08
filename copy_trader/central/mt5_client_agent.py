@@ -76,14 +76,17 @@ class HubClient:
             self.last_cursor = fallback_cursor
         return signals
 
-    def report_status(self, payload: Dict) -> bool:
-        """上報本機 MT5 帳戶／持倉快照給 Hub（給訊號中心後台看）。
+    def report_status(self, payload: Dict) -> Dict:
+        """上報本機 MT5 快照給 Hub，並把 Hub 上的期望設定帶回來。
 
-        這是純旁路：任何失敗都吞掉並回 False，絕不能影響跟單主流程。
+        這一來一回同時做「往上回報」與「往下同步設定」兩件事 —— 掛機端本來就
+        每 10 秒上報一次，順手把設定帶回來，不必再開一個輪詢端點。
+
+        這是純旁路：任何失敗都吞掉並回 {}，絕不能影響跟單主流程。
         用會員自己的 session token 認身分，只報得到自己那份。
         """
         if not self.token:
-            return False
+            return {}
         try:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             req = urllib.request.Request(
@@ -91,9 +94,10 @@ class HubClient:
                 headers={"Content-Type": "application/json; charset=utf-8"})
             req.add_header("Authorization", f"Bearer {self.token}")
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                return bool(json.loads(resp.read().decode("utf-8")).get("ok"))
+                data = json.loads(resp.read().decode("utf-8"))
+            return data if isinstance(data, dict) else {}
         except Exception:       # noqa: BLE001 — 上報失敗不能拖垮跟單
-            return False
+            return {}
 
 
 def _load_state(path: Path) -> Dict:

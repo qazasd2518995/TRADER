@@ -28,7 +28,7 @@ try:
 except Exception:
     DATA_DIR = Path.cwd()
 
-from copy_trader.central import membership
+from copy_trader.central import console_page, membership
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +144,17 @@ class MemberStatusStore:
             "orders_count": int(payload.get("orders_count") or 0),
             "device": str(payload.get("device") or ""),
             "mt5_stale": bool(payload.get("mt5_stale")),
+            # 掛機端「目前實際套用」的設定。手機頁面拿它跟期望設定比對, 才能
+            # 誠實顯示「套用中」還是「已套用」—— 手機控制的是會員家裡那台電腦,
+            # 不是雲端服務, 按下去不等於生效。
+            "settings_applied": (payload.get("settings_applied")
+                                 if isinstance(payload.get("settings_applied"), dict)
+                                 else {}),
+            # 待成交掛單與績效統計：手機控制台要顯示的。跟持倉一樣有筆數上限，
+            # 擋住異常大的 payload 撐爆這台 256MB 的機器。
+            "orders": (payload.get("orders") or [])[: self.MAX_POSITIONS]
+                      if isinstance(payload.get("orders"), list) else [],
+            "stats": payload.get("stats") if isinstance(payload.get("stats"), dict) else {},
             "reported_at": time.time(),
         }
         with self._lock:
@@ -539,13 +550,18 @@ class HubRequestHandler(BaseHTTPRequestHandler):
             return True
         return self.token in self._presented_tokens()
 
-    def _current_member(self, *, consume: bool = False) -> Optional[Dict[str, Any]]:
+    def _current_member(self, *, consume: bool = False,
+                        scope: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """把 session token 換成會員；不是會員就回 None。
 
         每次都重新查 —— 等級/期限/停權在後台一改, 下一次輪詢就生效。
 
         consume=True 只在 /signals 輪詢時傳(會員端只在跟單時才輪詢 /signals),
         用量制會員會依此扣掉開盤時的跟單時間。其他呼叫一律不扣。
+
+        scope 指定這個端點只接受哪一種連線。**/signals 一定要傳 SCOPE_AGENT** ——
+        控制台(手機)拿得到訊號的話, 帳號分享就有利可圖, 付費閘門等於破了。
+        不指定則兩種都收(例如 /auth/me)。
         """
         store = self.members
         if store is None:
@@ -554,9 +570,54 @@ class HubRequestHandler(BaseHTTPRequestHandler):
             if tok == self.token:
                 continue        # 那是管理 token, 不是會員 session
             member, _err = store.resolve_session(tok, consume=consume)
-            if member is not None:
-                return member
+            if member is None:
+                continue
+            if scope is not None and member.get("session_scope") != scope:
+                continue
+            return member
         return None
+
+    def _console_view(self, member: Dict[str, Any]) -> Dict[str, Any]:
+        """手機頁面要的一整包：期望設定、掛機端實際套用的、以及它還活著嗎。
+
+        三樣缺一不可。只給期望設定的話，會員按了暫停就以為安全了 —— 但他控制的
+        是自己家裡那台電腦，電腦關機時按什麼都不會發生。所以一定要把
+        「掛機端多久前回報過」跟「它目前實際是什麼設定」一起送出去，
+        介面才有辦法誠實顯示「套用中」還是「已套用」。
+        """
+        store = self.members
+        username = str(member.get("username") or "")
+        meta = store.settings_meta(username) if store is not None else {
+            "settings": {}, "updated_at": None, "updated_by": ""}
+
+        status_store = self.member_status
+        snap = (status_store.snapshot().get(username) or {}) if status_store else {}
+        reported_at = snap.get("reported_at")
+
+        return {
+            "ok": True,
+            "username": username,
+            "tier": member.get("tier"),
+            "tier_label": member.get("tier_label"),
+            "entitlements": member.get("entitlements") or {},
+            "desired": meta["settings"],
+            "desired_updated_at": meta["updated_at"],
+            "desired_updated_by": meta["updated_by"],
+            "applied": snap.get("settings_applied") or {},
+            # 掛機端的存活跡象。前端據此顯示「電腦離線，改的東西還沒生效」。
+            "agent_online": bool(member.get("online")),
+            "agent_reported_at": reported_at,
+            "agent_device": member.get("session_device") or snap.get("device") or "",
+            "mt5_stale": bool(snap.get("mt5_stale")) if snap else None,
+            "account": snap.get("account") or {},
+            "positions": snap.get("positions") or [],
+            "orders": snap.get("orders") or [],
+            "positions_count": snap.get("positions_count"),
+            "orders_count": snap.get("orders_count"),
+            "stats": snap.get("stats") or {},
+            "usage": member.get("usage"),
+            "expires_at": member.get("expires_at"),
+        }
 
     def _member_auth_error(self) -> str:
         """會員 token 解不開時的原因，用來給前端顯示人看得懂的訊息。"""
@@ -567,9 +628,13 @@ class HubRequestHandler(BaseHTTPRequestHandler):
         for tok in self._presented_tokens():
             if tok == self.token:
                 continue
-            _m, err = store.resolve_session(tok)
+            member, err = store.resolve_session(tok)
             if err in ("expired", "suspended"):
                 return err      # 這兩個要明確告訴會員, 否則他不知道要續費
+            if member is not None and member.get("session_scope") == membership.SCOPE_CONSOLE:
+                # token 本身是好的, 只是用錯地方 —— 拿控制台的連線去要訊號。
+                # 講清楚, 免得有人對著「session_invalid」找一整天登入問題。
+                return "console_session_not_allowed"
             worst = err or worst
         return worst
 
@@ -637,7 +702,11 @@ class HubRequestHandler(BaseHTTPRequestHandler):
             # 伺服器。會員端怎麼改都拿不到。
             # consume=True: 會員端只在「正在跟單」時才輪詢 /signals, 所以這一次
             # 呼叫本身就代表跟單中。用量制會員在這裡依開盤與否扣使用額度。
-            member = self._current_member(consume=True)
+            #
+            # scope=agent: 只有會員的電腦拿得到訊號。手機那條控制台連線在這裡
+            # 一律被擋 —— 否則只要用手機登入就能把訊號抄走, 付費閘門形同虛設。
+            member = self._current_member(
+                consume=True, scope=membership.SCOPE_AGENT)
             if member is None:
                 self._send_json(401, {"ok": False, "error": self._member_auth_error()})
                 return
@@ -698,6 +767,20 @@ class HubRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(401, {"ok": False, "error": self._member_auth_error()})
                 return
             self._send_json(200, {"ok": True, "member": member})
+            return
+
+        if parsed.path in ("/console", "/console/"):
+            # 這一頁本身不需要驗證 —— 它就是登入畫面。真正的門在
+            # /console/settings，那裡才要 console session。
+            self._send_html(200, console_page.render())
+            return
+
+        if parsed.path == "/console/settings":
+            member = self._current_member(scope=membership.SCOPE_CONSOLE)
+            if member is None:
+                self._send_json(401, {"ok": False, "error": self._member_auth_error()})
+                return
+            self._send_json(200, self._console_view(member))
             return
 
         if parsed.path.startswith("/admin/"):
@@ -810,11 +893,15 @@ class HubRequestHandler(BaseHTTPRequestHandler):
             self._send_json(401, {"ok": False, "error": "no_token"})
             return
 
+        # scope: agent = 會員的電腦(跟單), console = 手機／瀏覽器(只看與設定)。
+        # 舊版會員端不會帶這個欄位, normalize 之後就是 agent, 行為完全照舊 ——
+        # 這點是硬要求, 已經發出去的會員端不能因為 Hub 升級就登不進來。
         member, err = store.login(
             str(data.get("username") or ""),
             str(data.get("password") or ""),
             device=str(data.get("device") or ""),
             ip=self._client_ip(),
+            scope=membership.normalize_scope(data.get("scope")),
         )
         if member is None:
             # 401 給憑證問題, 403 給「帳號沒問題但目前不能用」——
@@ -924,6 +1011,33 @@ class HubRequestHandler(BaseHTTPRequestHandler):
         if parsed.path in ("/auth/login", "/auth/logout", "/auth/change-password"):
             self._handle_auth_post(parsed)
             return
+
+        if parsed.path == "/console/settings":
+            store = self.members
+            if store is None:
+                self._send_json(503, {"ok": False, "error": "membership_unavailable"})
+                return
+            # 先讀 body 再驗證，否則被拒時 body 沒消化，用戶端會收到
+            # connection abort 而不是乾淨的 401（會員上報那條踩過同樣的坑）。
+            data = self._read_body()
+            if data is None:
+                return
+            member = self._current_member(scope=membership.SCOPE_CONSOLE)
+            if member is None:
+                self._send_json(401, {"ok": False, "error": self._member_auth_error()})
+                return
+            username = str(member.get("username") or "")
+            # 只吃 settings 這個 key，不吃整包 body —— 免得哪天 body 多了別的
+            # 欄位就被當成設定寫進去。
+            patch = data.get("settings")
+            _merged, rejected = store.update_settings(
+                username, patch if isinstance(patch, dict) else {}, source="console")
+            # 一律回完整檢視：手數被等級夾住時，前端要立刻顯示真正生效的值，
+            # 不能讓畫面停在使用者輸入的那個數字。
+            view = self._console_view(member)
+            view["rejected"] = rejected
+            self._send_json(200, view)
+            return
         if parsed.path.startswith("/admin/"):
             self._handle_admin_post(parsed)
             return
@@ -959,12 +1073,27 @@ class HubRequestHandler(BaseHTTPRequestHandler):
             data = self._read_body()
             if data is None:
                 return
-            member = self._current_member()
+            # 只有跟單連線能回報 —— 這份快照是「我的 MT5 現在長這樣」,
+            # 只有真的接著 MT5 的那台電腦講得出來。控制台是讀這份資料的人,
+            # 不是寫的人, 讓它能寫等於允許偽造自己的持倉。
+            member = self._current_member(scope=membership.SCOPE_AGENT)
             if member is None:
                 self._send_json(401, {"ok": False, "error": self._member_auth_error()})
                 return
-            status_store.update(str(member.get("username") or ""), data)
-            self._send_json(200, {"ok": True})
+            username = str(member.get("username") or "")
+            status_store.update(username, data)
+
+            # 掛機端主動把本機的變更推上來(會員在電腦上自己按了開始/停止)。
+            # 沒有這條的話, 期望設定會一直是舊值, 下一輪又把他按的東西改回去。
+            store = self.members
+            push = data.get("settings_push")
+            if store is not None and isinstance(push, dict) and push:
+                store.update_settings(username, push, source="agent")
+
+            # 回應夾帶期望設定 —— 這就是往下的通道。掛機端每 10 秒上報一次,
+            # 順手就把「我應該變成什麼樣子」帶回去, 不必另外開一個輪詢端點。
+            settings = store.get_settings(username) if store is not None else {}
+            self._send_json(200, {"ok": True, "settings": settings})
             return
 
         if parsed.path != "/signals":
