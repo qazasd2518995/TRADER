@@ -73,3 +73,10 @@ data/market_history/
 data/replays/
 data/recordings/
 data/android/
+
+# 執行期資料與抓下來的素材（129MB 起跳：APK、截圖、strace、MT5 日誌、K 線快取）
+# 這個 repo 是公開的，裡面有帳號號碼與交易紀錄，一律不進版控。
+data/
+
+# npm（這個 repo 只有官網用得到，裝出來的東西不需要版控）
+node_modules/
