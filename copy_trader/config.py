@@ -60,12 +60,32 @@ def _is_valid_symbol_name(value: object) -> bool:
     return bool(symbol) and all(character.isalnum() or character in "._-" for character in symbol)
 
 
+# MT5 橋接檔的編碼不保證是 UTF-8。EA 用 FileWriteString 寫出來時，帳號名稱等
+# 欄位會帶券商／系統的 ANSI 碼頁 —— 中文 Windows 上就是 cp950(Big5)。
+#
+# 2026-09-09 實際事故：某台的 account_info.json 第 28 個位元組是 0xad，
+# read_text(encoding="utf-8") 直接丟 UnicodeDecodeError，把整個
+# _report_member_status 的 try 區塊帶走，那個會員在手機控制台上完全是空的，
+# 而且因為例外被吞掉，日誌裡一行都沒有。
+#
+# 順序有講究：utf-8-sig 先(有 BOM 的話要吃掉)，再 utf-8，再 cp950，
+# latin-1 墊底 —— 它永遠不會失敗，最壞情況是幾個字變亂碼，但 JSON 結構
+# 仍然解得出來，數字欄位一個都不會少。讀不到數字比讀到亂碼的名字嚴重得多。
+_JSON_ENCODINGS = ("utf-8-sig", "utf-8", "cp950", "latin-1")
+
+
 def _read_json_dict(path: Path) -> dict:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-        return value if isinstance(value, dict) else {}
-    except (FileNotFoundError, json.JSONDecodeError, PermissionError, OSError):
+        raw = path.read_bytes()
+    except (FileNotFoundError, PermissionError, OSError):
         return {}
+    for encoding in _JSON_ENCODINGS:
+        try:
+            value = json.loads(raw.decode(encoding))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        return value if isinstance(value, dict) else {}
+    return {}
 
 
 def _price_is_live(data: dict) -> bool:
