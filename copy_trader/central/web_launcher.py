@@ -1346,62 +1346,155 @@ class LauncherState:
 
         只算 magic 999999（本系統下的單）。會員自己手動下的單不該混進來 ——
         這一頁講的是跟單績效，不是他的總損益。
+
+        分批平倉的每一段在 closed_trades 裡是獨立一筆，但那是同一張單：三段
+        出場算成三筆、勝率灌水三倍，跟電腦版對不起來。用 position_id 合併回
+        一筆，跟 stats.py 的 _merge_partial_closes 同一個規則。
+
+        指標跟電腦版績效面板同一套（獲利因子／最大回撤／最大連敗／平均獲利
+        虧損／累計手數／各來源），手機才不會顯示一個電腦上查不到的數字。
         """
         data = _read_json_dict(mt5_dir / "closed_trades.json")
-        trades = [t for t in (data.get("trades") or [])
-                  if isinstance(t, dict) and int(t.get("magic") or 0) == 999999]
+        raw_trades = [t for t in (data.get("trades") or [])
+                      if isinstance(t, dict) and int(t.get("magic") or 0) == 999999]
         out: Dict[str, Any] = {
             "total": 0, "wins": 0, "losses": 0, "win_rate": None,
             "profit_total": 0.0, "profit_today": 0.0, "profit_week": 0.0,
-            "curve": [], "recent": [],
+            "profit_factor": None, "max_drawdown": 0.0, "max_loss_streak": 0,
+            "avg_win": 0.0, "avg_loss": 0.0, "volume": 0.0,
+            "by_source": [], "curve": [], "recent": [],
         }
-        if not trades:
+        if not raw_trades:
             return out
 
-        def close_ts(t):
+        def num(value: Any) -> float:
             try:
-                return float(t.get("close_timestamp") or 0)
+                return float(value or 0.0)
             except (TypeError, ValueError):
                 return 0.0
 
-        trades.sort(key=close_ts)
+        # comment 是 "copy_" + signal_id；signal_sources.json 記著每個 signal_id
+        # 是哪個來源送的。對不到就留空 —— 不猜。
+        sources_raw = _read_json_dict(mt5_dir / "signal_sources.json")
+
+        def source_of(t: Dict[str, Any]) -> str:
+            comment = str(t.get("comment") or "")
+            signal_id = comment[5:] if comment.startswith("copy_copy_") else comment
+            return str(sources_raw.get(signal_id) or "")
+
+        merged: Dict[Any, Dict[str, Any]] = {}
+        order: List[Any] = []
+        for idx, t in enumerate(raw_trades):
+            # 只有帶 position_id 的才合併；舊版 EA 沒寫這欄，每筆各算各的
+            key = t.get("position_id") or ("row", idx)
+            row = merged.get(key)
+            if row is None:
+                row = {"symbol": t.get("symbol"), "type": t.get("type"),
+                       "volume": 0.0, "profit": 0.0, "close_time": t.get("close_time"),
+                       "close_timestamp": num(t.get("close_timestamp")),
+                       "source": source_of(t)}
+                merged[key] = row
+                order.append(key)
+            row["volume"] += num(t.get("volume"))
+            row["profit"] += num(t.get("profit"))
+            # 最後一段的出場時間才是這張單真正結束的時間
+            if num(t.get("close_timestamp")) >= row["close_timestamp"]:
+                row["close_timestamp"] = num(t.get("close_timestamp"))
+                row["close_time"] = t.get("close_time")
+            if not row["source"]:
+                row["source"] = source_of(t)
+        trades = [merged[k] for k in order]
+        trades.sort(key=lambda t: t["close_timestamp"])
+
         # 檔案沒寫 timestamp 時退回「最後一筆成交時間」當現在 —— 同一個時鐘，
         # 頂多讓「今日」的範圍保守一點，不會算錯到別天去。
-        now = float(data.get("timestamp") or 0) or close_ts(trades[-1])
+        now = num(data.get("timestamp")) or trades[-1]["close_timestamp"]
         day_start = now - (now % 86400)
         week_start = day_start - 6 * 86400
 
-        cum = 0.0
-        curve = []
+        cum = peak = max_dd = 0.0
+        gross_win = gross_loss = 0.0
+        streak = worst_streak = 0
+        curve: List[float] = []
+        by_source: Dict[str, Dict[str, Any]] = {}
         for t in trades:
-            try:
-                p = float(t.get("profit") or 0.0)
-            except (TypeError, ValueError):
-                p = 0.0
+            p = round(t["profit"], 2)
             cum += p
             curve.append(round(cum, 2))
-            ts = close_ts(t)
+            peak = max(peak, cum)
+            max_dd = max(max_dd, peak - cum)
             out["total"] += 1
+            out["volume"] += t["volume"]
             if p > 0:
                 out["wins"] += 1
+                gross_win += p
+                streak = 0
             elif p < 0:
                 out["losses"] += 1
+                gross_loss += p
+                streak += 1
+                worst_streak = max(worst_streak, streak)
+            else:
+                streak = 0
+            ts = t["close_timestamp"]
             if ts >= day_start:
                 out["profit_today"] += p
             if ts >= week_start:
                 out["profit_week"] += p
+            if t["source"]:
+                bucket = by_source.setdefault(
+                    t["source"], {"source": t["source"], "trades": 0,
+                                  "wins": 0, "losses": 0, "profit": 0.0})
+                bucket["trades"] += 1
+                bucket["profit"] += p
+                if p > 0:
+                    bucket["wins"] += 1
+                elif p < 0:
+                    bucket["losses"] += 1
 
         decided = out["wins"] + out["losses"]
         out["win_rate"] = round(out["wins"] / decided * 100, 1) if decided else None
         out["profit_total"] = round(cum, 2)
         out["profit_today"] = round(out["profit_today"], 2)
         out["profit_week"] = round(out["profit_week"], 2)
+        out["profit_factor"] = (round(gross_win / abs(gross_loss), 2)
+                                if gross_loss else None)
+        out["max_drawdown"] = round(max_dd, 2)
+        out["max_loss_streak"] = worst_streak
+        out["avg_win"] = round(gross_win / out["wins"], 2) if out["wins"] else 0.0
+        out["avg_loss"] = round(gross_loss / out["losses"], 2) if out["losses"] else 0.0
+        out["volume"] = round(out["volume"], 2)
+        for bucket in by_source.values():
+            bucket["profit"] = round(bucket["profit"], 2)
+            decided_src = bucket["wins"] + bucket["losses"]
+            bucket["win_rate"] = (round(bucket["wins"] / decided_src * 100, 1)
+                                  if decided_src else None)
+        out["by_source"] = sorted(by_source.values(), key=lambda b: b["source"])
         out["curve"] = curve[-LauncherState.CURVE_POINTS:]
         out["recent"] = [{
             "symbol": t.get("symbol"), "type": t.get("type"),
-            "volume": t.get("volume"), "profit": t.get("profit"),
+            "volume": round(t["volume"], 2), "profit": round(t["profit"], 2),
             "close_time": t.get("close_time"),
         } for t in trades[-LauncherState.RECENT_TRADES:][::-1]]
+        return out
+
+    @staticmethod
+    def _source_state(mt5_dir: Path) -> Dict[str, Dict[str, int]]:
+        """每個來源目前的馬丁層級。電腦版面板顯示「第 N 關／連續虧損」，手機
+        沒有這個就只看得到設定、看不到現在押到哪裡了。"""
+        raw = _read_json_dict(mt5_dir / "martingale_state.json")
+        per_source = raw.get("per_source")
+        if not isinstance(per_source, dict):
+            return {}
+        out: Dict[str, Dict[str, int]] = {}
+        for name, state in per_source.items():
+            if not isinstance(state, dict):
+                continue
+            try:
+                out[str(name)] = {"level": int(state.get("level") or 0),
+                                  "losses": int(state.get("losses") or 0)}
+            except (TypeError, ValueError):
+                continue
         return out
 
     # ── 本機掛機端實例 ──────────────────────────────────────────────────
@@ -1750,6 +1843,10 @@ class LauncherState:
                 payload["stats"] = self._trade_stats(mt5_dir)
             except Exception as exc:                 # noqa: BLE001
                 logger.debug("算績效統計失敗（不影響上報）：%s", exc)
+            try:
+                payload["source_state"] = self._source_state(mt5_dir)
+            except Exception as exc:                 # noqa: BLE001
+                logger.debug("讀馬丁層級失敗（不影響上報）：%s", exc)
             # 遠端設定是後來疊上去的旁路，自己再包一層 —— 它壞掉不該連累帳戶
             # 快照上報，那是更早、更重要的功能（後台靠它看會員死活）。
             try:

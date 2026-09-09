@@ -4,19 +4,42 @@
 套件（見 Dockerfile），所以沒有樣板引擎、沒有前端框架、也不能外連 CDN。
 
 功能對齊電腦版會員端（webui.py）：帳戶淨值與績效、持倉與掛單、跟單開關、
-每個訊號來源各自的策略、自動排程、方案與到期倒數。但排版是重做的 ——
-電腦版是三欄面板加表格，手機上照搬會變成一堆要橫向捲的小字。內容太多，
+每個訊號來源各自的策略、自動排程、方案與到期倒數、修改密碼。但排版是重做的
+—— 電腦版是三欄面板加表格，手機上照搬會變成一堆要橫向捲的小字。內容太多，
 所以切成四個分頁，底部固定導覽列（拇指構得到的位置）。
 
-  總覽   跟單開關、淨值、今日損益、持倉、掛單、績效
-  策略   每個來源獨立設定；沒授權的顯示成鎖住而不是消失
+  總覽   跟單開關、淨值、今日損益、持倉、掛單、績效（指標跟電腦版同一套）
+  策略   每個來源獨立設定；欄位、預設值、鎖定規則都照電腦版
   排程   自動跟單時段
-  帳號   會員名稱、方案、到期／額度倒數、權益清單
+  帳號   會員名稱、方案、到期／額度倒數、權益清單、修改密碼
+
+**策略分頁跟電腦版一模一樣的地方，逐條列出來，改任何一邊都要對照另一邊：**
+
+  * 下單方式：均注／馬丁／本金比例。方案沒含的選項留在清單裡但選不到，
+    存著的值若是選不到的，顯示成均注（webui pickLotMode）。
+  * 基礎手數：本金比例模式下藏起來改顯示「每筆風險 %」。
+  * 馬丁：倍數與關卡數只在馬丁模式出現，並且畫出整條階梯（每關實際手數）、
+    現在在第幾關、連續虧損幾筆、下一手多少 —— 電腦版的「馬丁階梯」卡。
+    階梯上若有一關的手數跟上一關一樣（例如 0.01 × 1.5 = 0.015 被 MT5 的 0.01
+    跳動吃掉），直接標出來 —— 2026-09-09 實倉就這樣「馬丁層級升了、手數沒變」。
+  * 止盈處理：分批平倉／保本移損／單一點位。中頻一單只有一個止盈，
+    只給單一點位與保本移損（webui tpOptions）。
+  * 分批平倉是**填每一段的實際手數**（0.01/0.01/0.01），不是比例。
+    基礎手數自動 = 各段總和、不能手改；內部存成佔比，馬丁加碼時比例跟著放大。
+    每段都要 ≥ 0.01（MT5 最低），不合格擋存（webui validateSourceLots）。
+  * 保本距離只在保本移損出現；空白列預設 3 美元，0 會提醒「退回觸及第一個止盈才保本」。
+  * 每日止盈／每日止損；0 = 不限。
+  * 電腦版沒有的欄位這裡也沒有（max_active_orders / max_daily_trades 是保留欄位，
+    面板早就移除）。
 
 **沒有任何全域交易設定。** 電腦版面板一個都沒有（default_lot_size /
 use_martingale / martingale_* / partial_close_ratios 在 webui.py 裡出現 0 次），
 那些值只是「某來源沒設定時的預設種子」。手機上多做一個全域手數會讓人以為
 它跟來源設定是兩套東西 —— 實際上來源的 base_lot 永遠說了算。
+
+**畫面上不出現任何 LINE 聊天室的名字。** 來源對外一律叫交易頻率（低頻／中頻／
+高頻／超高頻）。Hub 送來的 name 只拿來當設定的 key 與 DOM 的索引，
+不進任何看得到的文字；績效統計裡對不到頻率名稱的來源乾脆不列。
 
 **能改的只有設定，不能平倉也不能下單。** 一旦開放，產品就從「跟單工具」變成
 「交易終端」，責任層級完全不同，而且 MT5 官方 app 本來就能做。
@@ -27,7 +50,7 @@ use_martingale / martingale_* / partial_close_ratios 在 webui.py 裡出現 0 �
 """
 from __future__ import annotations
 
-_PAGE = """<!doctype html>
+_PAGE = r"""<!doctype html>
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
@@ -85,9 +108,14 @@ nav button.on{color:var(--gold)}
 .grid3{display:flex;gap:16px;margin-top:14px;padding-top:14px;
   border-top:1px solid var(--line)}
 .grid3>div{flex:1;min-width:0}
-.grid3 .k,.g2 .k{font-size:11px;color:var(--faint);letter-spacing:.05em}
+.grid3 .k,.g2 .k,.tiles .k{font-size:11px;color:var(--faint);letter-spacing:.05em}
 .grid3 .v,.g2 .v{font-size:16px;font-weight:600;margin-top:3px}
 .g2{display:grid;grid-template-columns:1fr 1fr;gap:13px 10px}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px;
+  padding-top:14px;border-top:1px solid var(--line)}
+.tiles>div{background:#12161b;border:1px solid var(--line2);border-radius:11px;padding:10px 12px}
+.tiles .v{font-size:16px;font-weight:600;margin-top:2px}
+.tiles .s{font-size:11px;color:var(--faint);margin-top:2px}
 
 .row{display:flex;align-items:center;justify-content:space-between;gap:12px;
   min-height:42px}
@@ -107,7 +135,7 @@ nav button.on{color:var(--gold)}
 .sw input:checked+i:after{transform:translateX(26px);background:var(--up)}
 .sw input:disabled+i{opacity:.4}
 .pill{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
-  border:1px solid var(--line);color:var(--faint);white-space:nowrap}
+  border:1px solid var(--line);color:var(--faint);white-space:nowrap;vertical-align:middle}
 .pill.ok{color:var(--up);border-color:#20503c}
 .pill.wait{color:var(--warn);border-color:#4a3c1f}
 .pill.lock{color:var(--faint)}
@@ -116,7 +144,7 @@ nav button.on{color:var(--gold)}
 .fld:first-child{margin-top:0;padding-top:0;border-top:0}
 .fld .lbl{font-size:15px;font-weight:600}
 .fld .st{font-size:12px;margin-top:4px}
-.fld .hint{font-size:11.5px;color:var(--faint);margin-top:5px;line-height:1.45}
+.fld .hint,.hint{font-size:11.5px;color:var(--faint);margin-top:5px;line-height:1.45}
 .inline{display:flex;gap:8px;margin-top:9px}
 .inline input,.inline select{flex:1;min-width:0}
 input,select{width:100%;padding:11px 12px;border-radius:10px;
@@ -127,11 +155,13 @@ select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,#8
   background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:34px}
 input:focus,select:focus{outline:none;border-color:var(--gold)}
 input:disabled,select:disabled{opacity:.45}
+input[readonly]{color:var(--dim);background:#12161b}
 button.act{border:0;border-radius:10px;background:var(--gold);color:#1a1408;
   font-size:15px;font-weight:600;padding:11px 17px;cursor:pointer;flex:0 0 auto}
 button.act:disabled{opacity:.4}
 button.wide{width:100%;padding:14px;border:0;border-radius:10px;
   background:var(--gold);color:#1a1408;font-size:15px;font-weight:600;cursor:pointer}
+button.wide:disabled{opacity:.4}
 button.ghost{background:transparent;color:var(--dim);border:1px solid var(--line);
   font-weight:400}
 
@@ -163,6 +193,25 @@ button.ghost{background:transparent;color:var(--dim);border:1px solid var(--line
 .src .nm{font-size:15px;font-weight:600}
 .src .sub{font-size:11.5px;color:var(--faint);margin-top:2px}
 .src .body{margin-top:13px;padding-top:13px;border-top:1px solid var(--line2)}
+.lbl2{font-size:12px;color:var(--dim)}
+.sub-fld{margin-top:12px;padding-top:12px;border-top:1px dashed var(--line2)}
+.note{font-size:11.5px;margin-top:6px;line-height:1.45;color:var(--faint)}
+.note.ok{color:var(--up)} .note.warn{color:var(--warn)} .note.bad{color:var(--down)}
+.ladder{display:flex;align-items:flex-end;gap:5px;margin-top:10px;height:64px}
+.ladder>div{flex:1;min-width:0;text-align:center;display:flex;flex-direction:column;
+  justify-content:flex-end;height:100%}
+.ladder i{display:block;border-radius:4px 4px 0 0;background:#2b323b;min-height:4px}
+.ladder .lit i{background:var(--gold)}
+.ladder .cur i{background:var(--up)}
+.ladder .dup i{background:var(--down)}
+.ladder b{font-size:10.5px;font-weight:600;margin-top:4px;display:block;
+  font-variant-numeric:tabular-nums}
+.ladder small{font-size:9.5px;color:var(--faint)}
+.state{display:flex;gap:10px;margin-top:10px}
+.state>div{flex:1;min-width:0;background:#12161b;border:1px solid var(--line2);
+  border-radius:10px;padding:8px 10px}
+.state .k{font-size:10.5px;color:var(--faint)}
+.state .v{font-size:14px;font-weight:600;margin-top:1px}
 
 .bene{display:flex;align-items:center;gap:9px;padding:8px 0;font-size:14px}
 .bene+.bene{border-top:1px solid var(--line2)}
@@ -174,14 +223,13 @@ button.ghost{background:transparent;color:var(--dim);border:1px solid var(--line
 .banner.bad{background:#241618;border-color:#48242a;color:#ffb3ae}
 .banner.warn{background:#241f14;border-color:#463b20;color:#f5d79c}
 .err{color:#ff9d99;font-size:12.5px;margin-top:9px;min-height:16px;line-height:1.45}
+.err.good{color:var(--up)}
 .muted{color:var(--faint);font-size:12.5px;margin-top:12px;line-height:1.5}
 .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px}
 .dot.on{background:var(--up)} .dot.off{background:var(--down)}
 .bar{height:5px;border-radius:999px;background:#242a32;overflow:hidden;margin-top:9px}
 .bar i{display:block;height:100%;border-radius:999px;background:var(--gold)}
 
-/* 條件顯示的子區塊 */
-.sub-fld{margin-top:12px;padding-top:12px;border-top:1px dashed var(--line2)}
 .chips{display:flex;flex-wrap:wrap;gap:7px;margin-top:9px}
 .chip{border:1px solid var(--line);border-radius:999px;padding:6px 12px;
   font-size:13px;color:var(--dim);cursor:pointer;user-select:none;background:transparent}
@@ -193,7 +241,10 @@ button.ghost{background:transparent;color:var(--dim);border:1px solid var(--line
 .sched button{background:none;border:0;color:var(--down);font-size:13px;
   cursor:pointer;padding:8px;margin-left:auto}
 .two{display:flex;gap:8px}
-.two input{flex:1}
+.two input{flex:1;min-width:0}
+.two label{flex:1;min-width:0;display:block}
+.two label span,.one label span{display:block;font-size:11px;color:var(--faint);margin-bottom:5px}
+.one{margin-top:9px}
 </style>
 </head>
 <body>
@@ -269,9 +320,15 @@ button.ghost{background:transparent;color:var(--dim);border:1px solid var(--line
             <div><div class="k">筆數</div><div class="v num" id="pN">—</div></div>
           </div>
         </div>
+        <div class="tiles" id="tiles"></div>
         <div class="spark" id="sparkWrap"><svg id="spark" viewBox="0 0 300 44"
           preserveAspectRatio="none" aria-label="累計損益走勢"></svg></div>
         <div id="recent"></div>
+      </div>
+
+      <div class="card" id="bySrcCard">
+        <h2>各來源績效</h2>
+        <div id="bySrc"><div class="empty">—</div></div>
       </div>
     </section>
 
@@ -329,6 +386,20 @@ button.ghost{background:transparent;color:var(--dim);border:1px solid var(--line
         <div class="row"><span class="k">交易伺服器</span><span class="v" id="srv">—</span></div>
       </div>
 
+      <div class="card">
+        <h2>修改密碼</h2>
+        <div class="one"><label><span>目前密碼</span>
+          <input id="pwOld" type="password" autocomplete="current-password"></label></div>
+        <div class="one"><label><span>新密碼</span>
+          <input id="pwNew" type="password" autocomplete="new-password"></label></div>
+        <div class="one"><label><span>再輸入一次新密碼</span>
+          <input id="pwNew2" type="password" autocomplete="new-password"></label></div>
+        <button class="wide act" id="pwBtn" style="margin-top:12px">更新密碼</button>
+        <div class="err" id="pwMsg"></div>
+        <div class="hint" id="pwHint">新密碼至少 8 個字元。改完後電腦上的跟單程式不會被登出，
+        下次登入時再用新密碼。</div>
+      </div>
+
       <button class="wide ghost" id="logoutBtn">登出</button>
       <p class="muted">要更改方案或續約，請聯繫管理員。</p>
     </section>
@@ -369,9 +440,22 @@ function cls(v){ return v>0?"up":(v<0?"down":"dim"); }
 function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,function(c){
   return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]; }); }
 function put(id,v){ var e=$(id); e.textContent=money(v); e.className="v num "+cls(Number(v)); }
+// toFixed(2) 才跟後端 Python round(x,2) 一致（Math.round 會把 0.015 進成 0.02）
+function r2(x){ return Number(Number(x).toFixed(2)); }
 
 var STALE=60;
 function live(v){ return !!v.agent_reported_at && (Date.now()/1000-v.agent_reported_at)<STALE; }
+
+/* ── 來源名稱：只准用頻率標籤 ─────────────────────────────────────────
+   Hub 的 all_sources 給 {name,label,need}。name 是聊天室名字，只當 key 用；
+   任何會被看到的字都走 label。對不到 label 的來源一律不顯示。 */
+var TIER_LABELS={trial:"體驗版",basic:"基礎版",advanced:"進階版",flagship:"旗艦版"};
+function srcLabel(name){
+  var list=(V&&V.all_sources)||[];
+  for(var i=0;i<list.length;i++) if(list[i].name===name) return list[i].label;
+  return "";
+}
+function tierLabel(t){ return ((V&&V.tier_labels)||TIER_LABELS)[t]||TIER_LABELS[t]||"更高等級"; }
 
 function sparkline(c){
   var el=$("spark");
@@ -404,86 +488,164 @@ function listItems(rows,kind){
   return h;
 }
 
-/* ── 策略：全部設定都在這裡，跟電腦版一樣以來源為單位 ───────────────── */
-var MODES={flat:"均注（每單固定手數）",martingale:"馬丁加倍（虧損後加碼）",
-           risk_percent:"本金比例（依風險%計算）"};
-var TPS={single:"單一點位（只掛第一個止盈）",breakeven:"保本移損（觸及後把停損拉到成本）",
-         partial:"分批平倉（各止盈分段出場）"};
-function opts(map,cur,lock){
+/* 績效指標，跟電腦版 renderTiles 同一組 */
+function renderTiles(s){
+  var pf=s.profit_factor, t=[];
+  t.push(["獲利因子", pf==null?"—":n(pf), pf==null?"尚無虧損單":(pf>=1?"每虧 $1 賺 $"+n(pf):"低於 1 代表淨虧損"), pf==null?"":(pf>=1?"up":"down")]);
+  t.push(["最大回撤", s.max_drawdown?("-"+n(s.max_drawdown)):"—", "從高點下來最深的一段", s.max_drawdown?"down":""]);
+  t.push(["最大連敗", (s.max_loss_streak||0)+" 筆", "連續輸最多的一段", ""]);
+  t.push(["平均獲利", money(s.avg_win), "每筆贏單平均", "up"]);
+  t.push(["平均虧損", money(s.avg_loss), "每筆輸單平均", "down"]);
+  t.push(["累計手數", n(s.volume)+" 手", (s.total||0)+" 筆已平倉", ""]);
   var h="";
-  for(var k in map)
-    h+='<option value="'+k+'"'+(cur===k?" selected":"")+((lock&&lock[k])?" disabled":"")+
-       '>'+map[k]+((lock&&lock[k])?"（方案未含）":"")+'</option>';
-  return h;
+  for(var i=0;i<t.length;i++)
+    h+='<div><div class="k">'+t[i][0]+'</div><div class="v num '+t[i][3]+'">'+t[i][1]+
+       '</div><div class="s">'+t[i][2]+'</div></div>';
+  $("tiles").innerHTML=h;
 }
-function fldNum(label,key,val,ph,hint){
-  return '<div class="sub-fld"><div class="k" style="font-size:12px;color:var(--dim)">'+label+'</div>'+
-    '<div class="inline"><input type="number" inputmode="decimal" data-f="'+key+'" '+
-    'step="0.01" placeholder="'+(ph||"")+'" value="'+(val!=null?val:"")+'"></div>'+
-    (hint?'<div class="hint">'+hint+'</div>':'')+'</div>';
+function renderBySource(s){
+  var rows=(s&&s.by_source)||[], h="";
+  for(var i=0;i<rows.length;i++){
+    var label=srcLabel(rows[i].source);
+    if(!label) continue;   // 對不到頻率名稱的來源不顯示 —— 畫面上不出現聊天室名字
+    h+='<div class="row"><span class="k">'+esc(label)+
+       ' <span class="dim" style="font-size:11.5px">'+rows[i].trades+' 筆 · 勝率 '+
+       (rows[i].win_rate==null?"—":rows[i].win_rate+"%")+'</span></span>'+
+       '<span class="v num '+cls(Number(rows[i].profit))+'">'+money(rows[i].profit)+'</span></div>';
+  }
+  $("bySrc").innerHTML=h||'<div class="empty">還沒有已平倉的跟單</div>';
+}
+
+/* ── 策略：跟電腦版 sourceRowHtml / syncSourceProfiles / validateSourceLots 一致 ── */
+function lotModeOptions(ent){
+  return [{v:"flat",label:"均注",ok:true,need:"trial"},
+          {v:"martingale",label:"馬丁",ok:!!ent.martingale,need:"advanced"},
+          {v:"risk_percent",label:"本金比例",ok:!!ent.dynamic_lot,need:"flagship"}];
+}
+function tpOptions(ent,isMid){
+  var partial={v:"partial",label:"分批平倉",ok:!!ent.partial_close,need:"advanced"};
+  var be={v:"breakeven",label:"保本移損",ok:!!ent.breakeven,need:"advanced"};
+  var single={v:"single",label:"單一點位",ok:true,need:"trial"};
+  // 中頻一單只有一個止盈，分批根本沒東西可分
+  return isMid?[single,be]:[partial,be,single];
+}
+function pick(opts,stored){
+  for(var i=0;i<opts.length;i++) if(opts[i].v===stored&&opts[i].ok) return opts[i].v;
+  for(var j=0;j<opts.length;j++) if(opts[j].ok) return opts[j].v;
+  return opts[0].v;
+}
+function optionHtml(o,cur){
+  var label=o.ok?o.label:o.label+"（需"+tierLabel(o.need)+"）";
+  return '<option value="'+o.v+'"'+(o.v===cur?" selected":"")+(o.ok?"":" disabled")+'>'+esc(label)+'</option>';
+}
+// 分批：存的是佔比，顯示時 × 基礎手數還原成「每段手數」；還原不出合法值就給預設
+function lotsToText(ratios,base){
+  base=r2(base||0);
+  if(ratios&&ratios.length>=2&&base>=0.02){
+    var c0=r2(base*ratios[0]), c1=r2(base*ratios[1]), tail=r2(base-c0-c1);
+    if(c0>=0.01&&c1>=0.01&&tail>=0.01) return c0+"/"+c1+"/"+tail;
+  }
+  return "0.01/0.01/0.01";
+}
+function parseLots(text){
+  var parts=String(text||"").replace(/，/g,",").split(/[\/,\s]+/), out=[];
+  for(var i=0;i<parts.length;i++){
+    var p=parts[i].trim(); if(!p) continue;
+    var x=Number(p); if(!isFinite(x)||x<=0) return null;
+    out.push(r2(x));
+  }
+  return out.length<2?null:out;
+}
+function ladderFor(base,mult,levels){
+  var out=[];
+  for(var i=0;i<levels;i++) out.push(r2(base*Math.pow(mult,i)));
+  return out;
+}
+// 空白列的預設值，跟電腦版 blankSourceRow 一樣（保本距離預設 3 美元：黃金停損多半 6~10，走一半保本）
+function defaults(isMid){
+  return {enabled:false,mode:"flat",tp_mode:isMid?"single":"partial",base_lot:0.01,
+          risk_percent:0.5,multiplier:2,max_level:5,partial_ratios:[],
+          breakeven_distance:3,max_daily_profit:0,max_daily_loss:0};
+}
+function sameProfile(d,a){
+  if(!d) return false;
+  for(var k in d){
+    var x=d[k], y=(a||{})[k];
+    if(JSON.stringify(x)!==JSON.stringify(y)) return false;
+  }
+  return true;
 }
 function renderSources(v){
   var ent=v.entitlements||{}, allowed=(ent.sources||[]),
       d=(v.desired||{}).source_profiles||{}, a=(v.applied||{}).source_profiles||{},
-      list=v.all_sources||[], h="";
+      list=v.all_sources||[], stats=(v.stats&&v.stats.by_source)||[],
+      state=v.source_state||{}, h="";
   for(var i=0;i<list.length;i++){
-    var name=list[i].name, label=list[i].label, ok=allowed.indexOf(name)>=0;
-    var p={}, k;
+    var name=list[i].name, label=list[i].label, need=list[i].need, ok=allowed.indexOf(name)>=0;
+    var isMid=label==="中頻交易", isLow=label==="低頻交易";
+    var p=defaults(isMid), k;
     for(k in (a[name]||{})) p[k]=a[name][k];
     for(k in (d[name]||{})) p[k]=d[name][k];
-    var on=!!p.enabled, mode=p.mode||"flat", tp=p.tp_mode||"single";
-    h+='<div class="src'+(ok&&on?"":" off")+'" data-src="'+esc(name)+'">'+
-       '<div class="top"><div><div class="nm">'+esc(label)+
-       (ok?"":' <span class="pill lock">未包含在方案</span>')+'</div>'+
-       '<div class="sub">'+esc(name)+'</div></div>'+
+    var on=ok&&!!p.enabled;
+    var trades=0; for(var t=0;t<stats.length;t++) if(stats[t].source===name) trades=stats[t].trades;
+    var meta;
+    if(isLow&&!trades) meta="訊號源建置中，開放後自動生效";
+    else if(trades) meta="已成交 "+trades+" 筆"+((d[name]||a[name])?"":" · 尚未個別設定（用預設）");
+    else meta="尚未收過訊號";
+    var pill="";
+    if(ok&&d[name]) pill=(sameProfile(d[name],a[name])&&live(v))
+      ?'<span class="pill ok">已套用</span>':'<span class="pill wait">套用中</span>';
+    h+='<div class="src'+(on?"":" off")+'" data-i="'+i+'">'+
+       '<div class="top"><div><div class="nm">'+esc(label)+' '+pill+
+       (ok?"":' <span class="pill lock">需'+esc(tierLabel(need))+'</span>')+'</div>'+
+       '<div class="sub">'+esc(meta)+'</div></div>'+
        '<label class="sw"><input type="checkbox" data-f="enabled"'+
        (on?" checked":"")+(ok?"":" disabled")+'><i></i></label></div>';
     if(ok){
+      var mode=pick(lotModeOptions(ent),p.mode), tp=pick(tpOptions(ent,isMid),p.tp_mode);
+      var lotMax=(ent.max_lot&&ent.max_lot>0)?' max="'+ent.max_lot+'"':"";
+      var st=state[name]||{}, lv=Number(st.level||0), ls=Number(st.losses||0);
       h+='<div class="body">'+
          '<div class="fld"><div class="lbl" style="font-size:14px">下單方式</div>'+
-         '<div class="inline"><select data-f="mode" data-re="1">'+
-         opts(MODES,mode,{martingale:!ent.martingale,risk_percent:!ent.dynamic_lot})+
-         '</select></div>';
-      if(mode==="risk_percent")
-        h+=fldNum("每單風險（本金 %）","risk_percent",p.risk_percent,"0.5",
-                  "依帳戶淨值與停損距離反推手數，風險固定、手數浮動。");
-      else
-        h+=fldNum("基礎手數","base_lot",p.base_lot,"0.01",
-                  ent.max_lot?("方案上限 "+ent.max_lot+" 手"):"");
-      if(mode==="martingale")
-        h+='<div class="sub-fld"><div class="k" style="font-size:12px;color:var(--dim)">加倍倍數 / 最大層數</div>'+
-           '<div class="two" style="margin-top:9px">'+
-           '<input type="number" inputmode="decimal" data-f="multiplier" step="0.1" min="1" max="10" '+
-           'placeholder="倍數" value="'+(p.multiplier!=null?p.multiplier:"")+'">'+
-           '<input type="number" inputmode="numeric" data-f="max_level" step="1" min="1" max="10" '+
-           'placeholder="層數" value="'+(p.max_level!=null?p.max_level:"")+'"></div>'+
-           '<div class="hint">層數越深，一次反向走勢的傷害越大。</div></div>';
-      h+='</div>'+
+         '<div class="inline"><select data-f="mode">';
+      var lm=lotModeOptions(ent); for(var m=0;m<lm.length;m++) h+=optionHtml(lm[m],mode);
+      h+='</select></div>'+
+         '<div class="sub-fld" data-box="base"><div class="lbl2">基礎手數</div>'+
+         '<div class="inline"><input type="number" inputmode="decimal" data-f="base_lot" step="0.01" min="0.01"'+lotMax+
+         ' value="'+esc(p.base_lot)+'"></div>'+
+         '<div class="note" data-note="base">'+(ent.max_lot?"方案上限 "+ent.max_lot+" 手":"")+'</div></div>'+
+         '<div class="sub-fld" data-box="risk"><div class="lbl2">每筆風險（本金 %）</div>'+
+         '<div class="inline"><input type="number" inputmode="decimal" data-f="risk_percent" step="0.05" min="0.01" max="5"'+
+         ' value="'+esc(p.risk_percent)+'"></div>'+
+         '<div class="note">以餘額與淨值較低者為本金，依每則訊號的進場價與 SL 即時計算；低於 0.01 手會略過。</div></div>'+
+         '<div class="sub-fld" data-box="mg"><div class="two">'+
+         '<label><span>馬丁倍數</span><input type="number" inputmode="decimal" data-f="multiplier" step="0.1" min="1" max="10" value="'+esc(p.multiplier)+'"></label>'+
+         '<label><span>關卡數</span><input type="number" inputmode="numeric" data-f="max_level" step="1" min="1" max="10" value="'+esc(p.max_level)+'"></label>'+
+         '</div>'+
+         '<div class="ladder" data-ladder="1"></div>'+
+         '<div class="state"><div><div class="k">目前</div><div class="v" data-st="level">第 '+(lv+1)+' 關</div></div>'+
+         '<div><div class="k">連續虧損</div><div class="v" data-st="losses">'+ls+' 筆</div></div>'+
+         '<div><div class="k">下一手</div><div class="v num" data-st="next">—</div></div></div>'+
+         '<div class="note" data-note="mg"></div></div>'+
+         '</div>'+
          '<div class="fld"><div class="lbl" style="font-size:14px">止盈處理</div>'+
-         '<div class="inline"><select data-f="tp_mode" data-re="1">'+
-         opts(TPS,tp,{partial:!ent.partial_close,breakeven:!ent.breakeven})+'</select></div>';
-      if(tp==="breakeven")
-        h+=fldNum("保本觸發距離（美元）","breakeven_distance",p.breakeven_distance,"0",
-                  "0 = 觸及第一個止盈之後才把停損拉到成本。");
-      if(tp==="partial")
-        h+='<div class="sub-fld"><div class="k" style="font-size:12px;color:var(--dim)">各止盈出場比例</div>'+
-           '<div class="inline"><input type="text" inputmode="decimal" data-f="partial_ratios" '+
-           'placeholder="0.5,0.3,0.2" value="'+
-           ((p.partial_ratios||[]).map(function(x){return Math.round(x*100)/100;}).join(",")||"")+'"></div>'+
-           '<div class="hint">填 50,30,20 或 0.5,0.3,0.2 都可以，會自動換算成總和 100%。</div></div>';
-      h+='</div>'+
-         '<div class="fld"><div class="lbl" style="font-size:14px">風險控管 <span class="dim" style="font-weight:400;font-size:12px">（0 = 不限）</span></div>'+
+         '<div class="inline"><select data-f="tp_mode">';
+      var to=tpOptions(ent,isMid); for(var q=0;q<to.length;q++) h+=optionHtml(to[q],tp);
+      h+='</select></div>'+
+         '<div class="sub-fld" data-box="lots"><div class="lbl2">分批手數（每個止盈平多少手）</div>'+
+         '<div class="inline"><input type="text" inputmode="decimal" data-f="partial_lots" placeholder="0.01/0.01/0.01"'+
+         ' value="'+esc(lotsToText(p.partial_ratios,p.base_lot))+'"></div>'+
+         '<div class="note" data-note="lots"></div></div>'+
+         '<div class="sub-fld" data-box="be"><div class="lbl2">保本距離（美元）</div>'+
+         '<div class="inline"><input type="number" inputmode="decimal" data-f="breakeven_distance" step="0.1" min="0"'+
+         ' value="'+esc(p.breakeven_distance)+'"></div>'+
+         '<div class="note" data-note="be"></div></div>'+
+         '</div>'+
+         '<div class="fld"><div class="lbl" style="font-size:14px">每日上限 <span class="dim" style="font-weight:400;font-size:12px">（美元，0 = 不限）</span></div>'+
          '<div class="two" style="margin-top:9px">'+
-         '<input type="number" inputmode="decimal" data-f="max_daily_loss" placeholder="單日虧損上限" '+
-         'value="'+(p.max_daily_loss!=null?p.max_daily_loss:"")+'">'+
-         '<input type="number" inputmode="decimal" data-f="max_daily_profit" placeholder="單日獲利上限" '+
-         'value="'+(p.max_daily_profit!=null?p.max_daily_profit:"")+'"></div>'+
-         '<div class="two" style="margin-top:8px">'+
-         '<input type="number" inputmode="numeric" data-f="max_active_orders" placeholder="同時持有上限" '+
-         'value="'+(p.max_active_orders!=null?p.max_active_orders:"")+'">'+
-         '<input type="number" inputmode="numeric" data-f="max_daily_trades" placeholder="單日筆數上限" '+
-         'value="'+(p.max_daily_trades!=null?p.max_daily_trades:"")+'"></div>'+
-         '<div class="hint">達到就停止這個來源的新單，隔日重置。</div></div>'+
+         '<label><span>每日止盈</span><input type="number" inputmode="decimal" data-f="max_daily_profit" step="1" min="0" value="'+esc(p.max_daily_profit||0)+'"></label>'+
+         '<label><span>每日止損</span><input type="number" inputmode="decimal" data-f="max_daily_loss" step="1" min="0" value="'+esc(p.max_daily_loss||0)+'"></label>'+
+         '</div><div class="hint">當日這個來源的獲利／虧損達到金額就今日停跟，隔日重置。</div></div>'+
          '<button class="wide act" data-save="1" style="margin-top:14px">套用這個來源</button>'+
          '<div class="err" data-err="1"></div></div>';
     }
@@ -492,32 +654,122 @@ function renderSources(v){
   $("srcList").innerHTML=h;
   bindSources();
 }
+function q(card,sel){ return card.querySelector(sel); }
+function fv(card,key){ var e=q(card,'[data-f="'+key+'"]'); return e?e.value:""; }
+/* 依目前選的模式決定哪些欄位要出現，並即時算分批總和／馬丁階梯 —— 電腦版 syncSourceProfiles 的手機版 */
+function reflow(card){
+  var mode=fv(card,"mode"), tp=fv(card,"tp_mode");
+  var mg=mode==="martingale", dyn=mode==="risk_percent", partial=tp==="partial", be=tp==="breakeven";
+  q(card,'[data-box="base"]').className="sub-fld"+(dyn?" hide":"");
+  q(card,'[data-box="risk"]').className="sub-fld"+(dyn?"":" hide");
+  q(card,'[data-box="mg"]').className="sub-fld"+(mg?"":" hide");
+  q(card,'[data-box="lots"]').className="sub-fld"+((partial&&!dyn)?"":" hide");
+  q(card,'[data-box="be"]').className="sub-fld"+(be?"":" hide");
+  var baseIn=q(card,'[data-f="base_lot"]'), lotsIn=q(card,'[data-f="partial_lots"]');
+  var lotsNote=q(card,'[data-note="lots"]'), baseNote=q(card,'[data-note="base"]');
+  var ent=(V&&V.entitlements)||{};
+  var errs=[];
+  // 分批：基礎手數自動 = 各段總和，鎖住不讓改
+  if(partial&&!dyn){
+    var lots=parseLots(lotsIn.value);
+    if(!lots){ lotsNote.textContent="格式錯誤，請填像 0.01/0.01/0.01"; lotsNote.className="note bad";
+      errs.push("分批手數格式不對，請填像 0.01/0.01/0.01"); }
+    else{
+      var bad=0; for(var i=0;i<lots.length;i++) if(lots[i]<0.01) bad++;
+      if(bad){ lotsNote.textContent="每段都要 ≥ 0.01 手（MT5 最低）"; lotsNote.className="note bad";
+        errs.push("分批每段都要 ≥ 0.01 手，目前有 "+bad+" 段低於 0.01"); }
+      else{
+        var sum=0; for(var j=0;j<lots.length;j++) sum+=lots[j]; sum=r2(sum);
+        baseIn.value=sum;
+        lotsNote.textContent="每單 "+sum+" 手 → 分 "+lots.join(" / ")+" 手 ✓"; lotsNote.className="note ok";
+        if(ent.max_lot&&sum>ent.max_lot){ lotsNote.textContent="加總 "+sum+" 手超過方案上限 "+ent.max_lot+" 手"; lotsNote.className="note bad";
+          errs.push("分批加總超過方案上限 "+ent.max_lot+" 手"); }
+      }
+    }
+    baseIn.readOnly=true; baseNote.textContent="＝ 分批各段的總和，由上面的分批手數決定";
+  }else{
+    baseIn.readOnly=false; baseNote.textContent=ent.max_lot?"方案上限 "+ent.max_lot+" 手":"";
+    var bl=Number(baseIn.value);
+    if(!dyn&&(!isFinite(bl)||bl<0.01)) errs.push("基礎手數至少 0.01");
+    if(!dyn&&ent.max_lot&&bl>ent.max_lot) errs.push("基礎手數超過方案上限 "+ent.max_lot+" 手");
+  }
+  if(partial&&dyn){ lotsNote.textContent=""; }
+  var beNote=q(card,'[data-note="be"]');
+  if(be){
+    var dist=Number(fv(card,"breakeven_distance"))||0;
+    if(dist>0){ beNote.textContent="價格觸及保本距離（進場後 "+dist+" 美元）→ 停損移到進場價"; beNote.className="note ok"; }
+    else{ beNote.textContent="未設保本距離：退回「觸及第一個止盈才保本」"; beNote.className="note warn"; }
+  }
+  // 馬丁階梯：每關實際手數。跟上一關一樣的標紅 —— 那一關等於沒加碼
+  if(mg){
+    var base=dyn?0:Number(baseIn.value)||0.01, mult=Number(fv(card,"multiplier"))||2,
+        lv=Math.max(1,Math.min(10,parseInt(fv(card,"max_level"),10)||5));
+    var lad=ladderFor(base,mult,lv), st=((V&&V.source_state)||{})[card._name]||{};
+    var cur=Math.min(Number(st.level||0),lv-1), top=Math.max.apply(null,lad)||1, lh="", dup=[];
+    for(var r=0;r<lad.length;r++){
+      var isDup=r>0&&lad[r]<=lad[r-1];
+      if(isDup) dup.push(r+1);
+      lh+='<div class="'+(r<=cur?"lit ":"")+(r===cur?"cur ":"")+(isDup?"dup":"")+'">'+
+          '<i style="height:'+Math.max(8,Math.round(lad[r]/top*44))+'px"></i><b>'+lad[r]+'</b><small>第 '+(r+1)+' 關</small></div>';
+    }
+    q(card,'[data-ladder]').innerHTML=lh;
+    q(card,'[data-st="level"]').textContent="第 "+(cur+1)+" 關";
+    q(card,'[data-st="next"]').textContent=lad[cur]+" 手";
+    var mgNote=q(card,'[data-note="mg"]');
+    if(dup.length){
+      mgNote.className="note bad";
+      mgNote.textContent="第 "+dup.join("、")+" 關的手數跟前一關一樣 —— "+base+" × "+mult+" 落不到 MT5 的 0.01 跳動上，那一關等於沒加碼。把倍數調到 2，或把基礎手數加大。";
+    }else{ mgNote.className="note"; mgNote.textContent="輸一筆升一關、贏一筆回第 1 關；到頂再輸就重置。"; }
+    var mm=Number(fv(card,"multiplier")); if(!(mm>=1)) errs.push("馬丁倍數至少 1");
+  }
+  return errs;
+}
+// 組成要送給 Hub 的這一個來源的設定 —— 鍵與電腦版 syncSourceProfiles 完全一樣
+function collect(card){
+  var mode=fv(card,"mode"), tp=fv(card,"tp_mode"), dyn=mode==="risk_percent", partial=tp==="partial";
+  var one={enabled:!!q(card,'[data-f="enabled"]').checked, mode:mode, tp_mode:tp,
+    breakeven_distance:Math.max(0,Number(fv(card,"breakeven_distance"))||0),
+    risk_percent:Math.min(5,Math.max(0.01,Number(fv(card,"risk_percent"))||0.5)),
+    max_daily_loss:Number(fv(card,"max_daily_loss"))||0,
+    max_daily_profit:Number(fv(card,"max_daily_profit"))||0};
+  var lots=parseLots(fv(card,"partial_lots"));
+  if(partial&&!dyn&&lots){
+    var sum=0; for(var i=0;i<lots.length;i++) sum+=lots[i]; sum=r2(sum);
+    one.base_lot=sum;
+    one["partial_ratios"]=lots.map(function(l){return l/sum;});
+  }else{
+    one.base_lot=Number(fv(card,"base_lot"))||0.01;
+    // 本金比例配分批：沿用欄位裡記著的分配比例，沒設就由後端退回 50/30/20
+    if(dyn&&lots){ var s2=0; for(var j=0;j<lots.length;j++) s2+=lots[j];
+      one["partial_ratios"]=lots.map(function(l){return l/s2;}); }
+  }
+  if(mode==="martingale"){
+    one.multiplier=Number(fv(card,"multiplier"))||2;
+    one.max_level=parseInt(fv(card,"max_level"),10)||5;
+  }
+  return one;
+}
 function bindSources(){
-  var cards=document.querySelectorAll(".src");
+  var cards=document.querySelectorAll(".src"), list=(V&&V.all_sources)||[];
   for(var i=0;i<cards.length;i++) (function(card){
-    var name=card.getAttribute("data-src");
-    var sw=card.querySelector('input[data-f="enabled"]');
+    var name=(list[Number(card.getAttribute("data-i"))]||{}).name||"";
+    card._name=name;
+    var sw=q(card,'input[data-f="enabled"]');
     if(sw&&!sw.disabled) sw.onchange=function(){
       var pt={}; pt[name]={enabled:this.checked}; push({source_profiles:pt});
     };
-    // 下單方式／止盈處理一改就要重畫（顯示的子欄位不一樣），先存起來再重繪
-    var sels=card.querySelectorAll("[data-re]");
-    for(var j=0;j<sels.length;j++) sels[j].onchange=function(){
-      var pt={}; pt[name]={}; pt[name][this.getAttribute("data-f")]=this.value;
-      push({source_profiles:pt});
-    };
-    var btn=card.querySelector("[data-save]");
-    if(btn) btn.onclick=function(){
-      var one={}, fs=card.querySelectorAll("[data-f]");
-      for(var k=0;k<fs.length;k++){
-        var f=fs[k], key=f.getAttribute("data-f");
-        if(key==="enabled") continue;
-        var val=String(f.value).trim();
-        if(val==="") continue;
-        one[key]=(f.tagName==="SELECT"||key==="partial_ratios")?val:Number(val);
-      }
-      var pt={}; pt[name]=one;
-      push({source_profiles:pt}, card.querySelector("[data-err]"));
+    if(!q(card,".body")) return;
+    var inputs=card.querySelectorAll("[data-f]");
+    for(var j=0;j<inputs.length;j++){
+      if(inputs[j].getAttribute("data-f")==="enabled") continue;
+      inputs[j].oninput=inputs[j].onchange=function(){ dirty=1; reflow(card); };
+    }
+    reflow(card);
+    q(card,"[data-save]").onclick=function(){
+      var errEl=q(card,"[data-err]"), errs=reflow(card);
+      if(errs.length){ errEl.textContent=errs.join("；"); return; }
+      var pt={}; pt[name]=collect(card);
+      push({source_profiles:pt}, errEl);
     };
   })(cards[i]);
 }
@@ -526,7 +778,7 @@ function bindSources(){
 var DAYS=["一","二","三","四","五","六","日"];
 function renderSchedules(v){
   var ent=v.entitlements||{}, ok=!!ent.schedule;
-  $("schedLock").textContent=ok?"":"方案未包含";
+  $("schedLock").textContent=ok?"":"需"+tierLabel("advanced")+"以上";
   var list=("auto_schedules" in (v.desired||{}))?v.desired.auto_schedules
            :((v.applied||{}).auto_schedules||[]);
   var h="";
@@ -622,12 +874,14 @@ function render(v){
     :"conic-gradient(var(--up) 0deg "+(wr*3.6)+"deg, #38191a "+(wr*3.6)+"deg 360deg)";
   put("pToday",s.profit_today); put("pWeek",s.profit_week); put("pAll",s.profit_total);
   $("pN").textContent=s.total==null?"—":s.total; $("pN").className="v num";
+  renderTiles(s);
   sparkline(s.curve);
   var rc=s.recent||[], rh="";
   for(var i=0;i<rc.length;i++)
     rh+='<div class="row"><span class="k">'+esc(rc[i].close_time)+'　'+esc(rc[i].symbol)+
         '</span><span class="v num '+cls(Number(rc[i].profit))+'">'+money(rc[i].profit)+'</span></div>';
   $("recent").innerHTML=rh;
+  renderBySource(s);
 
   if(tab==="src"&&!dirty) renderSources(v);
   if(tab==="sched"&&!dirty) renderSchedules(v);
@@ -661,6 +915,8 @@ function render(v){
   $("dev").textContent=v.agent_device||"—";
   $("acct").textContent=acc.login||"—";
   $("srv").textContent=acc.server||"—";
+  if(v.min_password_length) $("pwHint").textContent="新密碼至少 "+v.min_password_length+
+    " 個字元。改完後電腦上的跟單程式不會被登出，下次登入時再用新密碼。";
 }
 
 function refresh(){
@@ -676,10 +932,17 @@ function push(patch,errEl){
     dirty=0;
     if(r.status===401){ logout(); return; }
     if(!r.body||!r.body.ok){ if(errEl) errEl.textContent="沒有送出去，請再試一次"; return; }
-    if(errEl) errEl.textContent=explain(r.body.rejected||[]);
+    var msg=explain(r.body.rejected||[]);
     render(r.body);
     if(tab==="src") renderSources(r.body);
     if(tab==="sched") renderSchedules(r.body);
+    // 重畫完才寫訊息，否則會被重畫洗掉。來源卡片重畫後是新的 DOM，
+    // 要用來源名稱重新找到那張卡的訊息欄。
+    if(errEl&&patch.source_profiles){
+      var which=Object.keys(patch.source_profiles)[0], again=null, cards=document.querySelectorAll(".src");
+      for(var i=0;i<cards.length;i++) if(cards[i]._name===which) again=q(cards[i],"[data-err]");
+      if(again){ again.textContent=msg||"已送出，等掛機端套用"; again.className="err"+(msg?"":" good"); }
+    }else if(errEl) errEl.textContent=msg;
   }).catch(function(){ dirty=0; if(errEl) errEl.textContent="連不上伺服器"; });
 }
 function explain(rj){
@@ -707,6 +970,7 @@ function show(name){
   var bs=document.querySelectorAll("nav button");
   for(var j=0;j<bs.length;j++) bs[j].className=(bs[j].getAttribute("data-tab")===name)?"on":"";
   window.scrollTo(0,0);
+  dirty=0;
   if(V){ if(name==="src") renderSources(V); if(name==="sched") renderSchedules(V); }
 }
 var navBtns=document.querySelectorAll("nav button");
@@ -725,6 +989,29 @@ function logout(){
   try{ localStorage.removeItem("gc_token"); }catch(e){}
   $("mainView").className="hide"; $("loginView").className="";
 }
+
+/* ── 修改密碼：走 /auth/change-password，控制台的連線改完不會被踢掉，電腦那格也不會 ── */
+$("pwBtn").onclick=function(){
+  var old=$("pwOld").value, a=$("pwNew").value, b=$("pwNew2").value, m=$("pwMsg");
+  var min=(V&&V.min_password_length)||8;
+  m.className="err";
+  if(!old){ m.textContent="請輸入目前密碼"; return; }
+  if(a!==b){ m.textContent="兩次輸入的新密碼不一致"; return; }
+  if(a.length<min){ m.textContent="新密碼至少要 "+min+" 個字元"; return; }
+  if(a===old){ m.textContent="新密碼不能跟目前的一樣"; return; }
+  var btn=this; btn.disabled=true; m.textContent="";
+  api("/auth/change-password",{old_password:old,new_password:a}).then(function(r){
+    btn.disabled=false;
+    if(r.body&&r.body.ok){
+      $("pwOld").value=$("pwNew").value=$("pwNew2").value="";
+      m.className="err good"; m.textContent="密碼已更新，下次登入請用新密碼"; return;
+    }
+    var c=(r.body&&r.body.error)||"unknown";
+    m.textContent={bad_old_password:"目前密碼不正確",too_short:"新密碼至少要 "+min+" 個字元",
+      same_as_old:"新密碼不能跟目前的一樣",session_invalid:"連線已失效，請重新登入",
+      expired:"方案已到期，請聯繫管理員續約",suspended:"帳號已停用，請聯繫管理員"}[c]||("更新失敗（"+c+"）");
+  }).catch(function(){ btn.disabled=false; m.textContent="連不上伺服器"; });
+};
 
 $("loginBtn").onclick=function(){
   var b=this; b.disabled=true; $("loginErr").textContent="";

@@ -156,6 +156,11 @@ class MemberStatusStore:
             "orders": (payload.get("orders") or [])[: self.MAX_POSITIONS]
                       if isinstance(payload.get("orders"), list) else [],
             "stats": payload.get("stats") if isinstance(payload.get("stats"), dict) else {},
+            # 各來源目前的馬丁層級（第幾關、連虧幾筆）。手機的策略卡要顯示
+            # 「現在押到哪」，只給設定的話會員看不出這一關手數是多少。
+            "source_state": ({k: v for k, v in list(payload["source_state"].items())[:20]
+                              if isinstance(v, dict)}
+                             if isinstance(payload.get("source_state"), dict) else {}),
             # 綁定關係：哪個實例、指向哪個 MT5 資料夾。audit() 靠它找出
             # 「兩個會員端指到同一台 MT5」這種會重複下單的錯配。
             "instance": str(payload.get("instance") or "")[:16],
@@ -650,6 +655,15 @@ def format_signal_notice(record: Dict[str, Any]) -> Optional[str]:
     return "\n".join(lines)
 
 
+def _tier_needed(source: str) -> str:
+    """要到哪個等級才跟得到這個來源 —— 由低往高找第一個含它的等級。
+    哪個等級都沒有（例如還在建置的低頻）就標最高等級，跟電腦版一致。"""
+    for tier in membership.TIER_ORDER:
+        if source in (membership.TIERS.get(tier) or {}).get("sources", ()):
+            return tier
+    return membership.TIER_ORDER[-1]
+
+
 class HubRequestHandler(BaseHTTPRequestHandler):
     server_version = "CopyTraderHub/1.0"
 
@@ -794,17 +808,28 @@ class HubRequestHandler(BaseHTTPRequestHandler):
             "positions_count": snap.get("positions_count"),
             "orders_count": snap.get("orders_count"),
             "stats": snap.get("stats") or {},
+            "source_state": snap.get("source_state") or {},
             "usage": member.get("usage"),
             "expires_at": member.get("expires_at"),
             "status": member.get("status"),
             # 全部來源都送，沒授權的在手機上顯示成鎖住而不是整個消失 ——
             # 會員看得到自己「還沒買到什麼」，比憑空少一張卡片清楚。
+            # 順序跟電腦版一樣：低頻、中頻、高頻、超高頻。
+            #
+            # **手機上只准出現 label。** name 是 LINE 聊天室的名字，會員端
+            # 拿它當設定的 key、Hub 拿它過濾訊號，但它不該被看到 —— 對外
+            # 一律叫交易頻率，不出現提供者的群組名或暱稱。
             "all_sources": [
-                {"name": membership.MID_FREQ, "label": "中頻交易"},
-                {"name": membership.HIGH_FREQ, "label": "高頻交易"},
-                {"name": membership.ULTRA_HIGH_FREQ, "label": "超高頻交易"},
-                {"name": membership.LOW_FREQ, "label": "低頻交易"},
+                {"name": name, "label": label, "need": _tier_needed(name)}
+                for name, label in (
+                    (membership.LOW_FREQ, "低頻交易"),
+                    (membership.MID_FREQ, "中頻交易"),
+                    (membership.HIGH_FREQ, "高頻交易"),
+                    (membership.ULTRA_HIGH_FREQ, "超高頻交易"),
+                )
             ],
+            "tier_labels": {k: membership.TIERS[k]["label"] for k in membership.TIER_ORDER},
+            "min_password_length": membership.MIN_PASSWORD_LENGTH,
         }
 
     def _member_auth_error(self) -> str:

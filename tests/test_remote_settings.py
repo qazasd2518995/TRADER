@@ -479,6 +479,10 @@ class ConsolePageTests(_HubCase):
         for el in ("aTier", "aExp", "aStatus", "aBar", "bene"):
             self.assertIn(f'id="{el}"', html)
 
+    # 電腦版面板早就拿掉的保留欄位（stats.py / manager.py 都註明「面板已移除」）。
+    # 手機要跟電腦版一模一樣，所以這兩個也不出現 —— 後端仍認得，只是沒人填。
+    DESKTOP_DROPPED = ("max_active_orders", "max_daily_trades")
+
     def test_strategy_tab_covers_every_per_source_field(self):
         """電腦版有的欄位手機都要有，少一個會員就得為了改一個數字開電腦。
 
@@ -489,13 +493,21 @@ class ConsolePageTests(_HubCase):
         """
         _s, html = self._get_html("/console")
         for field in M.SOURCE_FIELDS:
+            if field in self.DESKTOP_DROPPED:
+                self.assertNotIn(f'"{field}"', html, f"電腦版沒有 {field}，手機也不該有")
+                continue
             self.assertIn(f'"{field}"', html, f"策略分頁沒有處理欄位 {field}")
 
     def test_strategy_tab_renders_every_source(self):
-        """沒授權的來源要顯示成鎖住，不是整個消失 —— 會員看得到還沒買到什麼。"""
+        """沒授權的來源要顯示成鎖住，不是整個消失 —— 會員看得到還沒買到什麼。
+
+        鎖住的標示跟電腦版一樣寫「需進階版」（要哪個等級才解得開），
+        不是一句「未包含在方案」讓人猜。
+        """
         _s, html = self._get_html("/console")
         self.assertIn('id="srcList"', html)
-        self.assertIn("未包含在方案", html)
+        self.assertIn('class="pill lock"', html)
+        self.assertIn("需'+esc(tierLabel(need))", html.replace(" ", ""))
 
     def test_schedule_tab_exists(self):
         _s, html = self._get_html("/console")
