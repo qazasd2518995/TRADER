@@ -155,10 +155,96 @@ class MemberStatusStore:
             "orders": (payload.get("orders") or [])[: self.MAX_POSITIONS]
                       if isinstance(payload.get("orders"), list) else [],
             "stats": payload.get("stats") if isinstance(payload.get("stats"), dict) else {},
+            # 綁定關係：哪個實例、指向哪個 MT5 資料夾。audit() 靠它找出
+            # 「兩個會員端指到同一台 MT5」這種會重複下單的錯配。
+            "instance": str(payload.get("instance") or "")[:16],
+            "mt5_files_dir": str(payload.get("mt5_files_dir") or "")[:260],
             "reported_at": time.time(),
         }
         with self._lock:
+            # MT5 帳號換掉了要留痕跡。換帳號是正常操作，但「換了而沒人發現」
+            # 就是訊號被送去非預期帳戶的那條路 —— 至少要看得見。
+            previous = self._by_user.get(username) or {}
+            was = (previous.get("account") or {}).get("login")
+            now = (record.get("account") or {}).get("login")
+            if was and now and str(was) != str(now):
+                record["mt5_login_changed_from"] = was
+                record["mt5_login_changed_at"] = record["reported_at"]
+            else:
+                # 旗標一旦升起就留著（直到 Hub 重啟），否則下一次上報就沖掉了，
+                # 後台永遠看不到那一瞬間。
+                for key in ("mt5_login_changed_from", "mt5_login_changed_at"):
+                    if key in previous:
+                        record[key] = previous[key]
             self._by_user[username] = record
+
+    # ── 綁定體檢 ────────────────────────────────────────────────────────
+    # 錯配的代價很直接：兩個會員端指到同一台 MT5 = 同一個帳戶被下兩次單。
+    # 這種事用眼睛比對五台機器的設定檔是遲早會漏的，所以由伺服器自己算。
+    ISSUE_TEXT = {
+        "duplicate_mt5_dir": "與其他會員指向同一個 MT5 資料夾（會重複下單）",
+        "duplicate_mt5_login": "與其他會員使用同一個 MT5 帳號（會重複下單）",
+        "mt5_login_changed": "MT5 帳號被換過",
+        "no_mt5_bridge": "接不上 MT5（路徑錯誤或沒掛 EA）",
+        "mt5_not_running": "MT5 沒開著",
+        "agent_offline": "掛機端已離線（顯示的是最後一次回報）",
+        "never_reported": "掛機端從未回報",
+    }
+
+    # 多久沒回報就當成那個掛機端已經走了。正常是每 10 秒一次，兩分鐘是很寬鬆
+    # 的門檻（一次網路抖動不會誤判），但又短到「換帳號」這種操作不會卡太久。
+    AUDIT_FRESH_SEC = 120.0
+
+    def audit(self, usernames: Optional[List[str]] = None) -> Dict[str, List[str]]:
+        """回傳 {會員: [問題代碼]}。沒問題的不會出現在結果裡。
+
+        **重複偵測只看還在回報的紀錄。** 這個 store 不會過期，所以一個會員換
+        帳號或停掉掛機端之後，他換之前的最後一筆快照會一直留著。拿它去比對
+        就會出現「兩個會員指到同一台 MT5」的假警報 —— 2026-09-09 把
+        instance 4 從 ops4 轉給 trial04 時就這樣誤報過。
+        早就不在跑的東西不可能正在跟誰重複下單。
+        """
+        snap = self.snapshot()
+        now = time.time()
+        fresh = {u: r for u, r in snap.items()
+                 if now - float(r.get("reported_at") or 0) <= self.AUDIT_FRESH_SEC}
+
+        by_dir: Dict[str, List[str]] = {}
+        by_login: Dict[str, List[str]] = {}
+        for user, rec in fresh.items():
+            folder = (rec.get("mt5_files_dir") or "").strip().lower()
+            if folder:
+                by_dir.setdefault(folder, []).append(user)
+            login = str((rec.get("account") or {}).get("login") or "")
+            if login:
+                by_login.setdefault(login, []).append(user)
+
+        out: Dict[str, List[str]] = {}
+        for user, rec in snap.items():
+            if user not in fresh:
+                # 已經離線的：只標離線。再報「接不上 MT5」是誤導 —— 那是
+                # 它離線前的狀態，現在根本沒有東西在跑。
+                out[user] = ["agent_offline"]
+                continue
+            issues: List[str] = []
+            folder = (rec.get("mt5_files_dir") or "").strip().lower()
+            if folder and len(by_dir.get(folder, [])) > 1:
+                issues.append("duplicate_mt5_dir")
+            login = str((rec.get("account") or {}).get("login") or "")
+            if login and len(by_login.get(login, [])) > 1:
+                issues.append("duplicate_mt5_login")
+            if rec.get("mt5_login_changed_from"):
+                issues.append("mt5_login_changed")
+            if not login:
+                issues.append("no_mt5_bridge")
+            elif rec.get("mt5_stale"):
+                issues.append("mt5_not_running")
+            if issues:
+                out[user] = issues
+        for user in (usernames or []):
+            if user not in snap:
+                out.setdefault(user, []).append("never_reported")
+        return out
 
     def snapshot(self) -> Dict[str, Dict[str, Any]]:
         with self._lock:
@@ -617,6 +703,15 @@ class HubRequestHandler(BaseHTTPRequestHandler):
             "stats": snap.get("stats") or {},
             "usage": member.get("usage"),
             "expires_at": member.get("expires_at"),
+            "status": member.get("status"),
+            # 全部來源都送，沒授權的在手機上顯示成鎖住而不是整個消失 ——
+            # 會員看得到自己「還沒買到什麼」，比憑空少一張卡片清楚。
+            "all_sources": [
+                {"name": membership.MID_FREQ, "label": "中頻交易"},
+                {"name": membership.HIGH_FREQ, "label": "高頻交易"},
+                {"name": membership.ULTRA_HIGH_FREQ, "label": "超高頻交易"},
+                {"name": membership.LOW_FREQ, "label": "低頻交易"},
+            ],
         }
 
     def _member_auth_error(self) -> str:
@@ -851,7 +946,16 @@ class HubRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/admin/members/status":
             status_store = self.member_status
             statuses = status_store.snapshot() if status_store is not None else {}
-            self._send_json(200, {"ok": True, "statuses": statuses})
+            # 綁定體檢一起回，後台不必自己比對五台機器的設定 —— 眼睛比對
+            # 遲早會漏，而漏掉的下場是同一個 MT5 帳戶被下兩次單。
+            issues: Dict[str, Any] = {}
+            if status_store is not None:
+                store = self.members
+                known = [m["username"] for m in store.list_members()] if store else None
+                issues = status_store.audit(known)
+            self._send_json(200, {"ok": True, "statuses": statuses,
+                                  "issues": issues,
+                                  "issue_text": MemberStatusStore.ISSUE_TEXT})
             return
         self._send_json(404, {"ok": False, "error": "not_found"})
 

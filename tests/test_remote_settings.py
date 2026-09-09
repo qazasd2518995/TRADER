@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import re
 import os
 import shutil
 import tempfile
@@ -86,6 +87,169 @@ class SanitizeTests(unittest.TestCase):
     def test_one_bad_key_does_not_sink_the_good_one(self):
         clean, _ = M.sanitize_settings({"following": True, "lot_size": "abc"})
         self.assertEqual(clean, {"following": True})
+
+
+class FullSettingsTests(unittest.TestCase):
+    """完整設定（馬丁、分批、各來源策略）的等級夾制。
+
+    夾在這裡不是安全邊界 —— 真正的收費閘門是 Hub 在 /signals 就把沒買的來源
+    濾掉。這裡夾是為了讓手機顯示的值就是真的會生效的值：會員把馬丁打開卻在
+    等級外，畫面上該立刻顯示已關閉，而不是等他下次開電腦才發現。
+    """
+
+    def _clean(self, patch, tier="flagship"):
+        return M.sanitize_settings(patch, tier=tier)
+
+    def test_martingale_gated_by_tier(self):
+        clean, rej = self._clean({"use_martingale": True}, tier="basic")
+        self.assertIs(clean["use_martingale"], False)
+        self.assertIn("use_martingale:not_in_tier", rej)
+        clean, _ = self._clean({"use_martingale": True}, tier="flagship")
+        self.assertIs(clean["use_martingale"], True)
+
+    def test_martingale_numbers_are_bounded(self):
+        clean, _ = self._clean({"martingale_multiplier": 99, "martingale_max_level": 99})
+        self.assertEqual(clean["martingale_multiplier"], 10.0)
+        self.assertEqual(clean["martingale_max_level"], 10)
+        clean, _ = self._clean({"martingale_multiplier": 0.1, "martingale_max_level": 0})
+        self.assertEqual(clean["martingale_multiplier"], 1.0)
+        self.assertEqual(clean["martingale_max_level"], 1)
+
+    def test_partial_ratios_normalise_to_one(self):
+        """會員填 50,30,20 或 0.5,0.3,0.2 都該當成一樣的意思。"""
+        for raw in ("50,30,20", "0.5,0.3,0.2", [5, 3, 2], "50，30，20"):
+            clean, _ = self._clean({"partial_close_ratios": raw})
+            self.assertEqual(clean["partial_close_ratios"], "0.5,0.3,0.2", repr(raw))
+
+    def test_partial_ratios_reject_garbage(self):
+        for raw in ("abc", "1,-2", "", [], None, "0,0"):
+            clean, rej = self._clean({"partial_close_ratios": raw})
+            self.assertNotIn("partial_close_ratios", clean, repr(raw))
+
+    def test_source_disabled_when_not_in_tier(self):
+        clean, rej = self._clean(
+            {"source_profiles": {M.HIGH_FREQ: {"enabled": True}}}, tier="basic")
+        self.assertIs(clean["source_profiles"][M.HIGH_FREQ]["enabled"], False)
+        self.assertIn(f"source:{M.HIGH_FREQ}:not_in_tier", rej)
+
+    def test_source_mode_and_tp_gated(self):
+        clean, rej = self._clean({"source_profiles": {M.HIGH_FREQ: {
+            "mode": "martingale", "tp_mode": "partial"}}}, tier="basic")
+        p = clean["source_profiles"][M.HIGH_FREQ]
+        self.assertEqual(p["mode"], "flat")
+        self.assertEqual(p["tp_mode"], "single", "分批→保本→單一，兩層都要降下來")
+
+    def test_dynamic_lot_is_flagship_only(self):
+        clean, _ = self._clean({"source_profiles": {M.HIGH_FREQ: {
+            "mode": "risk_percent"}}}, tier="advanced")
+        self.assertEqual(clean["source_profiles"][M.HIGH_FREQ]["mode"], "flat")
+        clean, _ = self._clean({"source_profiles": {M.HIGH_FREQ: {
+            "mode": "risk_percent"}}}, tier="flagship")
+        self.assertEqual(clean["source_profiles"][M.HIGH_FREQ]["mode"], "risk_percent")
+
+    def test_mid_freq_cannot_use_partial(self):
+        """中頻一單只有一個止盈，分批根本沒東西可分。"""
+        clean, rej = self._clean({"source_profiles": {M.MID_FREQ: {"tp_mode": "partial"}}})
+        self.assertEqual(clean["source_profiles"][M.MID_FREQ]["tp_mode"], "single")
+        self.assertIn(f"source:{M.MID_FREQ}:single_tp_only", rej)
+
+    def test_source_base_lot_capped(self):
+        clean, rej = self._clean(
+            {"source_profiles": {M.MID_FREQ: {"base_lot": 9.9}}}, tier="basic")
+        self.assertEqual(clean["source_profiles"][M.MID_FREQ]["base_lot"], 0.10)
+        self.assertIn(f"source:{M.MID_FREQ}:lot_capped_by_tier", rej)
+
+    def test_unknown_source_field_dropped(self):
+        clean, rej = self._clean({"source_profiles": {M.MID_FREQ: {
+            "base_lot": 0.05, "hub_url": "http://evil"}}})
+        self.assertEqual(clean["source_profiles"][M.MID_FREQ], {"base_lot": 0.05})
+        self.assertIn(f"source:{M.MID_FREQ}:unknown:hub_url", rej)
+
+    def test_daily_caps_and_breakeven_distance(self):
+        clean, _ = self._clean({"source_profiles": {M.MID_FREQ: {
+            "max_daily_loss": 25, "max_daily_profit": 0, "breakeven_distance": 3}}})
+        p = clean["source_profiles"][M.MID_FREQ]
+        self.assertEqual(p["max_daily_loss"], 25.0)
+        self.assertEqual(p["max_daily_profit"], 0.0)
+        self.assertEqual(p["breakeven_distance"], 3.0)
+
+
+class ScheduleTests(unittest.TestCase):
+    """自動跟單時段。"""
+
+    def _clean(self, patch, tier="flagship"):
+        return M.sanitize_settings(patch, tier=tier)
+
+    def test_gated_by_tier(self):
+        clean, rej = self._clean({"auto_schedules": [
+            {"start": "21:00", "end": "02:00"}]}, tier="basic")
+        self.assertNotIn("auto_schedules", clean)
+        self.assertIn("auto_schedules:not_in_tier", rej)
+
+    def test_crosses_midnight(self):
+        """黃金是通宵盤，只支援 start<end 的話「晚上跟到凌晨」根本設不出來。"""
+        clean, _ = self._clean({"auto_schedules": [
+            {"start": "21:00", "end": "02:00", "days": [4]}]})
+        self.assertEqual(clean["auto_schedules"],
+                         [{"start": "21:00", "end": "02:00", "days": [4]}])
+
+    def test_bad_times_rejected_but_good_ones_kept(self):
+        clean, rej = self._clean({"auto_schedules": [
+            {"start": "09:00", "end": "17:00"},
+            {"start": "25:00", "end": "17:00"},
+            {"start": "9:00", "end": "17:00"},
+            {"start": "09:00", "end": "09:00"},
+        ]})
+        self.assertEqual(len(clean["auto_schedules"]), 1, "壞的要丟掉，好的要留著")
+        self.assertIn("schedule:1:bad_time", rej)
+        self.assertIn("schedule:3:empty_range", rej)
+
+    def test_days_are_deduped_and_bounded(self):
+        clean, _ = self._clean({"auto_schedules": [
+            {"start": "09:00", "end": "17:00", "days": [1, 1, 9, -2, 6, "3"]}]})
+        self.assertEqual(clean["auto_schedules"][0]["days"], [1, 3, 6])
+
+    def test_empty_list_clears_schedules(self):
+        """會員把最後一段刪掉，要真的變成空的，不能被當成「沒有意見」。"""
+        clean, _ = self._clean({"auto_schedules": []})
+        self.assertEqual(clean["auto_schedules"], [])
+
+    def test_capped_at_limit(self):
+        many = [{"start": "0%d:00" % (i % 10), "end": "23:00"} for i in range(30)]
+        clean, _ = self._clean({"auto_schedules": many})
+        self.assertLessEqual(len(clean["auto_schedules"]), M.SCHEDULE_LIMIT_ENTRIES)
+
+
+class SourceProfileMergeTests(unittest.TestCase):
+    """只改一個來源的一個欄位，不能把別的洗掉。"""
+
+    def setUp(self):
+        self._dir = tempfile.mkdtemp()
+        self.store = M.MemberStore(os.path.join(self._dir, "m.db"))
+        self.store.create_member("alice", "flagship", password="pw12345678")
+
+    def tearDown(self):
+        self.store.close()
+        shutil.rmtree(self._dir, ignore_errors=True)
+
+    def test_other_sources_survive(self):
+        self.store.update_settings("alice", {"source_profiles": {
+            M.HIGH_FREQ: {"enabled": True, "mode": "martingale", "multiplier": 1.5}}})
+        self.store.update_settings("alice", {"source_profiles": {
+            M.MID_FREQ: {"base_lot": 0.07}}})
+        sp = self.store.get_settings("alice")["source_profiles"]
+        self.assertEqual(sorted(sp), sorted([M.HIGH_FREQ, M.MID_FREQ]))
+        self.assertEqual(sp[M.HIGH_FREQ]["multiplier"], 1.5, "另一個來源被洗掉了")
+
+    def test_other_fields_of_same_source_survive(self):
+        self.store.update_settings("alice", {"source_profiles": {
+            M.MID_FREQ: {"enabled": True, "base_lot": 0.05, "max_daily_loss": 30}}})
+        self.store.update_settings("alice", {"source_profiles": {
+            M.MID_FREQ: {"base_lot": 0.08}}})
+        p = self.store.get_settings("alice")["source_profiles"][M.MID_FREQ]
+        self.assertEqual(p["base_lot"], 0.08)
+        self.assertIs(p["enabled"], True, "同來源的其他欄位被洗掉了")
+        self.assertEqual(p["max_daily_loss"], 30.0)
 
 
 class StoreSettingsTests(unittest.TestCase):
@@ -269,9 +433,15 @@ class ConsolePageTests(_HubCase):
         self.assertEqual(self._get_html("/console/")[0], 200)
 
     def test_page_logs_in_with_console_scope(self):
-        """頁面若送成 agent，會員一開手機就把自己的電腦踢下線。"""
+        """頁面若送成 agent，會員一開手機就把自己的電腦踢下線。
+
+        比對時把空白拿掉 —— 要驗的是「用 console 連線登入」這個意圖，
+        不是 JS 的排版風格。先前寫死含空白的字串，改個縮排就假性失敗。
+        """
         _s, html = self._get_html("/console")
-        self.assertIn('scope: "console"', html)
+        compact = re.sub(r"\s+", "", html)
+        self.assertIn('scope:"console"', compact)
+        self.assertNotIn('scope:"agent"', compact, "手機端不該用跟單連線登入")
 
     def test_page_tells_the_user_it_controls_their_own_pc(self):
         _s, html = self._get_html("/console")
@@ -282,6 +452,62 @@ class ConsolePageTests(_HubCase):
         _s, html = self._get_html("/console")
         for bad in ("http://", "https://", "cdn.", "<img"):
             self.assertNotIn(bad, html, f"頁面不該有外部資源：{bad}")
+
+    def test_four_tabs_exist(self):
+        """內容太多，切成四個分頁。少一個就是一整塊功能上不了手機。"""
+        _s, html = self._get_html("/console")
+        for tab in ("tab-home", "tab-src", "tab-sched", "tab-acct"):
+            self.assertIn(f'id="{tab}"', html, f"缺少分頁 {tab}")
+            self.assertIn(f'data-tab="{tab[4:]}"', html, f"缺少 {tab} 的導覽按鈕")
+
+    def test_no_global_trading_settings(self):
+        """手機上不能有全域交易設定 —— 電腦版面板一個都沒有。
+
+        那些值（default_lot_size / use_martingale / partial_close_ratios）只是
+        「某來源沒設定時的預設種子」，真正生效的永遠是來源的 base_lot。手機上
+        多做一個全域手數，會讓人以為它跟來源設定是兩套東西，然後怎麼改都覺得
+        沒生效。2026-09-09 移除。
+        """
+        _s, html = self._get_html("/console")
+        for gone in ('id="lot"', 'id="mg"', 'id="mgMul"', 'id="mgLvl"', 'id="pc"'):
+            self.assertNotIn(gone, html, f"全域設定 {gone} 又跑回手機上了")
+        self.assertNotIn('id="tab-ctl"', html)
+
+    def test_account_tab_shows_status_and_countdown(self):
+        """會員要知道自己方案是什麼、還剩多久 —— 這是他最常來看的東西。"""
+        _s, html = self._get_html("/console")
+        for el in ("aTier", "aExp", "aStatus", "aBar", "bene"):
+            self.assertIn(f'id="{el}"', html)
+
+    def test_strategy_tab_covers_every_per_source_field(self):
+        """電腦版有的欄位手機都要有，少一個會員就得為了改一個數字開電腦。
+
+        欄位是 JS 依 mode/tp_mode 條件產生的（選了馬丁才出現倍數與層數），
+        所以靜態原始碼裡看不到 data-f="..." 的成品，只查得到欄位名字串。
+        比對 membership.SOURCE_FIELDS 而不是自己再抄一份清單 —— 抄的那份
+        遲早跟後端漂開。
+        """
+        _s, html = self._get_html("/console")
+        for field in M.SOURCE_FIELDS:
+            self.assertIn(f'"{field}"', html, f"策略分頁沒有處理欄位 {field}")
+
+    def test_strategy_tab_renders_every_source(self):
+        """沒授權的來源要顯示成鎖住，不是整個消失 —— 會員看得到還沒買到什麼。"""
+        _s, html = self._get_html("/console")
+        self.assertIn('id="srcList"', html)
+        self.assertIn("未包含在方案", html)
+
+    def test_schedule_tab_exists(self):
+        _s, html = self._get_html("/console")
+        for el in ("schedList", "sStart", "sEnd", "sDays", "sAdd"):
+            self.assertIn(f'id="{el}"', html, f"排程分頁缺少 {el}")
+
+    def test_view_carries_every_source(self):
+        _s, body = self._call("/console/settings", token=self.console)
+        names = [s["name"] for s in body.get("all_sources") or []]
+        self.assertIn(M.MID_FREQ, names)
+        self.assertIn(M.HIGH_FREQ, names)
+        self.assertEqual(len(names), 4)
 
 
 class ReportStatusCarriesSettingsTests(_HubCase):

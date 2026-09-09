@@ -26,7 +26,7 @@ import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from copy_trader.config import DATA_DIR, _instance_name, _read_json_dict
 from copy_trader.central.membership import (
@@ -1384,6 +1384,256 @@ class LauncherState:
         } for t in trades[-LauncherState.RECENT_TRADES:][::-1]]
         return out
 
+    # ── 本機掛機端實例 ──────────────────────────────────────────────────
+    # 只有訊號中心用得到（它跟這些實例在同一台機器上）。Mac 管理端碰不到會員
+    # 的電腦 —— 整個架構就是會員端只對 Hub 發出連線、沒有任何進來的路，
+    # 所以「遠端幫會員開實例」做不到也不該做。
+    @staticmethod
+    def _instances_root() -> Path:
+        return DATA_DIR.parent if DATA_DIR.name.startswith("instance_") else DATA_DIR
+
+    @classmethod
+    def local_instances(cls) -> List[Dict[str, Any]]:
+        """掃出本機所有實例：編號、綁的 MT5 資料夾、登入的會員、跑了沒。"""
+        root = cls._instances_root()
+        out: List[Dict[str, Any]] = []
+        running = _running_instance_numbers()
+        for folder in sorted(root.glob("instance_*")):
+            name = folder.name[len("instance_"):]
+            settings = _read_json_dict(folder / "client_web_launcher_settings.json")
+            session = _read_json_dict(folder / "member_session.json")
+            member = (session.get("member") or session).get("username") or ""
+            mt5_dir = str(settings.get("mt5_files_dir") or "")
+            account = _read_json_dict(Path(mt5_dir) / "account_info.json") if mt5_dir else {}
+            # 空殼資料夾不算實例。測試或早期版本會留下只有目錄、沒有設定也
+            # 沒登入過的 instance_*，全列出來只是把真正在跑的五個淹掉。
+            if not mt5_dir and not member and name not in running:
+                continue
+            out.append({
+                "instance": name,
+                "mt5_files_dir": mt5_dir,
+                "member": member,
+                "mt5_login": account.get("login"),
+                "mt5_server": account.get("server"),
+                "running": name in running,
+            })
+        return out
+
+    # 複製 MT5 目錄要一分鐘上下，不能卡在 HTTP 請求裡。狀態放這裡，前端輪詢。
+    _clone_lock = threading.Lock()
+    _clone_state: Dict[str, Any] = {"phase": "idle"}
+
+    @classmethod
+    def clone_status(cls) -> Dict[str, Any]:
+        with cls._clone_lock:
+            return dict(cls._clone_state)
+
+    @classmethod
+    def suggest_clone_plan(cls) -> Dict[str, Any]:
+        """自動決定「從哪複製、複製到哪」。
+
+        每台 MT5 的內容其實差不多（同一支 terminal、同一顆 EA），要人去挑
+        是多餘的摩擦。這裡直接挑一台，優先挑**沒在跑**的 —— 開著的話 Config
+        與 Profiles 正在被寫入，複製到的可能是寫到一半的版面。
+
+        全部都開著時仍然給建議但標記出來：那個情況下最壞的後果是圖表版面沒帶
+        乾淨，新那台要自己重開黃金圖表重掛 EA —— 會被第②步的檢查擋下來，
+        不會變成下錯單，所以不值得為它擋住整個流程。
+        """
+        roots: List[Path] = []
+        for one in cls.local_instances():
+            folder = str(one.get("mt5_files_dir") or "")
+            if not folder:
+                continue
+            root = Path(folder).parent.parent          # ...\MQL5\Files -> 根目錄
+            if (root / "terminal64.exe").is_file() and root not in roots:
+                roots.append(root)
+        if not roots:
+            return {"source": "", "target": "", "error": "找不到任何現成的 MT5 目錄"}
+
+        # 只拿可攜式的當範本。裝在 Program Files 底下那台是一般安裝，
+        # 它的設定寫在 %APPDATA%、不在資料夾裡，複製過去等於半套；而且
+        # 目標也會落在 Program Files（要管理員權限，也不是實例該待的地方）。
+        portable = [r for r in roots if re.fullmatch(r"MT5-\d+", r.name, re.I)]
+        pool = portable or roots
+        idle = [r for r in pool if not _mt5_running_at(r)]
+        source = (idle or pool)[0]
+
+        # 目標：跟現有的擺在一起，取下一個沒被用掉的號碼
+        parent = source.parent
+        used = {r.name.lower() for r in roots}
+        target = ""
+        for number in range(2, 100):
+            name = f"MT5-{number}"
+            candidate = parent / name
+            if name.lower() not in used and not candidate.exists():
+                target = str(candidate)
+                break
+        return {"source": str(source), "target": target,
+                "source_running": bool(not idle)}
+
+    @classmethod
+    def start_mt5_clone(cls, source: str, target: str) -> Dict[str, Any]:
+        """把一個可攜式 MT5 目錄複製成新的一份（背景執行）。
+
+        為什麼用複製而不是叫人重新安裝：Profiles 一起帶過去，新的那台開起來
+        已經是「黃金圖表 + 掛好 File Bridge EA」的狀態，省掉最容易漏做的兩步。
+        代價是必須把舊帳號的殘留清乾淨，那正是這裡在做的事。
+        """
+        # 留空就自動挑 —— 每台 MT5 內容差不多，要人去選是多餘的摩擦
+        if not str(source or "").strip() or not str(target or "").strip():
+            plan = cls.suggest_clone_plan()
+            source = str(source or "").strip() or plan.get("source") or ""
+            target = str(target or "").strip() or plan.get("target") or ""
+        src = Path(str(source or "").strip().strip('"'))
+        dst = Path(str(target or "").strip().strip('"'))
+        if not (src / "terminal64.exe").is_file():
+            return {"ok": False, "error": f"來源不像 MT5 目錄（沒有 terminal64.exe）：{src}"}
+        if not dst.name:
+            return {"ok": False, "error": "請填新目錄的路徑"}
+        if dst.exists():
+            return {"ok": False, "error": f"目標已存在：{dst}"}
+        # 來源開著時 Config 與 Profiles 正在被寫入，複製到的可能是寫到一半的
+        # 版面。但最壞的後果只是「新那台要自己重開黃金圖表重掛 EA」，而那會被
+        # 第②步的檢查擋下來、不會變成下錯單 —— 不值得為它擋住整個流程，
+        # 標記出來讓人知道就好。
+        warn = ""
+        if _mt5_running_at(src):
+            warn = (f"注意：{src.name} 目前開著，圖表版面可能沒帶乾淨。"
+                    "新的那台開起來如果圖表是空的，自己換成黃金品種再掛一次 EA 就好。")
+        with cls._clone_lock:
+            if cls._clone_state.get("phase") == "running":
+                return {"ok": False, "error": "已經有一個複製在進行中"}
+            cls._clone_state = {"phase": "running", "message": "準備中…",
+                                "source": str(src), "target": str(dst),
+                                "warn": warn}
+        threading.Thread(target=cls._run_clone, args=(src, dst), daemon=True).start()
+        return {"ok": True, "phase": "running", "source": str(src),
+                "target": str(dst), "warn": warn}
+
+    # 不複製的目錄。bases 是行情歷史(上百 MB，MT5 會自己重抓)；
+    # **MQL5/Files 一定要排除** —— 舊帳號的 account_info.json 留著的話，
+    # 建立掛機端時的「那台 MT5 活著嗎」驗證會讀到假資料而誤判成已就緒。
+    CLONE_SKIP = {"bases", "logs", "Tester"}
+    CLONE_SKIP_PATHS = {("MQL5", "Files"), ("MQL5", "Logs")}
+
+    @classmethod
+    def _run_clone(cls, src: Path, dst: Path) -> None:
+        def _set(**kw):
+            with cls._clone_lock:
+                cls._clone_state.update(kw)
+        try:
+            copied = 0
+            for root, dirs, files in os.walk(src):
+                rel = Path(root).relative_to(src)
+                parts = rel.parts
+                dirs[:] = [d for d in dirs
+                           if d not in cls.CLONE_SKIP
+                           and tuple(parts + (d,)) not in cls.CLONE_SKIP_PATHS]
+                out_dir = dst / rel
+                out_dir.mkdir(parents=True, exist_ok=True)
+                for name in files:
+                    try:
+                        shutil.copy2(Path(root) / name, out_dir / name)
+                        copied += 1
+                    except OSError:
+                        pass            # 鎖住/權限不足的個別檔案跳過，不中斷整包
+                    if copied % 200 == 0:
+                        _set(message=f"已複製 {copied} 個檔案…")
+
+            # accounts.dat 存的是登入過哪些帳號。不清的話新實例一開就自動連上
+            # 舊帳號 —— 那正是「兩個掛機端對同一個 MT5 帳戶重複下單」最容易
+            # 發生的路徑。
+            accounts = dst / "Config" / "accounts.dat"
+            if accounts.exists():
+                accounts.unlink()
+            (dst / "MQL5" / "Files").mkdir(parents=True, exist_ok=True)
+            _set(phase="done",
+                 message=f"完成，共 {copied} 個檔案。接著啟動 "
+                         f"{dst}\\terminal64.exe /portable 並登入帳號。",
+                 files_dir=str(dst / "MQL5" / "Files"))
+        except Exception as exc:                        # noqa: BLE001
+            _set(phase="error", message=f"複製失敗：{exc}")
+
+    @classmethod
+    def create_local_instance(cls, mt5_dir: str, instance: str = "") -> Dict[str, Any]:
+        """建一個新的本機實例並啟動它。回傳 {"ok":..., "error":..., "instance":...}。
+
+        **順序寫死在這裡**，因為手動做很容易錯，而錯的代價是真的下錯單：
+
+        1. 先驗 MT5 那台真的就緒（account_info.json 存在且是新的）。沒有這一步
+           就沒有東西可以驗證你綁對了。
+        2. 拒絕已經被別的實例佔用的資料夾 —— 兩個掛機端指到同一台 MT5 =
+           同一個帳戶被下兩次單。
+        3. **先寫設定檔，再第一次啟動。** 這是最關鍵的一步：auto_start 預設是
+           true，而 mt5_files_dir 空的時候會走自動偵測，偵測範圍是
+           %APPDATA%\\MetaQuotes\\Terminal\\* 加上 C:\\Program Files\\MetaTrader 5
+           —— 也就是可能直接綁到別人正在用的那一台。先寫檔就沒有那個空窗。
+        4. 啟動之後不自動登入。登入即開始跟單，那一步留給人按，才有機會先確認
+           畫面上的 MT5 帳號是對的。
+        """
+        root = cls._instances_root()
+        folder = Path(str(mt5_dir or "").strip().strip('"'))
+        if not folder.name:
+            return {"ok": False, "error": "請填 MT5 的 MQL5\\Files 資料夾路徑"}
+        if not folder.is_dir():
+            return {"ok": False, "error": f"找不到資料夾：{folder}"}
+
+        info_path = folder / "account_info.json"
+        account = _read_json_dict(info_path)
+        if not account.get("login"):
+            return {"ok": False, "error":
+                    "那個資料夾裡沒有 account_info.json（或讀不到帳號）。"
+                    "請先開好 MT5、登入帳號、在黃金圖表上掛好 File Bridge EA，"
+                    "確認左上角是笑臉且 AutoTrading 是綠燈。"}
+        try:
+            age = time.time() - info_path.stat().st_mtime
+        except OSError:
+            age = 1e9
+        if age > 300:
+            return {"ok": False, "error":
+                    f"那台 MT5 已經 {int(age // 60)} 分鐘沒有寫入資料了，"
+                    "看起來沒在跑或 EA 沒運作。先確認它活著再建。"}
+
+        existing = cls.local_instances()
+        target = str(folder).rstrip("\\/").lower()
+        for one in existing:
+            if str(one["mt5_files_dir"]).rstrip("\\/").lower() == target:
+                return {"ok": False, "error":
+                        f"實例 #{one['instance']} 已經綁著這個資料夾了。"
+                        "兩個掛機端指到同一台 MT5 會對同一個帳戶重複下單。"}
+
+        number = str(instance or "").strip()
+        if not number:
+            used = {one["instance"] for one in existing}
+            number = next(str(i) for i in range(1, 100) if str(i) not in used)
+        if not re.fullmatch(r"[0-9A-Za-z_-]{1,16}", number):
+            return {"ok": False, "error": "實例編號只能用英數字"}
+        if any(one["instance"] == number for one in existing):
+            return {"ok": False, "error": f"實例 #{number} 已經存在"}
+
+        inst_dir = root / f"instance_{number}"
+        inst_dir.mkdir(parents=True, exist_ok=True)
+        settings_file = inst_dir / "client_web_launcher_settings.json"
+        # Hub 位址沿用訊號中心自己的設定，新實例才連得到同一個 Hub
+        seed = {"mt5_files_dir": str(folder)}
+        try:
+            central = _read_json_dict(root / "central_web_launcher_settings.json")
+            if central.get("hub_url"):
+                seed["hub_url"] = str(central["hub_url"])
+        except Exception:                                # noqa: BLE001
+            pass
+        settings_file.write_text(json.dumps(seed, ensure_ascii=False, indent=2),
+                                 encoding="utf-8")
+
+        started, err = _spawn_instance(number)
+        if not started:
+            return {"ok": False, "error": f"設定已建立，但啟動失敗：{err}",
+                    "instance": number}
+        _watchdog_add(number)
+        return {"ok": True, "instance": number, "mt5_files_dir": str(folder),
+                "mt5_login": account.get("login"), "mt5_server": account.get("server")}
+
     def _idle_hub(self):
         """沒在跟單時用的臨時 Hub 連線。
 
@@ -1463,6 +1713,11 @@ class LauncherState:
                 "orders_count": len(orders_raw),
                 "device": self._device_label(),
                 "mt5_stale": mt5_stale,
+                # 綁定關係。後台要能一眼看出「哪個會員 ↔ 哪個實例 ↔ 哪個
+                # MT5 資料夾 ↔ 哪個帳號」，否則要一台台開檔案才查得出誰綁誰，
+                # 而綁錯的下場是兩個會員端對同一個 MT5 帳號重複下單。
+                "instance": _instance_name() or "1",
+                "mt5_files_dir": str(mt5_dir),
                 # 待成交掛單也送出去 —— 手機上「有沒有單在等進場」是會員最常
                 # 想確認的一件事，只給數字不夠。
                 "orders": [{
@@ -1513,6 +1768,16 @@ class LauncherState:
     # 期望狀態同步，不是指令佇列。掛機端關了兩小時再開，佇列裡躺著一串
     # 「暫停/繼續/暫停」照順序重播毫無意義；期望狀態只要收斂到最後一次的
     # 意圖就好，重複讀取也是冪等的。
+    # 遠端設定的鍵 ←→ 本機 settings 的鍵。名字不一樣是歷史因素，用一張表對起來
+    # 比在兩邊各記一次好 —— 少對一個就是一個永遠同步不到的欄位。
+    _REMOTE_TO_LOCAL = {
+        "lot_size": "default_lot_size",
+        "use_martingale": "use_martingale",
+        "martingale_multiplier": "martingale_multiplier",
+        "martingale_max_level": "martingale_max_level",
+        "partial_close_ratios": "partial_close_ratios",
+    }
+
     def _local_remote_settings(self) -> Dict[str, Any]:
         """本機目前「實際是什麼樣子」——手機頁面拿它跟期望值比對顯示已套用。"""
         agent = getattr(self, "client_agent", None)
@@ -1527,7 +1792,38 @@ class LauncherState:
                                                  and self.worker.is_alive())}
         if lot:
             out["lot_size"] = round(float(lot), 2)
+        out["use_martingale"] = _truthy(self.settings.get("use_martingale"))
+        for key, number in (("martingale_multiplier", float),
+                            ("martingale_max_level", int)):
+            try:
+                out[key] = number(float(self.settings.get(key)))
+            except (TypeError, ValueError):
+                pass
+        ratios = str(self.settings.get("partial_close_ratios") or "").strip()
+        if ratios:
+            out["partial_close_ratios"] = ratios
+        profiles = self._source_profiles()
+        if profiles:
+            out["source_profiles"] = profiles
+        try:
+            # 單獨包起來：排程要查等級（需要已登入），讀不到時只該少這一項，
+            # 不該把整包「本機目前是什麼樣子」一起帶走 —— 那會讓手機以為
+            # 掛機端從沒回報過。
+            out["auto_schedules"] = self.active_schedules()
+        except Exception as exc:                     # noqa: BLE001
+            logger.debug("讀取自動排程失敗（不影響其他設定）：%s", exc)
         return out
+
+    def _source_profiles(self) -> Dict[str, Any]:
+        """本機的來源策略設定。它在 settings 裡是一段 JSON 字串，不是 dict。"""
+        raw = self.settings.get("source_profiles")
+        if isinstance(raw, dict):
+            return raw
+        try:
+            value = json.loads(str(raw or "") or "{}")
+        except (TypeError, ValueError):
+            return {}
+        return value if isinstance(value, dict) else {}
 
     def _sync_remote_settings(self, desired: Any) -> None:
         """把 Hub 上的期望設定套到本機。只動「有出現的鍵」。
@@ -1543,15 +1839,55 @@ class LauncherState:
         if not changed and not first_sight:
             return
 
-        # 手數：寫進設定檔並即時套用到執行中的交易引擎（save_settings 會做）。
-        lot = desired.get("lot_size")
-        if lot is not None:
+        # 一般欄位：湊成一包丟給 save_settings，它會寫檔並即時套用到執行中的
+        # 交易引擎（不要等下次重啟，那個坑先前踩過）。
+        patch: Dict[str, Any] = {}
+        changed: List[str] = []
+        for remote_key, local_key in self._REMOTE_TO_LOCAL.items():
+            if remote_key not in desired:
+                continue
+            want = desired[remote_key]
+            if isinstance(want, bool):
+                if want != _truthy(self.settings.get(local_key)):
+                    patch[local_key] = "true" if want else "false"
+                    changed.append(f"{remote_key}={want}")
+            elif str(want) != str(self.settings.get(local_key) or ""):
+                patch[local_key] = str(want)
+                changed.append(f"{remote_key}={want}")
+
+        # 來源策略：逐來源、逐欄位合併，別把手機沒提到的欄位洗掉。
+        want_profiles = desired.get("source_profiles")
+        if isinstance(want_profiles, dict) and want_profiles:
+            local = self._source_profiles()
+            merged = {name: dict(profile) for name, profile in local.items()}
+            touched = []
+            for name, profile in want_profiles.items():
+                if not isinstance(profile, dict):
+                    continue
+                one = dict(merged.get(name) or {})
+                if any(str(one.get(k)) != str(v) for k, v in profile.items()):
+                    touched.append(name)
+                one.update(profile)
+                merged[name] = one
+            if touched:
+                patch["source_profiles"] = json.dumps(merged, ensure_ascii=False)
+                changed.append("來源策略：" + "、".join(touched))
+
+        # 自動排程：整份取代（它是一張清單，逐段合併沒有意義 —— 會員在手機上
+        # 刪掉一段，合併的話那段會被「保留」而永遠刪不掉）。
+        want_sched = desired.get("auto_schedules")
+        if isinstance(want_sched, list):
+            if json.dumps(want_sched, sort_keys=True) != \
+               json.dumps(self.active_schedules(), sort_keys=True):
+                patch["auto_schedules"] = json.dumps(want_sched, ensure_ascii=False)
+                changed.append(f"自動排程 {len(want_sched)} 段")
+
+        if patch:
             try:
-                if abs(float(lot) - float(self.settings.get("default_lot_size") or 0)) > 1e-9:
-                    self.save_settings({"default_lot_size": str(lot)})
-                    self._log(f"手機遠端設定：基礎手數 → {lot}")
-            except (TypeError, ValueError):
-                pass
+                self.save_settings(patch)
+                self._log("手機遠端設定：" + "，".join(changed))
+            except Exception as exc:                # noqa: BLE001
+                self._log(f"手機遠端設定寫入失敗：{exc}")
 
         # 跟單開關。啟動失敗（沒登入、額度用盡）只記錄，不能讓它把整個
         # 上報執行緒炸掉 —— 這是旁路。
@@ -1763,6 +2099,24 @@ def make_handler(state: LauncherState):
                 status, body = state.admin_proxy(parsed.path[len("/api"):] + q)
                 _json_response(self, status or 502, body)
                 return
+            # 本機掛機端清單。只有訊號中心有意義 —— 管理端(Mac)跟這些實例
+            # 不在同一台機器上，看到的會是它自己那台的（空的），只會誤導。
+            if parsed.path == "/api/instances":
+                if state.role != "central":
+                    _json_response(self, 403, {"ok": False, "error": "central_only"})
+                    return
+                _json_response(self, 200, {"ok": True,
+                                           "instances": state.local_instances()})
+                return
+            if parsed.path == "/api/mt5-clone":
+                if state.role != "central":
+                    _json_response(self, 403, {"ok": False, "error": "central_only"})
+                    return
+                out = {"ok": True, **state.clone_status()}
+                if out.get("phase") == "idle":
+                    out["plan"] = state.suggest_clone_plan()
+                _json_response(self, 200, out)
+                return
             if parsed.path == "/api/stats":
                 # 績效統計純粹是讀檔彙整，MT5 沒開就回空資料，不該讓控制台整頁掛掉
                 try:
@@ -1837,6 +2191,25 @@ def make_handler(state: LauncherState):
                     result = state.change_password(
                         str(data.get("old_password") or ""),
                         str(data.get("new_password") or ""))
+                    _json_response(self, 200 if result.get("ok") else 400, result)
+                    return
+                if parsed.path == "/api/mt5-clone":
+                    if state.role != "central":
+                        _json_response(self, 403, {"ok": False, "error": "central_only"})
+                        return
+                    data = _read_json(self)
+                    result = state.start_mt5_clone(str(data.get("source") or ""),
+                                                   str(data.get("target") or ""))
+                    _json_response(self, 200 if result.get("ok") else 400, result)
+                    return
+                if parsed.path == "/api/instances":
+                    if state.role != "central":
+                        _json_response(self, 403, {"ok": False, "error": "central_only"})
+                        return
+                    data = _read_json(self)
+                    result = state.create_local_instance(
+                        str(data.get("mt5_files_dir") or ""),
+                        str(data.get("instance") or ""))
                     _json_response(self, 200 if result.get("ok") else 400, result)
                     return
                 if parsed.path == "/api/settings":
@@ -2002,6 +2375,111 @@ def main(default_role: Optional[str] = None) -> None:
             port_file.unlink()
         except OSError:
             pass
+
+
+def _mt5_running_at(folder: Path) -> bool:
+    """那個資料夾底下的 terminal64.exe 正在跑嗎。
+
+    複製時來源必須是關著的 —— 開著的話 Config/accounts.dat 正在被寫入，
+    複製到的會是寫到一半的狀態。
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_Process -Filter \"Name='terminal64.exe'\""
+             " | Select-Object -ExpandProperty ExecutablePath"],
+            capture_output=True, text=True, timeout=15,
+            encoding="utf-8", errors="replace",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        target = str(folder).rstrip("\\/").lower()
+        for line in (result.stdout or "").splitlines():
+            if line.strip().lower().startswith(target):
+                return True
+    except Exception:                                    # noqa: BLE001
+        pass
+    return False
+
+
+def _running_instance_numbers() -> set:
+    """目前有哪些 --instance N 在跑。認的是命令列，不是視窗標題。"""
+    out = set()
+    if sys.platform != "win32":
+        return out
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_Process -Filter \"Name='黃金跟單會員端.exe'\""
+             " | Select-Object -ExpandProperty CommandLine"],
+            capture_output=True, text=True, timeout=15,
+            # Windows 主控台的碼頁不是 UTF-8，不指定就會在讀取執行緒裡丟
+            # UnicodeDecodeError。errors="replace" 是刻意的：這裡只要抓
+            # --instance 後面的數字，路徑裡的中文變成問號完全無所謂。
+            encoding="utf-8", errors="replace",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        for line in (result.stdout or "").splitlines():
+            found = re.search(r"--instance[=\s]+([0-9A-Za-z_-]+)", line)
+            if found:
+                out.add(found.group(1))
+    except Exception:                                    # noqa: BLE001
+        pass
+    return out
+
+
+def _member_client_exe() -> Optional[Path]:
+    """找出會員端的執行檔。訊號中心自己是另一支程式，不能拿 sys.executable。"""
+    candidates = [
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "黃金跟單會員端"
+        / "黃金跟單會員端.exe",
+    ]
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
+def _spawn_instance(number: str) -> Tuple[bool, str]:
+    exe = _member_client_exe()
+    if exe is None:
+        return False, "找不到已安裝的會員端（黃金跟單會員端.exe）"
+    try:
+        subprocess.Popen([str(exe), "--instance", str(number)],
+                         cwd=str(exe.parent),
+                         creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+        return True, ""
+    except Exception as exc:                             # noqa: BLE001
+        return False, str(exc)
+
+
+def _watchdog_add(number: str) -> bool:
+    """把新實例補進守護清單。
+
+    忘了補的下場是那個掛機端掛掉之後沒人拉起來 —— 實例 5 就這樣裸奔到
+    2026-09-09 才被發現，而那正是唯一一台有真錢的。這裡自動做掉。
+    """
+    script = (Path(os.environ.get("LOCALAPPDATA", "")) / "黃金跟單守護"
+              / "watchdog.ps1")
+    if not script.is_file():
+        return False
+    try:
+        raw = script.read_bytes()
+        text = raw.decode("utf-8-sig")
+        found = re.search(r"foreach \(\$n in ([0-9,\s]+)\)", text)
+        if not found:
+            return False
+        current = [x.strip() for x in found.group(1).split(",") if x.strip()]
+        if str(number) in current:
+            return True
+        current.append(str(number))
+        text = text.replace(found.group(0),
+                            "foreach ($n in " + ", ".join(current) + ")")
+        # 一定要保留 BOM：沒有 BOM 的話 powershell.exe 會用系統 ANSI 碼頁讀，
+        # 腳本裡的中文全變亂碼。
+        script.write_bytes(b"\xef\xbb\xbf" + text.encode("utf-8"))
+        return True
+    except Exception:                                    # noqa: BLE001
+        return False
 
 
 def _schedule_loop(state: LauncherState) -> None:

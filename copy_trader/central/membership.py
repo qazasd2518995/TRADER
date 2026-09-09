@@ -157,61 +157,333 @@ def normalize_scope(scope: Optional[str]) -> str:
 # **預設是空的 {}**, 不是「一組預設值」。這很重要: 會員端只套用「有出現的鍵」,
 # 所以這個功能上線的當下不會改變任何人的行為 —— 要等會員真的按了什麼,
 # 那個鍵才會出現。否則升級的瞬間會把所有停著的掛機端通通打開。
-SETTING_KEYS = ("following", "lot_size")
+SETTING_KEYS = (
+    "following",            # 跟單開關
+    "lot_size",             # 全域基礎手數
+    "use_martingale",       # 全域馬丁開關
+    "martingale_multiplier",
+    "martingale_max_level",
+    "partial_close_ratios",  # "0.5,0.3,0.2"
+    "source_profiles",       # 各訊號來源的獨立策略
+    "auto_schedules",        # 自動跟單時段
+)
 
 # 手數的絕對上下限。等級上限(max_lot)另外夾, 這裡只擋明顯荒謬的值。
 LOT_MIN = 0.01
 LOT_MAX = 100.0
 
+# 每個來源可以調的東西。跟電腦版會員端的面板一致 —— 手機上少一項，會員就得
+# 為了改一個數字特地開電腦。
+#
+#   mode      下單量怎麼決定：均注 / 馬丁 / 本金比例
+#   tp_mode   多個止盈怎麼處理：只用第一個 / 保本移損 / 分批平倉
+SOURCE_MODES = ("flat", "martingale", "risk_percent")
+TP_MODES = ("single", "breakeven", "partial")
+SOURCE_FIELDS = ("enabled", "mode", "tp_mode", "base_lot", "risk_percent",
+                 "breakeven_distance", "max_daily_loss", "max_daily_profit",
+                 "max_active_orders", "max_daily_trades",
+                 "multiplier", "max_level", "partial_ratios")
 
-def sanitize_settings(patch: Any, *, max_lot: Optional[float] = None
+# 每個來源的數值欄位：(鍵, 下限, 上限, 取整)。集中在一張表, 免得每加一個欄位
+# 就要在驗證裡多寫一段 if。範圍跟電腦版面板一致(見 central/stats.py)。
+_SOURCE_NUMBERS = (
+    ("risk_percent", 0.01, 5.0, False),        # 本金比例動態手數: 每單風險 %
+    ("breakeven_distance", 0.0, 5000.0, False),
+    ("max_daily_loss", 0.0, 1_000_000.0, False),
+    ("max_daily_profit", 0.0, 1_000_000.0, False),
+    ("max_active_orders", 0, 100, True),       # 0 = 不限
+    ("max_daily_trades", 0, 500, True),        # 0 = 不限
+    ("multiplier", 1.0, 10.0, False),
+    ("max_level", 1, 10, True),
+)
+
+# 自動排程。一段是 {"start":"HH:MM","end":"HH:MM","days":[0..6]}，
+# days 空的代表每天。支援跨午夜（21:00→02:00），黃金本來就是通宵盤。
+SCHEDULE_LIMIT_ENTRIES = 10
+
+
+def _parse_hhmm(value: Any) -> Optional[str]:
+    text = str(value or "").strip()
+    if len(text) != 5 or text[2] != ":":
+        return None
+    try:
+        hour, minute = int(text[:2]), int(text[3:])
+    except ValueError:
+        return None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _clean_schedules(value: Any, rejected: List[str]) -> Optional[List[Dict[str, Any]]]:
+    if not isinstance(value, list):
+        rejected.append("auto_schedules:not_a_list")
+        return None
+    out: List[Dict[str, Any]] = []
+    for index, item in enumerate(value[:SCHEDULE_LIMIT_ENTRIES]):
+        if not isinstance(item, dict):
+            rejected.append(f"schedule:{index}:not_a_dict")
+            continue
+        start = _parse_hhmm(item.get("start"))
+        end = _parse_hhmm(item.get("end"))
+        if start is None or end is None:
+            rejected.append(f"schedule:{index}:bad_time")
+            continue
+        if start == end:
+            # 起訖相同 = 空區間，_schedule_active 會直接回 False。與其存一段
+            # 永遠不生效的排程讓人以為設好了，不如當場拒絕。
+            rejected.append(f"schedule:{index}:empty_range")
+            continue
+        days = item.get("days")
+        clean_days: List[int] = []
+        if isinstance(days, list):
+            for day in days:
+                try:
+                    number = int(day)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= number <= 6 and number not in clean_days:
+                    clean_days.append(number)
+        out.append({"start": start, "end": end, "days": sorted(clean_days)})
+    return out
+
+
+def _as_bool(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str) and value.lower() in ("true", "false"):
+        return value.lower() == "true"
+    return None
+
+
+def _as_number(value: Any, *, lo: float, hi: float) -> Optional[float]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number in (float("inf"), float("-inf")):
+        return None
+    return min(max(number, lo), hi)
+
+
+def _clean_ratios(value: Any) -> Optional[List[float]]:
+    """分批平倉比例。接受 "0.5,0.3,0.2" 或 [0.5, 0.3, 0.2]。
+
+    正規化成總和 1.0 —— 會員填 5/3/2 或 50/30/20 都該當成一樣的意思，
+    這比跳錯誤訊息要他自己算成小數友善得多。
+    """
+    if isinstance(value, str):
+        parts = [p for p in value.replace("，", ",").split(",") if p.strip()]
+    elif isinstance(value, (list, tuple)):
+        parts = list(value)
+    else:
+        return None
+    out: List[float] = []
+    for part in parts[:6]:               # 一張單分超過六段沒有意義
+        try:
+            number = float(part)
+        except (TypeError, ValueError):
+            return None
+        if number <= 0:
+            return None
+        out.append(number)
+    if not out:
+        return None
+    total = sum(out)
+    return [round(x / total, 6) for x in out]
+
+
+def _clean_source_profile(name: str, raw: Any, ent: Dict[str, Any],
+                          rejected: List[str]) -> Optional[Dict[str, Any]]:
+    """單一來源的策略設定，依等級夾好。
+
+    這裡的夾制**不是**安全邊界 —— 真正的收費閘門是 Hub 在 /signals 就把沒買的
+    來源濾掉，那個擋得住任何用戶端。這裡夾是為了讓手機顯示的值就是真的會生效的
+    值：會員把馬丁打開卻在等級外，畫面上該立刻顯示「已關閉」，而不是等他
+    下次開電腦才發現。
+    """
+    if not isinstance(raw, dict):
+        rejected.append(f"source:{name}:not_a_dict")
+        return None
+    out: Dict[str, Any] = {}
+    allowed = set(ent.get("sources") or [])
+    max_lot = ent.get("max_lot")
+
+    enabled = _as_bool(raw.get("enabled"))
+    if enabled is not None:
+        if enabled and name not in allowed:
+            rejected.append(f"source:{name}:not_in_tier")
+            enabled = False
+        out["enabled"] = enabled
+
+    mode = str(raw.get("mode") or "").lower()
+    if mode:
+        if mode not in SOURCE_MODES:
+            rejected.append(f"source:{name}:bad_mode")
+        else:
+            if mode == "martingale" and not ent.get("martingale"):
+                rejected.append(f"source:{name}:martingale_not_in_tier")
+                mode = "flat"
+            if mode == "risk_percent" and not ent.get("dynamic_lot"):
+                rejected.append(f"source:{name}:dynamic_lot_not_in_tier")
+                mode = "flat"
+            out["mode"] = mode
+
+    tp_mode = str(raw.get("tp_mode") or "").lower()
+    if tp_mode:
+        if tp_mode not in TP_MODES:
+            rejected.append(f"source:{name}:bad_tp_mode")
+        else:
+            # 中頻一單只有一個止盈，分批根本沒東西可分（實際行為早就等同
+            # 「整包在 TP1 平」）。收斂成 single，免得會員以為開了卻從沒發生。
+            if name == MID_FREQ and tp_mode == "partial":
+                rejected.append(f"source:{name}:single_tp_only")
+                tp_mode = "single"
+            if tp_mode == "partial" and not ent.get("partial_close"):
+                rejected.append(f"source:{name}:partial_not_in_tier")
+                tp_mode = "breakeven"
+            if tp_mode == "breakeven" and not ent.get("breakeven"):
+                rejected.append(f"source:{name}:breakeven_not_in_tier")
+                tp_mode = "single"
+            out["tp_mode"] = tp_mode
+
+    if "base_lot" in raw:
+        ceiling = LOT_MAX if max_lot is None else min(float(max_lot), LOT_MAX)
+        lot = _as_number(raw.get("base_lot"), lo=LOT_MIN, hi=ceiling)
+        if lot is None:
+            rejected.append(f"source:{name}:bad_base_lot")
+        else:
+            try:
+                if float(raw["base_lot"]) > ceiling:
+                    rejected.append(f"source:{name}:lot_capped_by_tier")
+            except (TypeError, ValueError):
+                pass
+            out["base_lot"] = round(lot, 2)
+
+    for key, lo, hi, as_int in _SOURCE_NUMBERS:
+        if key not in raw:
+            continue
+        number = _as_number(raw.get(key), lo=lo, hi=hi)
+        if number is None:
+            rejected.append(f"source:{name}:bad_{key}")
+        else:
+            out[key] = int(number) if as_int else round(number, 2)
+
+    if "partial_ratios" in raw:
+        ratios = _clean_ratios(raw.get("partial_ratios"))
+        if ratios is None:
+            rejected.append(f"source:{name}:bad_partial_ratios")
+        else:
+            out["partial_ratios"] = ratios
+
+    for key in raw:
+        if key not in SOURCE_FIELDS:
+            rejected.append(f"source:{name}:unknown:{key}")
+    return out or None
+
+
+def sanitize_settings(patch: Any, *, tier: Optional[str] = None,
+                      max_lot: Optional[float] = None
                       ) -> Tuple[Dict[str, Any], List[str]]:
     """把外面送進來的設定濾成乾淨的一份, 回傳 (可用的設定, 被拒絕的原因)。
 
     認不得的鍵一律丟掉 —— 不是報錯, 是丟掉。這樣舊版手機頁面送新欄位、
     或新版送舊 Hub 認不得的欄位, 都只會少生效一項, 不會整包失敗。
 
-    max_lot 是這個等級的手數上限(None = 不限)。**這裡是唯一可信的地方** ——
-    會員端在自己的電腦上, 設定檔他想改就改, 擋不住也不用擋(那只影響他自己的
-    風險)。但從我們的伺服器發出去的值必須是合規的, 否則等級就沒有意義了。
+    tier 決定各項功能的授權(馬丁、分批平倉、動態手數、可跟的來源、手數上限)。
+    給 tier 就以它為準; 只給 max_lot 是舊呼叫端的相容路徑。
+
+    **夾制發生在這裡不是為了安全** —— 真正的收費閘門是 Hub 在 /signals 就把
+    沒買的來源濾掉, 那個擋得住任何用戶端。這裡夾是為了讓手機顯示的值就是真的
+    會生效的值: 會員把馬丁打開卻在等級外, 畫面上該立刻顯示已關閉, 而不是等他
+    下次開電腦才發現。
     """
     out: Dict[str, Any] = {}
     rejected: List[str] = []
     if not isinstance(patch, dict):
         return out, ["not_a_dict"]
 
+    ent = tier_entitlements(tier) if tier else {"max_lot": max_lot, "sources": [],
+                                                "martingale": True, "dynamic_lot": True,
+                                                "partial_close": True, "breakeven": True}
+    if max_lot is None:
+        max_lot = ent.get("max_lot")
+
     for key, value in patch.items():
         if key not in SETTING_KEYS:
             rejected.append(f"unknown:{key}")
             continue
-        if key == "following":
-            if isinstance(value, bool):
-                out[key] = value
-            elif isinstance(value, (int, float)) and value in (0, 1):
-                out[key] = bool(value)
-            elif isinstance(value, str) and value.lower() in ("true", "false"):
-                out[key] = value.lower() == "true"
+
+        if key in ("following", "use_martingale"):
+            flag = _as_bool(value)
+            if flag is None:
+                rejected.append(f"{key}:not_a_bool")
+            elif key == "use_martingale" and flag and not ent.get("martingale"):
+                rejected.append("use_martingale:not_in_tier")
+                out[key] = False
             else:
-                rejected.append("following:not_a_bool")
+                out[key] = flag
+
         elif key == "lot_size":
-            try:
-                lot = float(value)
-            except (TypeError, ValueError):
+            ceiling = LOT_MAX if max_lot is None else min(float(max_lot), LOT_MAX)
+            lot = _as_number(value, lo=LOT_MIN, hi=ceiling)
+            if lot is None:
                 rejected.append("lot_size:not_a_number")
                 continue
-            if lot != lot or lot in (float("inf"), float("-inf")):
-                rejected.append("lot_size:not_finite")
-                continue
-            if lot < LOT_MIN:
+            try:
+                raw_lot = float(value)
+            except (TypeError, ValueError):
+                raw_lot = lot
+            if raw_lot < LOT_MIN:
                 rejected.append("lot_size:below_min")
-                lot = LOT_MIN
-            ceiling = LOT_MAX if max_lot is None else min(float(max_lot), LOT_MAX)
-            if lot > ceiling:
+            if raw_lot > ceiling:
                 # 夾住而不是拒絕: 會員把手數拉到超過等級上限時, 給他上限值並
                 # 告訴他被夾了, 比整個操作失敗、他不知道發生什麼事好。
                 rejected.append("lot_size:capped_by_tier")
-                lot = ceiling
             out[key] = round(lot, 2)
+
+        elif key == "martingale_multiplier":
+            number = _as_number(value, lo=1.0, hi=10.0)
+            if number is None:
+                rejected.append("martingale_multiplier:not_a_number")
+            else:
+                out[key] = round(number, 2)
+
+        elif key == "martingale_max_level":
+            number = _as_number(value, lo=1, hi=10)
+            if number is None:
+                rejected.append("martingale_max_level:not_a_number")
+            else:
+                out[key] = int(number)
+
+        elif key == "partial_close_ratios":
+            ratios = _clean_ratios(value)
+            if ratios is None:
+                rejected.append("partial_close_ratios:bad_format")
+            else:
+                out[key] = ",".join(str(r) for r in ratios)
+
+        elif key == "auto_schedules":
+            if not ent.get("schedule"):
+                rejected.append("auto_schedules:not_in_tier")
+                continue
+            schedules = _clean_schedules(value, rejected)
+            if schedules is not None:
+                out[key] = schedules
+
+        elif key == "source_profiles":
+            if not isinstance(value, dict):
+                rejected.append("source_profiles:not_a_dict")
+                continue
+            cleaned: Dict[str, Any] = {}
+            for name, profile in value.items():
+                one = _clean_source_profile(str(name), profile, ent, rejected)
+                if one:
+                    cleaned[str(name)] = one
+            if cleaned:
+                out[key] = cleaned
     return out, rejected
 
 
@@ -1013,12 +1285,21 @@ class MemberStore:
             row = self._get_row(username)
             if row is None:
                 return {}, ["no_such_member"]
-            max_lot = tier_entitlements(row["tier"]).get("max_lot")
-            clean, rejected = sanitize_settings(patch, max_lot=max_lot)
+            clean, rejected = sanitize_settings(patch, tier=row["tier"])
             if not clean:
                 return self._settings_of(row), rejected
             merged = self._settings_of(row)
+            # source_profiles 要逐來源合併，不能整包蓋掉 —— 手機上只改一個來源的
+            # 手數時，不該把其他來源的設定一起洗成預設值。
+            incoming_sources = clean.pop("source_profiles", None)
             merged.update(clean)
+            if incoming_sources:
+                existing = dict(merged.get("source_profiles") or {})
+                for name, profile in incoming_sources.items():
+                    one = dict(existing.get(name) or {})
+                    one.update(profile)
+                    existing[name] = one
+                merged["source_profiles"] = existing
             self._conn.execute(
                 "UPDATE members SET settings_json = ?, settings_updated_at = ?,"
                 " settings_updated_by = ? WHERE id = ?",
