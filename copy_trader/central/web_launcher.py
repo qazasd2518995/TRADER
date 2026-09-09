@@ -470,6 +470,26 @@ class LauncherState:
                   f" 可跟來源 {', '.join(ent.get('sources') or []) or '無'}")
         if self.auth.get("kicked_previous"):
             self._log("注意：此帳號原本在其他裝置登入，那一台已被登出")
+
+        # 登入後自動開始跟單。auto_start 原本只在程式啟動時讀一次，但那時
+        # 通常還沒登入（start_service 會擋），於是全新會員的體驗是：
+        # 裝好 → 啟動 → 自動開始失敗 → 登入 → **什麼都沒發生**，
+        # 他會坐在那裡不知道為什麼沒跟單。設定的註解本來就寫著「登入後自動
+        # 開始跟單」，這裡把它補實。
+        #
+        # 排程有設而且現在不在時段內就不開 —— 否則「早上九點才開始跟」設了
+        # 等於沒設。跟啟動時的判斷同一套邏輯。
+        if _truthy(self.settings.get("auto_start")) and not self.is_running():
+            if self.schedule_wants_running() is False:
+                self.status = "等待排程時段"
+                self._log("目前不在自動排程時段內，暫不開始跟單")
+            else:
+                try:
+                    self.start_service()
+                    self._log("已自動開始跟單")
+                except Exception as exc:            # noqa: BLE001
+                    # 開不起來不能讓登入本身失敗 —— 他至少要能進得去看設定
+                    self._log(f"自動開始失敗，請手動按「開始跟單」：{exc}")
         # 登入後把等級額度套進交易設定 — 不能等下次存檔。
         # 服務還沒啟動時 client_agent 是 None，那時不用套：start_service()
         # 會在建好 agent 之後自己呼叫一次。
