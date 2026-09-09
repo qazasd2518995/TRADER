@@ -1320,6 +1320,10 @@ tbody tr:hover { background: var(--sunk); }
 
 body[data-role="central"] .client-only { display: none; }
 body[data-role="client"]  .central-only { display: none; }
+/* 管理端(Mac)跟這些實例不在同一台機器上 —— 本機掛機端那一塊對它是死的
+   (/api/instances 會回 403)，顯示出來只會讓人以為 Mac 也能開實例。
+   會員管理等其他 central-only 區塊管理端仍然要看得到，所以只擋這一塊。 */
+body[data-role="admin"]   .local-instances { display: none; }
 /* 管理端：看得到會員相關的一切（那些資料都在雲端 Hub），但看不到任何
    跟「這台機器」綁定的東西 —— LINE 擷取、MT5 圖表、影子對照、發布按鈕。
    .signal-only 標的就是那些只有訊號端才有意義的區塊。 */
@@ -1335,6 +1339,21 @@ body[data-role="admin"] .signal-only { display: none; }
   font-size: 11px; color: var(--muted); white-space: nowrap;
 }
 .tz-note:empty { display: none; }
+
+/* 綁定體檢橫幅 —— 有問題才出現。錯配會造成同一個 MT5 帳戶被下兩次單，
+   那是要立刻處理的，所以擺在會員表之前、用最顯眼的顏色。 */
+.mbr-audit{border:1px solid #5a2b2b;background:#2a1a1a;border-radius:12px;
+  padding:14px 16px;margin:0 0 14px}
+.mbr-audit h4{margin:0 0 10px;font-size:var(--t-13);color:#ffb9b6;font-weight:600}
+.mbr-audit ul{margin:0;padding:0;list-style:none}
+.mbr-audit li{padding:8px 0;border-top:1px solid #4a2626;
+  display:flex;flex-wrap:wrap;gap:4px 12px;align-items:baseline}
+.mbr-audit li:first-child{border-top:0}
+.mbr-audit li b{font-size:var(--t-13);font-weight:600;color:#ffd7d5}
+.mbr-audit li.sev b{color:#ff8a84}
+.mbr-audit .who{font-size:var(--t-12);color:#e9edf2;font-family:var(--mono,monospace)}
+.warn-text{color:#d9a441}
+.mbr-audit .fix{font-size:var(--t-11);color:#b9a5a3;flex-basis:100%}
 
 /* ── 會員管理 (只有訊號中心看得到) ───────────────────────────────────── */
 .mbr-toolbar {
@@ -2092,6 +2111,65 @@ body.auth-locked > *:not(#authGate) { display: none; }
     <p>伺服器只存雜湊，關掉之後就撈不回來了；忘記只能重設密碼。</p>
   </div>
 
+  <!-- 綁定體檢。錯配的下場很直接：兩個會員端指到同一台 MT5 = 同一個帳戶被
+       下兩次單。用眼睛比對每台機器的設定檔遲早會漏，所以由 Hub 自己算完送過來，
+       有問題才顯示。沒問題時整塊不出現，不製造「永遠亮著的警告」。 -->
+  <div class="mbr-audit" id="mbrAudit" hidden></div>
+
+  <!-- 本機掛機端。只有訊號中心看得到 —— 管理端(Mac)跟這些實例不在同一台機器上，
+       而且整個架構就是會員端只對 Hub 發出連線、沒有進來的路，所以「遠端幫會員
+       開實例」做不到也不該做。這一塊管的是「這台自己養的那幾個」。 -->
+  <div class="section-head central-only local-instances">
+    <h2>本機掛機端</h2>
+    <p>這台電腦上跑的會員端實例 —— 每一個綁一台 MT5</p>
+    <span class="spacer"></span>
+    <button class="btn" id="instRefresh" type="button">重新整理</button>
+    <button class="btn btn-go" id="instNewToggle" type="button">＋ 新增掛機端</button>
+  </div>
+  <div class="card central-only local-instances">
+    <div id="instNewForm" hidden>
+      <!-- 步驟 1：複製一份乾淨的 MT5。來源與目標都自動決定 —— 每台的內容
+           其實差不多，要人去挑是多餘的摩擦。路徑只在需要時展開來改。 -->
+      <p class="eyebrow">① 需要一台新的 MT5？（已經有就跳過）</p>
+      <p class="muted" style="margin:0 0 10px" id="clonePlan">讀取中…</p>
+      <button class="btn btn-go" id="cloneStart" type="button">複製一台新的 MT5</button>
+      <button class="btn btn-quiet" id="clonePathsToggle" type="button">自訂路徑</button>
+      <span class="muted" id="cloneStatus" style="margin-left:10px"></span>
+      <div class="mbr-grid" id="clonePaths" hidden style="margin-top:10px">
+        <label>從哪一台複製<input id="cloneSrc" spellcheck="false" /></label>
+        <label>複製成<input id="cloneDst" spellcheck="false" /></label>
+      </div>
+
+      <hr style="border:0;border-top:1px solid var(--line);margin:16px 0" />
+
+      <!-- 步驟 2：綁定。這一步會驗證那台 MT5 真的活著、而且沒被別人佔用。 -->
+      <p class="eyebrow">② 綁定掛機端</p>
+      <div class="mbr-grid">
+        <label>MT5 的 Files 資料夾
+          <input id="instDir" spellcheck="false"
+                 placeholder="例 D:\\MT5-6\\MQL5\\Files" /></label>
+        <label>實例編號<input id="instNum" placeholder="留空 = 自動取下一個" /></label>
+      </div>
+      <p class="muted" style="margin:2px 0 10px">
+        綁定前要先啟動那台 MT5（<code>terminal64.exe /portable</code>）、登入帳號、
+        確認黃金圖表的品種正確且 EA 是笑臉 + AutoTrading 綠燈 ——
+        建立時會檢查那台是不是真的在寫資料。
+      </p>
+      <button class="btn btn-go" id="instCreate" type="button">建立並啟動</button>
+      <button class="btn btn-quiet" id="instCancel" type="button">取消</button>
+      <p class="mbr-err" id="instErr"></p>
+    </div>
+    <div class="mbr-scroll" style="margin-top:10px">
+      <table>
+        <thead><tr>
+          <th>實例</th><th>會員帳號</th><th>MT5 帳號</th><th>伺服器</th>
+          <th>資料夾</th><th>狀態</th>
+        </tr></thead>
+        <tbody id="instRows"></tbody>
+      </table>
+    </div>
+  </div>
+
   <div class="card">
     <div class="mbr-toolbar">
       <input type="search" id="mbrSearch" placeholder="搜尋帳號或備註…" />
@@ -2101,7 +2179,7 @@ body.auth-locked > *:not(#authGate) { display: none; }
       <table>
         <thead><tr>
           <th>帳號</th><th>等級</th><th>狀態</th><th>到期</th>
-          <th>線上</th><th>持倉</th><th>淨值</th><th>浮動損益</th>
+          <th>線上</th><th>綁定</th><th>持倉</th><th>淨值</th><th>浮動損益</th>
           <th>手數</th><th>佣金</th>
           <th>最後上線</th><th>備註</th><th>操作</th>
         </tr></thead>
@@ -5253,6 +5331,187 @@ function seenText(ts) {
   return `${Math.floor(mins / 1440)} 天前`;
 }
 
+const ISSUE_TEXT = {
+  duplicate_mt5_dir: "與其他會員指向同一個 MT5 資料夾（會重複下單）",
+  duplicate_mt5_login: "與其他會員使用同一個 MT5 帳號（會重複下單）",
+  mt5_login_changed: "MT5 帳號被換過",
+  no_mt5_bridge: "接不上 MT5（路徑錯誤或沒掛 EA）",
+  mt5_not_running: "MT5 沒開著",
+  agent_offline: "掛機端已離線（顯示的是最後一次回報）",
+  never_reported: "掛機端從未回報",
+};
+
+/* 綁定體檢橫幅。有問題才出現 —— 永遠亮著的警告等於沒有警告。
+   一行一個問題，直接寫「誰」和「怎麼辦」，不用管理者自己推。 */
+const ISSUE_FIX = {
+  duplicate_mt5_dir: "把其中一台的「MT5 資料夾」改掉，或停掉多餘的那個掛機端",
+  duplicate_mt5_login: "兩台 MT5 登入了同一個帳號，改掉其中一台",
+  mt5_login_changed: "確認這是你自己換的；不是的話立刻停掉那個掛機端",
+  no_mt5_bridge: "檢查 MT5 有沒有開、圖表上有沒有掛 EA、資料夾路徑對不對",
+  mt5_not_running: "請該會員把 MT5 打開",
+  agent_offline: "那台電腦關了或會員端沒在跑；換過帳號的話舊紀錄會停在這裡",
+  never_reported: "該會員的掛機端沒在跑，或還沒登入過",
+};
+function renderAudit() {
+  const issues = MBR.issues || {};
+  const users = Object.keys(issues);
+  const box = $("mbrAudit");
+  if (!users.length) { box.hidden = true; box.innerHTML = ""; return; }
+  const groups = {};
+  users.forEach((u) => (issues[u] || []).forEach((code) => {
+    (groups[code] = groups[code] || []).push(u);
+  }));
+  const order = ["duplicate_mt5_dir", "duplicate_mt5_login", "mt5_login_changed",
+                 "no_mt5_bridge", "mt5_not_running", "agent_offline", "never_reported"];
+  const rows = order.filter((c) => groups[c]).map((code) => {
+    const who = groups[code].map(esc).join("、");
+    const severe = code.startsWith("duplicate") || code === "mt5_login_changed";
+    return `<li class="${severe ? "sev" : ""}"><b>${esc(ISSUE_TEXT[code] || code)}</b>` +
+           `<span class="who">${who}</span>` +
+           `<span class="fix">${esc(ISSUE_FIX[code] || "")}</span></li>`;
+  }).join("");
+  box.hidden = false;
+  box.innerHTML = `<h4>綁定檢查 — ${users.length} 位會員有狀況</h4><ul>${rows}</ul>`;
+}
+
+/* ── 本機掛機端 ─────────────────────────────────────────────────────── */
+let INST = { list: [] };
+async function loadInstances() {
+  try {
+    const r = await fetch("/api/instances");
+    const j = await r.json();
+    INST.list = j.instances || [];
+  } catch (e) { INST.list = []; }
+  renderInstances();
+}
+function renderInstances() {
+  const rows = INST.list;
+  if (!rows.length) {
+    $("instRows").innerHTML =
+      '<tr><td colspan="6" class="muted" style="padding:18px;text-align:center">' +
+      "這台還沒有掛機端實例</td></tr>";
+    return;
+  }
+  $("instRows").innerHTML = rows.map((one) => {
+    const live = one.running
+      ? '<span class="mbr-state ok">執行中</span>'
+      : '<span class="mbr-state warn">未執行</span>';
+    return "<tr>" +
+      `<td class="mono"><b>#${esc(one.instance)}</b></td>` +
+      `<td class="mono">${esc(one.member || "（未登入）")}</td>` +
+      `<td class="mono">${esc(one.mt5_login || "—")}</td>` +
+      `<td class="mono">${esc(one.mt5_server || "—")}</td>` +
+      `<td class="mono" style="font-size:var(--t-11)">${esc(one.mt5_files_dir || "—")}</td>` +
+      `<td>${live}</td>` +
+      "</tr>";
+  }).join("");
+}
+function bindInstanceUI() {
+  const form = $("instNewForm");
+  if (!form) return;
+  $("instNewToggle").onclick = () => {
+    form.hidden = !form.hidden;
+    $("instErr").textContent = "";
+    if (!form.hidden) $("instDir").focus();
+  };
+  $("instCancel").onclick = () => { form.hidden = true; };
+
+  /* 複製 MT5：背景跑，這裡輪詢進度。複製 300MB 要一分鐘上下，
+     卡在請求裡會逾時，而且使用者會以為當掉了。 */
+  let clonePoll = null;
+  function paintClone(j) {
+    const el = $("cloneStatus");
+    if (!j || j.phase === "idle") { el.textContent = ""; return; }
+    if (j.phase === "running") { el.textContent = j.message || "複製中…"; return; }
+    if (j.phase === "done") {
+      el.textContent = "✓ " + (j.message || "完成");
+      // 複製完直接把新的 Files 路徑填進第②步，省得使用者自己打
+      if (j.files_dir && !$("instDir").value) $("instDir").value = j.files_dir;
+      if (clonePoll) { clearInterval(clonePoll); clonePoll = null; }
+      $("cloneStart").disabled = false;
+      return;
+    }
+    el.textContent = "✗ " + (j.message || "失敗");
+    if (clonePoll) { clearInterval(clonePoll); clonePoll = null; }
+    $("cloneStart").disabled = false;
+  }
+  $("clonePathsToggle").onclick = () => {
+    const box = $("clonePaths");
+    box.hidden = !box.hidden;
+  };
+  async function loadClonePlan() {
+    try {
+      const j = await (await fetch("/api/mt5-clone")).json();
+      if (j.phase && j.phase !== "idle") { paintClone(j); return; }
+      const p = j.plan || {};
+      if (p.error) { $("clonePlan").textContent = p.error; return; }
+      $("cloneSrc").value = p.source || "";
+      $("cloneDst").value = p.target || "";
+      $("clonePlan").innerHTML =
+        `會從 <code>${esc(p.source)}</code> 複製到 <code>${esc(p.target)}</code>，` +
+        "帶著圖表版面與掛好的 EA，但清掉舊帳號的登入紀錄與橋接檔。" +
+        (p.source_running
+          ? '<br /><span class="warn-text">來源那台目前開著，圖表版面可能沒帶乾淨 —— ' +
+            "新的那台如果圖表是空的，換成黃金品種再掛一次 EA 就好。</span>"
+          : "");
+    } catch (e) { $("clonePlan").textContent = "讀不到 MT5 目錄清單"; }
+  }
+  loadClonePlan();
+
+  $("cloneStart").onclick = async () => {
+    const btn = $("cloneStart");
+    btn.disabled = true;
+    $("cloneStatus").textContent = "";
+    $("instErr").textContent = "";
+    try {
+      const r = await fetch("/api/mt5-clone", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: $("cloneSrc").value.trim(),
+                               target: $("cloneDst").value.trim() }),
+      });
+      const j = await r.json();
+      if (!j.ok) { $("instErr").textContent = j.error || "複製失敗"; btn.disabled = false; return; }
+      paintClone({ phase: "running", message: "複製中…" });
+      clonePoll = setInterval(async () => {
+        try { paintClone(await (await fetch("/api/mt5-clone")).json()); } catch (e) {}
+      }, 2000);
+    } catch (e) {
+      $("instErr").textContent = "複製失敗：" + e;
+      btn.disabled = false;
+    }
+  };
+  $("instRefresh").onclick = loadInstances;
+  $("instCreate").onclick = async () => {
+    const btn = $("instCreate");
+    btn.disabled = true;
+    $("instErr").textContent = "";
+    try {
+      const r = await fetch("/api/instances", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mt5_files_dir: $("instDir").value.trim(),
+                               instance: $("instNum").value.trim() }),
+      });
+      const j = await r.json();
+      if (j.ok) {
+        form.hidden = true;
+        $("instDir").value = ""; $("instNum").value = "";
+        // 建立後不自動登入 —— 登入即開始跟單，那一步留給人按，
+        // 才有機會先確認畫面上的 MT5 帳號是對的。
+        toast(`已建立掛機端 #${j.instance}（MT5 ${j.mt5_login}）。` +
+              "請在它的控制台登入會員帳號後才會開始跟單。");
+        loadInstances();
+      } else {
+        $("instErr").textContent = j.error || "建立失敗";
+      }
+    } catch (e) {
+      $("instErr").textContent = "建立失敗：" + e;
+    }
+    btn.disabled = false;
+  };
+}
+
 function renderMembers() {
   const q = MBR.filter.trim().toLowerCase();
   const rows = MBR.list.filter((m) =>
@@ -5263,11 +5522,12 @@ function renderMembers() {
 
   if (!rows.length) {
     $("mbrRows").innerHTML =
-      '<tr><td colspan="13" class="muted" style="padding:22px;text-align:center">' +
+      '<tr><td colspan="14" class="muted" style="padding:22px;text-align:center">' +
       (MBR.list.length ? "沒有符合的會員" : "還沒有任何會員，按右上角「開通會員」新增") +
       "</td></tr>";
     return;
   }
+  renderAudit();
   $("mbrRows").innerHTML = rows.map((m) => {
     const exp = expiryText(m);
     const suspended = m.status !== "active";
@@ -5299,6 +5559,22 @@ function renderMembers() {
         pnlCell = `<span class="${toneClass(p)}">${money(p, { signed: true })}</span>`;
       }
     }
+    // 綁定欄：實例編號 + MT5 帳號 + 資料夾尾巴。有問題就整格轉紅並附說明，
+    // 不用管理者自己去比對哪兩台指到同一個地方。
+    const bad = (MBR.issues || {})[m.username] || [];
+    let bindCell = '<span class="muted">—</span>';
+    if (st) {
+      const dir = st.mt5_files_dir || "";
+      const tail = dir ? dir.replace(/[\\/]MQL5[\\/]Files$/i, "").split(/[\\/]/).pop() : "";
+      const inst = st.instance ? `#${esc(st.instance)}` : "";
+      const login = (st.account || {}).login;
+      const label = [inst, login || "未接上", tail && esc(tail)].filter(Boolean).join(" · ");
+      bindCell = bad.length
+        ? `<span class="mbr-state bad" title="${esc(bad.map((c) => ISSUE_TEXT[c] || c).join("；"))}">${label}</span>`
+        : `<span class="mono">${label}</span>`;
+    } else if (bad.length) {
+      bindCell = '<span class="mbr-state bad">未回報</span>';
+    }
     // Exness IB：用會員上報的 MT5 login 對應 client_account，不必手動綁定
     const acct = st && st.account ? String(st.account.login || "") : "";
     const ex = acct ? (MBR.exness || {})[acct] : null;
@@ -5313,6 +5589,7 @@ function renderMembers() {
       `<td>${state}</td>` +
       `<td class="mbr-state ${exp.cls}">${esc(exp.text)}</td>` +
       `<td class="${m.online ? "mbr-online" : "mbr-offline"}">${m.online ? "● 在線" : "○"}</td>` +
+      `<td>${bindCell}</td>` +
       `<td class="mono">${posCell}</td>` +
       `<td class="mono">${eqCell}</td>` +
       `<td class="mono">${pnlCell}</td>` +
@@ -5415,12 +5692,18 @@ async function loadMembers() {
       if (adv >= 0) $("mbrTier").selectedIndex = adv;
     }
     MBR.list = (await adminGet("/members")).members;
+    if (ROLE === "central") loadInstances();
     // 併拉會員端上報的即時帳戶／持倉快照。這是加值資訊，拉不到(舊版 Hub
     // 或還沒有人上報)就顯示「—」，不擋會員清單本身。
     try {
-      MBR.status = (await adminGet("/members/status")).statuses || {};
+      const snap = await adminGet("/members/status");
+      MBR.status = snap.statuses || {};
+      // 綁定體檢由 Hub 算好送過來（它才看得到全部會員，才比對得出重複）。
+      // 舊版 Hub 沒有這個欄位，就當成沒問題 —— 不要因為少一個欄位就整片紅。
+      MBR.issues = snap.issues || {};
     } catch (e) {
       MBR.status = MBR.status || {};
+      MBR.issues = MBR.issues || {};
     }
     // Exness IB 佣金資料。沒設定憑證、或還沒有真實入金客戶時會是空的，
     // 這一區就顯示「—」，不影響會員清單本身。
@@ -5498,6 +5781,7 @@ if (!IS_CLIENT) {
     setInterval(refreshCentralStatus, 60000);
   }
   $("mbrRefresh").onclick = () => { loadMembers(); refreshCentralStatus(); };
+  bindInstanceUI();
   $("mbrSearch").oninput = (e) => { MBR.filter = e.target.value; renderMembers(); };
   $("mbrNewToggle").onclick = () => {
     const f = $("mbrNewForm");
