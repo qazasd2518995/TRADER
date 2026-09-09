@@ -5157,6 +5157,7 @@ async function refreshCentralStatus() {
     box.innerHTML = stat("連線", "從未回報", "mbr-state bad");
     $("cenDetail").textContent =
       "訊號端還沒回報過。可能是那台還沒更新到有心跳的版本，或 Hub 位址／密碼不一致。";
+    refreshLineNotify(stat, ago);   // LINE 通知跟訊號端心跳無關，照樣要看得到
     return;
   }
   // 心跳每分鐘一次，超過 5 分鐘沒來就當作失聯 —— 少數幾次漏報不該報警。
@@ -5178,6 +5179,49 @@ async function refreshCentralStatus() {
   if (sh.settled != null) bits.push("影子對照 已定案 " + sh.settled + " / 進行中 " + sh.pending);
   if (!alive) bits.unshift("⚠ 已失聯 " + Math.round(silent) + " 分鐘 —— 那台可能當掉或斷網");
   $("cenDetail").textContent = bits.join("　·　");
+  refreshLineNotify(stat, ago);
+}
+
+/* LINE 群組通知的健康狀態。
+
+   推播是背景 thread 的旁路，失敗只會寫一行 log，而 Hub 的 log 被每秒好幾次
+   的 /signals 輪詢洗掉 —— 2026-09-09 就這樣靜靜停了：LINE 官方帳號的月額度
+   **按送達人數**扣，4 人群組推一則就扣 4，免費的 200 則等於一個月只發得了
+   50 次訊號。額度見底時掛單照下，只有通知不見，從畫面上完全看不出來。
+   所以把「還能發幾次」直接擺在訊號端狀態旁邊。 */
+async function refreshLineNotify(stat, ago) {
+  const box = $("cenStats");
+  if (!box) return;
+  let d;
+  try { d = await adminGet("/line/status"); } catch (e) { return; }
+  if (!d.enabled) {
+    box.insertAdjacentHTML("beforeend",
+      stat("LINE 通知", "未啟用", "mbr-state warn"));
+    return;
+  }
+  const q = d.quota || {};
+  const left = q.signals_left;
+  // 無限額度(付費方案)沒有 limit，就只報「正常」。
+  const value = left == null
+    ? (q.type === "none" ? "無上限" : "—")
+    : left + " 則";
+  const cls = left == null ? "mbr-state good"
+            : (left <= 0 ? "mbr-state bad" : (left <= 5 ? "mbr-state warn" : "mbr-state good"));
+  box.insertAdjacentHTML("beforeend", stat("LINE 通知還能發", value, cls));
+
+  const extra = [];
+  if (q.limit != null) {
+    extra.push("LINE 額度 " + (q.used || 0) + " / " + q.limit +
+               (q.cost_per_signal ? "（每則訊號扣 " + q.cost_per_signal + "）" : ""));
+  }
+  if (left != null && left <= 0) {
+    extra.push("⚠ LINE 通知已停止發送 —— 額度用完，掛單不受影響，但群組收不到訊號通知");
+  }
+  if (d.last_error) extra.push("LINE：" + d.last_error + "（" + ago(d.last_error_at) + "）");
+  if (extra.length) {
+    const cur = $("cenDetail").textContent;
+    $("cenDetail").textContent = cur ? cur + "　·　" + extra.join("　·　") : extra.join("　·　");
+  }
 }
 
 /* ---------------------------------------------------------------- theme */

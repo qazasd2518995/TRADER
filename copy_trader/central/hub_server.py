@@ -15,6 +15,7 @@ import logging
 import os
 import threading
 import time
+import urllib.error
 import urllib.request
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -328,6 +329,22 @@ class MemberPollTracker:
         return previous is None or (now - previous) > self.resume_gap
 
 
+def _line_error_zh(code: int, detail: str) -> str:
+    """把 LINE 的 HTTP 錯誤翻成後台看得懂的一句話。
+
+    429 是最容易中的：官方帳號的月額度按**送達人數**扣，不是按訊息則數。
+    """
+    if code == 429:
+        return "LINE 這個月的推播額度已用完（免費方案 200 則，且按群組人數計）"
+    if code == 401:
+        return "LINE 金鑰失效或已重發，請重新設定 LINE_CHANNEL_ACCESS_TOKEN"
+    if code == 403:
+        return "這個 LINE 官方帳號沒有推播權限（Messaging API 未啟用或被停權）"
+    if code == 400:
+        return f"LINE 拒絕了這則訊息（可能群組已解散或 Bot 被踢出）：{detail}"
+    return f"LINE 回應 HTTP {code}：{detail}"
+
+
 class LineNotifyState:
     """LINE 群組通知：登記 Bot 所在群組 + 推播封裝。狀態存磁碟(跨重啟)。
 
@@ -335,12 +352,23 @@ class LineNotifyState:
     no-op)，Hub 其他功能完全不受影響 —— 通知是加值旁路，永遠不能拖垮訊號流。
     """
 
+    #: 額度查詢的快取秒數。後台每次重整都打 LINE API 沒必要。
+    QUOTA_TTL = 300.0
+
     def __init__(self, state_path: Path, token: str = "", secret: str = ""):
         self.state_path = Path(state_path)
         self.token = token or os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
         self.secret = secret or os.environ.get("LINE_CHANNEL_SECRET", "")
         self._lock = threading.Lock()
         self._groups: Dict[str, Dict[str, Any]] = {}
+        # push 是背景 thread 裡跑的旁路，失敗只會寫一行 log，而 Hub 的 log 被
+        # 每秒好幾次的 /signals 輪詢洗得很快 —— 等於沒人看得到。把最後一次
+        # 結果留在記憶體裡，後台才問得出「為什麼沒發通知」。
+        self.last_error: str = ""
+        self.last_error_at: float = 0.0
+        self.last_ok_at: float = 0.0
+        self._quota: Dict[str, Any] = {}
+        self._quota_at: float = 0.0
         self._load()
 
     @property
@@ -412,10 +440,75 @@ class LineNotifyState:
                          "Authorization": f"Bearer {self.token}"})
             with urllib.request.urlopen(req, timeout=10) as resp:
                 resp.read()
+            self.last_ok_at = time.time()
             return True
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", "replace")[:300]
+            except Exception:                           # noqa: BLE001
+                pass
+            self._note_error(_line_error_zh(exc.code, detail))
+            logger.warning("LINE push 失敗：HTTP %s %s", exc.code, detail)
+            return False
         except Exception as exc:                        # noqa: BLE001
+            self._note_error(f"連不到 LINE：{exc}")
             logger.warning("LINE push 失敗：%s", exc)
             return False
+
+    def _note_error(self, message: str) -> None:
+        self.last_error = message
+        self.last_error_at = time.time()
+        # 額度用完是最常見的失敗，而剩餘額度就是判斷依據 —— 讓下一次查詢
+        # 重新去問，不要拿舊快取騙人。
+        self._quota_at = 0.0
+
+    def _api_get(self, path: str) -> Optional[Dict[str, Any]]:
+        if not self.enabled:
+            return None
+        try:
+            req = urllib.request.Request(
+                "https://api.line.me" + path,
+                headers={"Authorization": f"Bearer {self.token}"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:                        # noqa: BLE001
+            logger.warning("LINE API %s 失敗：%s", path, exc)
+            return None
+
+    def quota(self, *, force: bool = False) -> Dict[str, Any]:
+        """這個月的推播額度。空 dict = 問不到。
+
+        LINE 官方帳號**按送達人數計費**：推一則到 4 個人的群組就扣 4 則。
+        免費方案每月 200 則，等於 4 人群組一個月只發得了 50 次訊號。用完之後
+        push 一律 429，訊號通知就整個靜靜停掉 —— 所以這個數字要擺在後台。
+        """
+        now = time.time()
+        if not force and self._quota and now - self._quota_at < self.QUOTA_TTL:
+            return dict(self._quota)
+        limit = self._api_get("/v2/bot/message/quota") or {}
+        used = self._api_get("/v2/bot/message/quota/consumption") or {}
+        if not limit and not used:
+            return dict(self._quota)                    # 問不到就沿用舊的
+        out: Dict[str, Any] = {"type": limit.get("type") or ""}
+        if limit.get("value") is not None:
+            out["limit"] = int(limit["value"])
+        if used.get("totalUsage") is not None:
+            out["used"] = int(used["totalUsage"])
+        if "limit" in out and "used" in out:
+            out["remaining"] = max(0, out["limit"] - out["used"])
+        # 一則訊號實際扣幾則額度 = 所有登記群組的人數總和。
+        cost = 0
+        for group_id in self.target_groups():
+            info = self._api_get(f"/v2/bot/group/{group_id}/members/count") or {}
+            if info.get("count") is not None:
+                cost += int(info["count"])
+        if cost:
+            out["cost_per_signal"] = cost
+            if "remaining" in out:
+                out["signals_left"] = out["remaining"] // cost
+        self._quota, self._quota_at = out, now
+        return dict(out)
 
 
 _TW_TZ = timezone(timedelta(hours=8))
@@ -921,10 +1014,17 @@ class HubRequestHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/admin/line/status":
             line = self.line
-            self._send_json(200, {"ok": True,
-                                  "enabled": bool(line and line.enabled),
-                                  "has_secret": bool(line and line.secret),
-                                  "groups": line.target_groups() if line else []})
+            payload: Dict[str, Any] = {"ok": True,
+                                       "enabled": bool(line and line.enabled),
+                                       "has_secret": bool(line and line.secret),
+                                       "groups": line.target_groups() if line else []}
+            if line is not None and line.enabled:
+                force = (parse_qs(parsed.query).get("refresh") or ["0"])[0] == "1"
+                payload["quota"] = line.quota(force=force)
+                payload["last_error"] = line.last_error
+                payload["last_error_at"] = line.last_error_at
+                payload["last_ok_at"] = line.last_ok_at
+            self._send_json(200, payload)
             return
 
         store = self.members
@@ -1237,7 +1337,7 @@ class HubRequestHandler(BaseHTTPRequestHandler):
                 except Exception:                       # noqa: BLE001
                     text = None
                 if text:
-                    threading.Thread(target=line.push_text, args=(text,),
+                    threading.Thread(target=self._push_line, args=(line, text),
                                      daemon=True).start()
 
         self._send_json(200, {
@@ -1245,6 +1345,18 @@ class HubRequestHandler(BaseHTTPRequestHandler):
             "published": published,
             "latest_seq": self.store.latest_seq,
         })
+
+    @staticmethod
+    def _push_line(line: "LineNotifyState", text: str) -> None:
+        """背景推播。一個群組都沒推成功就留下原因 —— 這裡不 raise，
+        通知永遠不能影響訊號發布。"""
+        try:
+            sent = line.push_text(text)
+        except Exception as exc:                        # noqa: BLE001
+            logger.warning("LINE 通知失敗：%s", exc)
+            return
+        if sent == 0 and line.target_groups() and not line.last_error:
+            line._note_error("推播沒有送達任何群組")   # noqa: SLF001
 
     def _dashboard_html(self) -> str:
         return """<!doctype html>
