@@ -64,18 +64,40 @@ def journal_path() -> Path:
     return Path("trade_journal.txt")
 
 
+# MT5 橋接檔的編碼不保證是 UTF-8。EA 用 FileWriteString 寫出來時，帳號名稱
+# 帶的是券商／系統的 ANSI 碼頁 —— 中文 Windows 上就是 cp950(Big5)。
+#
+# 2026-09-09 實際事故：某台的帳號名稱是中文，account_info.json 因此不是合法的
+# UTF-8，這裡三次重試全部丟 UnicodeDecodeError 後回 None，面板上的餘額、淨值
+# 整個變空白。config._read_json_dict 先前踩過同一個坑，但這裡是另一份實作，
+# 沒跟著修到。
+#
+# latin-1 墊底是刻意的：它永遠不會失敗，最壞情況是名字變亂碼，但 JSON 結構
+# 仍然解得出來、數字欄位一個都不會少。讀不到餘額比讀到亂碼的名字嚴重得多。
+_JSON_ENCODINGS = ("utf-8-sig", "utf-8", "cp950", "latin-1")
+
+
 def _read_json(path: Path, retries: int = 3) -> Optional[Any]:
     """EA 隨時可能正在覆寫，讀到半截的 JSON 就重試。"""
     for attempt in range(retries):
         try:
-            with path.open("r", encoding="utf-8") as f:
-                return json.load(f)
+            raw = path.read_bytes()
         except FileNotFoundError:
             return None
         except Exception:
             if attempt == retries - 1:
                 return None
             time.sleep(0.05)
+            continue
+        for encoding in _JSON_ENCODINGS:
+            try:
+                return json.loads(raw.decode(encoding))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+        # 每一種編碼都解不開：多半是讀到 EA 寫到一半的半截 JSON，重試
+        if attempt == retries - 1:
+            return None
+        time.sleep(0.05)
     return None
 
 
