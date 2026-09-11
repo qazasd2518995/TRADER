@@ -32,6 +32,11 @@ agent_test_state.json
 central_client_state.json
 line_db_cursor.json
 *.ex5
+# 但橋接 EA 這一支要進版控：安裝檔直接帶著它出貨，會員就不用自己開
+# MetaEditor 按 F7 編譯（那是整份安裝說明裡最容易失敗的一步）。而且
+# release.yml 是在 GitHub 的 Windows runner 上從乾淨簽出建置的，那裡
+# 沒有 MetaEditor 可以編 —— 少了這個檔，會員端整包建不起來。
+!mt5_ea/MT5_File_Bridge_Enhanced.ex5
 
 # Debug screenshots
 debug_*.png

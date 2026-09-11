@@ -4,7 +4,7 @@
 //|   Supports buy/sell/modify/close commands & full state export   |
 //+------------------------------------------------------------------+
 #property copyright "Artan Ahmadi - Enhanced v4.3"
-#property version   "4.30"
+#property version   "4.40"
 
 // 交易品種預設「自動」：EA 掛在哪張圖表就用那個品種，自動對應各券商
 // (XAUUSD / XAUUSD.s / GOLD ...)，會員不用改。留空或 "AUTO" = 自動；
@@ -100,10 +100,93 @@ bool IsTradeAllowedFunc()
 }
 
 //+------------------------------------------------------------------+
+//| 同一個終端裡只准一個 bridge 實例做事                              |
+//|                                                                   |
+//| CheckTradeCommands() 是「讀 commands.json → 執行 → 清空」。兩個實 |
+//| 例的計時器同時觸發時，兩邊都會在對方清空之前讀到同一筆指令 ——     |
+//| 同一張單下兩次。一鍵安裝讓這件事變得容易發生：[StartUp] Expert=   |
+//| 會在「終端自己還原的那張圖」之外再掛一個。                        |
+//|                                                                   |
+//| GlobalVariableSetOnCondition 是 MT5 提供的原子比較並設定，兩個實  |
+//| 例同時搶只會有一個成功。沒搶到的不移除自己(那樣會嚇到手動掛 EA 的 |
+//| 人)，只是安靜地什麼都不做，並在日誌留一行說明。                   |
+//+------------------------------------------------------------------+
+#define BRIDGE_OWNER_GV "GoldFileBridge.Owner"
+
+bool g_is_bridge_owner = false;
+
+bool ClaimBridgeOwnership()
+{
+   double mine = (double)ChartID();
+   if(!GlobalVariableCheck(BRIDGE_OWNER_GV))
+      GlobalVariableSet(BRIDGE_OWNER_GV, 0.0);
+   if(GlobalVariableSetOnCondition(BRIDGE_OWNER_GV, mine, 0.0))
+      return true;
+   // 沒搶到。可能是真的有另一個實例，也可能是上一次沒有正常收尾留下的殘值
+   // (MT5 被強制關閉時 OnDeinit 不一定跑得到)。殘值指向的圖表已經不存在時，
+   // 把它視為可以接手 —— 否則重開之後就永遠沒有人做事了。
+   double owner = GlobalVariableGet(BRIDGE_OWNER_GV);
+   if(owner == mine)
+      return true;
+   if(ChartSymbol((long)owner) == "")
+   {
+      GlobalVariableSet(BRIDGE_OWNER_GV, mine);
+      return true;
+   }
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| 這個代號是不是「黃金兌美元」                                      |
+//| XAUUSD / XAUUSD.s / XAUUSD247m / XAUUSDm / GOLD / GOLDm ...       |
+//| 刻意排除 XAUEUR、XAUAUD 這類非美元計價的黃金 —— 訊號的點位是      |
+//| 美元報價，掛到那些商品上價格對不起來。                            |
+//+------------------------------------------------------------------+
+bool IsGoldUsdSymbol(const string name)
+{
+   string upper = name;
+   StringToUpper(upper);
+   if(StringFind(upper, "XAU") >= 0)
+      return (StringFind(upper, "USD") >= 0);
+   return (StringFind(upper, "GOLD") >= 0);
+}
+
+//+------------------------------------------------------------------+
+//| 在這家券商的商品清單裡找黃金                                      |
+//| 先找 Market Watch 裡的（那是會員實際在用的，最可能是對的那個），   |
+//| 找不到才掃全部商品。                                              |
+//+------------------------------------------------------------------+
+string FindGoldSymbol()
+{
+   for(int pass = 0; pass < 2; pass++)
+   {
+      bool selected_only = (pass == 0);
+      int  total = SymbolsTotal(selected_only);
+      for(int i = 0; i < total; i++)
+      {
+         string name = SymbolName(i, selected_only);
+         if(name == "" || !IsGoldUsdSymbol(name))
+            continue;
+         if(SymbolSelect(name, true))
+            return name;
+      }
+   }
+   return "";
+}
+
+//+------------------------------------------------------------------+
 //| 決定實際要用的券商黃金代號                                        |
-//| 一律以「EA 掛的這張圖表」的品種為準，自動對應各券商               |
-//| (XAUUSD / XAUUSD.s / GOLD ...)。只有當 TradingSymbol 明確填了     |
-//| 另一個、且這家券商真的有的代號時，才用它覆蓋。                    |
+//| 優先序：                                                          |
+//|   1. TradingSymbol 明確指定、且券商真的有                         |
+//|   2. EA 掛的這張圖表本身就是黃金 → 跟著圖表走（最常見）           |
+//|   3. 圖表不是黃金 → 自己去商品清單找                              |
+//|   4. 都找不到 → 回空字串，讓 OnInit 拒絕啟動                      |
+//|                                                                   |
+//| 第 3、4 點是一鍵安裝需要的。安裝程式用 [StartUp] Symbol= 指定圖表  |
+//| 品種，但各家券商後綴不一樣（自家四台就有 XAUUSD 與 XAUUSD247m 兩  |
+//| 種，Exness 換個帳戶類型又會變）。對不上時 MT5 不會報錯，它會安靜   |
+//| 地退回開一張預設圖 —— 通常是 EURUSD。舊版在那種情況下會「跟著圖表 |
+//| 走」，等於拿黃金的跟單訊號去操作歐元。寧可不啟動，也不能下錯商品。 |
 //+------------------------------------------------------------------+
 string ResolveTradeSymbol()
 {
@@ -112,8 +195,12 @@ string ResolveTradeSymbol()
    if(want != "" && want != "AUTO" && want != "auto" &&
       want != chart && SymbolSelect(want, true))
       return want;                 // 會員明確指定了別的、且券商有 → 用它
-   SymbolSelect(chart, true);       // 確保主商品在 Market Watch 裡
-   return chart;                    // 預設：跟著圖表走
+   if(IsGoldUsdSymbol(chart))
+   {
+      SymbolSelect(chart, true);    // 確保主商品在 Market Watch 裡
+      return chart;                 // 跟著圖表走
+   }
+   return FindGoldSymbol();         // 圖表不是黃金 —— 自己找，找不到回 ""
 }
 
 //+------------------------------------------------------------------+
@@ -122,8 +209,26 @@ string ResolveTradeSymbol()
 int OnInit()
 {
    g_sym = ResolveTradeSymbol();
-   Print("Enhanced MT5 File Bridge v4.3 started. 交易品種=", g_sym,
+   if(g_sym == "")
+   {
+      // 這張圖不是黃金，而且整個商品清單裡也找不到黃金。硬跑下去就會把
+      // 黃金訊號下到別的商品上，那比不啟動嚴重得多。
+      Print("EA 未啟動：這張圖表(", Symbol(), ")不是黃金，",
+            "而且在這個帳戶的商品清單裡找不到任何 XAUUSD / GOLD 商品。",
+            "請確認帳戶可以交易黃金，或把 EA 掛到黃金圖表上。");
+      return(INIT_FAILED);
+   }
+   g_is_bridge_owner = ClaimBridgeOwnership();
+   if(!g_is_bridge_owner)
+   {
+      Print("這個終端已經有另一個 File Bridge 在運作，這一個進入待命（不寫檔、",
+            "不執行指令）。兩個同時做事會把同一筆指令下兩次。");
+      return(INIT_SUCCEEDED);      // 留在圖上但不做事，不自行移除
+   }
+   Print("Enhanced MT5 File Bridge v4.4 started. 交易品種=", g_sym,
          "（圖表=", Symbol(), " / 參數TradingSymbol=", (TradingSymbol=="" ? "AUTO" : TradingSymbol), "）");
+   if(g_sym != Symbol())
+      Print("注意：交易品種與圖表品種不同 —— 圖表開的不是黃金，已自動改用 ", g_sym);
    Print("Auto trading enabled: ", IsTradeAllowedFunc());
    Print("Default lot size: ", DoubleToString(DefaultLotSize,2));
    EventSetTimer(1);
@@ -142,6 +247,10 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+   // 放掉所有權，讓下一個實例接得到。沒放掉的話(例如 MT5 被強制關閉)由
+   // ClaimBridgeOwnership 的「殘值指向的圖表已不存在」那條路救回來。
+   if(g_is_bridge_owner && GlobalVariableGet(BRIDGE_OWNER_GV) == (double)ChartID())
+      GlobalVariableDel(BRIDGE_OWNER_GV);
    Print("Enhanced MT5 File Bridge stopped. Reason: ", reason);
 }
 
@@ -150,6 +259,11 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTimer()
 {
+   // 同一個終端裡只有一個實例做事。見 ClaimBridgeOwnership 的說明 ——
+   // 兩個實例會把同一筆指令下兩次，那是這套系統最不能出的錯。
+   if(!g_is_bridge_owner)
+      return;
+
    // Existing writers
    if(TimeCurrent() - last_write >= WriteIntervalSec) { WritePriceData(); last_write = TimeCurrent(); }
    if(TimeCurrent() - last_account_write >= 2)        { WriteAccountInfo(); last_account_write = TimeCurrent(); }
