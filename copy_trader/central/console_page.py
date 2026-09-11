@@ -58,7 +58,28 @@ _PAGE = r"""<!doctype html>
 <meta name="theme-color" content="#0f1216">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>黃金跟單 · 控制台</title>
+<title>黃金跟單 · 會員控制台</title>
+<!-- 連結預覽。沒有這些標籤時，LINE／Messenger 會自己去抓頁面內文拼一段
+     描述出來 —— 實際看到的是「帳號 密碼 登入 這裡控制的是你自己電腦上的
+     跟單程式。電…」，那是登入框和說明文字被連在一起，很不專業。
+     這個網址會被貼進會員社群，預覽就是第一印象。
+
+     og:image 借官網那張（https://gold-young.com/assets/img/og.png，已上線）。
+     跨網域沒問題，而且省得 Hub 再開一條靜態檔路由 —— Hub 的映像檔刻意只帶
+     標準庫，不該為了一張圖變複雜。 -->
+<meta name="description" content="黃金跟單系統的會員控制台。即時查看帳戶淨值、持倉與跟單績效，並隨時調整手數、跟單時段與訊號來源設定。需會員帳號登入。">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="黃金跟單系統">
+<meta property="og:title" content="黃金跟單 · 會員控制台">
+<meta property="og:description" content="即時查看帳戶淨值、持倉與跟單績效，隨時調整手數、跟單時段與訊號來源設定。需會員帳號登入。">
+<meta property="og:image" content="https://gold-young.com/assets/img/og.png">
+<meta property="og:url" content="https://gold-signal-hub-tw.fly.dev/console">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="黃金跟單 · 會員控制台">
+<meta name="twitter:description" content="即時查看帳戶淨值、持倉與跟單績效，隨時調整手數、跟單時段與訊號來源設定。需會員帳號登入。">
+<meta name="twitter:image" content="https://gold-young.com/assets/img/og.png">
+<!-- 這是會員專屬的操作介面，不該被搜尋引擎收錄。 -->
+<meta name="robots" content="noindex,nofollow">
 <style>
 :root{
   --bg:#0f1216; --card:#161a20; --line:#252b33; --line2:#1d222a;
