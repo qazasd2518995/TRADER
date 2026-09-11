@@ -37,6 +37,16 @@ logger = logging.getLogger(__name__)
 
 _CLOUDFLARED_URL_RE = re.compile(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
 
+# 擷取迴圈每秒跑一次。連續失敗到這個次數就把 LINE 連線整個重建 —— 取 5 是
+# 為了不要被「LINE 正在寫、資料庫瞬間鎖住」這種一兩次就恢復的狀況誤觸發。
+LINE_REBUILD_AFTER_FAILURES = 5
+
+# 整個 LINE 資料庫超過這麼久沒有任何新列，就當作它其實沒在收訊息。
+# 使用者待在上千個聊天室裡，正常情況幾分鐘內一定有東西進來；靜到 20 分鐘
+# 幾乎只有三種可能：LINE 沒開、被登出、或我們握著的是已經被換掉的檔案句柄。
+# 這三種都不會拋例外，也不會讓 integrity_check 失敗 —— 只有這個數字看得出來。
+LINE_QUIET_ALERT_SECONDS = 1200.0
+
 
 def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
@@ -180,6 +190,15 @@ class LauncherState:
         # 執行設定影子對照。訊號中心啟動時才建；沒啟動時 UI 讀到 None
         # 就顯示「尚未啟動」，不要噴錯。
         self.exec_shadow = None
+        # LINE 桌面版社群播報。跟影子對照一樣是旁路，沒啟用就是 None。
+        # _line_desktop_seen 記已播報過的 event_id：重送同一筆（Hub 那端叫
+        # already_published）不能讓社群收到第二則一模一樣的訊號。
+        self.line_desktop = None
+        self._line_desktop_seen: Dict[str, float] = {}
+        # 「整庫多久沒有新列」的追蹤狀態，見 _line_quiet_seconds。
+        self._line_rowid_seen = 0
+        self._line_rowid_at = 0.0
+        self._line_quiet_logged = False
         self._shadow_bars = None
         self._shadow_pumped_at = 0.0
         self._shadow_mt5_dir = None
@@ -221,6 +240,12 @@ class LauncherState:
                 "ultra_min_h1_atr": "4.0",
                 "ultra_max_h1_atr": "60.0",
                 "ultra_max_market_age_seconds": "90",
+                # 用登入中的 LINE 桌面版，把通知發到自己的社群。官方帳號 Bot
+                # 到不了社群(OpenChat)，額度也不夠 —— 原因見 line_desktop_sender。
+                # 預設關閉：開著就會真的以你的身分在社群裡發言，這要人明確按下去。
+                # window 留空代表不發；填的是那個聊天視窗的標題（＝聊天室名稱）。
+                "line_desktop_notify": "false",
+                "line_desktop_window": "",
                 "cloudflare_tunnel": "true",
                 "cloudflared_path": "",
                 "auto_start": "false",
@@ -238,6 +263,14 @@ class LauncherState:
             # 舊的 settings.json 裡若還存著 token，也會在下一次存檔時被
             # save_settings() 濾掉（它只保留 defaults() 有的鍵）。
             "mt5_files_dir": "",
+            # MT5 一鍵設定的結果（見 mt5_onboard）。install_dir 是 terminal64.exe
+            # 所在的資料夾，symbol 是圖表要開的商品 —— 各券商後綴不同，Exness
+            # 是 XAUUSD247m。**刻意沒有密碼欄位**：它只在 onboarding 當下存在，
+            # 交給 MT5 之後就由 MT5 自己保管，絕不落到我們的設定檔裡。
+            "mt5_install_dir": "",
+            "mt5_login": "",
+            "mt5_server": "",
+            "mt5_symbol": "XAUUSD247m",
             "interval": "1.0",
             "auto_start": "true",   # 會員端拿掉了開關,登入後自動開始跟單
             "default_lot_size": "0.01",
@@ -810,11 +843,39 @@ class LauncherState:
             except Exception as exc:
                 logger.warning("執行設定影子對照未啟用（不影響訊號）：%s", exc)
 
+            # LINE 桌面版社群播報。這裡只是建物件（找視窗是每次發送時才做），
+            # 所以 LINE 當下沒開也不會擋住啟動。
+            self.line_desktop = None
+            window_title = str(self.settings.get("line_desktop_window") or "").strip()
+            if _truthy(self.settings.get("line_desktop_notify")) and window_title:
+                try:
+                    from copy_trader.central.line_desktop_sender import LineDesktopSender
+
+                    self.line_desktop = LineDesktopSender(
+                        window_title,
+                        str(self.settings.get("line_database_path") or "") or None,
+                        str(self.settings.get("line_keychain_service")
+                            or "line-db-research"),
+                    )
+                    ready = self.line_desktop.preflight()
+                    if ready.ok:
+                        logger.info("LINE 社群播報已啟用：%s", window_title)
+                    else:
+                        # 保留著 —— 視窗沒開、聊天室改名這種等一下可能就好了，
+                        # 每次發送都會重新找。但要講出來，不能假裝沒事。
+                        logger.warning("LINE 社群播報已啟用但尚未就緒：%s", ready.reason)
+                except Exception as exc:
+                    self.line_desktop = None
+                    logger.warning("LINE 社群播報未啟用（不影響訊號）：%s", exc)
+            elif window_title:
+                logger.info("LINE 社群播報已設定但未開啟：%s", window_title)
+
             # LINE 與市場模型共用 Hub，但不是同一條資料 pipeline。LINE DB
             # 尚未登入、資料庫暫時鎖住或金鑰錯誤時，模型仍應照常維護掛單與撤單；
             # collector 在背景每十秒重試初始化，不阻擋第三來源。
             collector = None
             next_line_init_at = 0.0
+            line_fail_streak = 0
             self.status = "運行中"
             self.service_started_at = time.time()
 
@@ -853,8 +914,20 @@ class LauncherState:
                         published = collector.run_cycle()
                         if published:
                             logger.info("本輪發布 %s 筆訊號", published)
+                        line_fail_streak = 0
                     except Exception as exc:
+                        line_fail_streak += 1
                         logger.exception("中央擷取錯誤：%s", exc)
+                        # 原本這裡只記 log，collector 永遠留著 —— 連線一旦壞掉
+                        # (LINE 重新登入換了檔案或金鑰)就每秒噴一次同樣的例外，
+                        # 到天亮都不會自己重建。設回 None 才會走進上面那段
+                        # 「collector is None 就重試」的既有路徑。
+                        if line_fail_streak >= LINE_REBUILD_AFTER_FAILURES:
+                            collector = None
+                            self._collector = None
+                            line_fail_streak = 0
+                            next_line_init_at = time.monotonic() + 10.0
+                            logger.warning("LINE 擷取連續失敗，將重建資料庫連線")
                 try:
                     # 策略的故障不能拖垮 LINE 訊號；LINE 的故障也不能讓既有
                     # 超高頻掛單失去逾時撤單機會，因此兩條 pipeline 分開執行。
@@ -1228,6 +1301,113 @@ class LauncherState:
         shadow = self.exec_shadow
         if shadow is not None:
             shadow.record(payload)
+        self._notify_line_desktop(payload)
+
+    def onboard_mt5(self, login: str, password: str, server: str,
+                    mt5_path: str = "", symbol: str = "") -> Dict[str, Any]:
+        """一鍵把 MT5 裝好設定好跑起來，成功後把偵測到的路徑寫回設定。
+
+        寫回 mt5_files_dir 是必要的：之後每次開機，會員端要靠它找到橋接檔，
+        而不是重跑一次 onboarding。密碼不寫任何地方。
+        """
+        try:
+            from copy_trader.central import mt5_onboard
+
+            result = mt5_onboard.onboard(
+                mt5_path=mt5_path or str(self.settings.get("mt5_install_dir") or ""),
+                login=login, password=password, server=server,
+                symbol=symbol.strip() or str(self.settings.get("mt5_symbol") or "")
+                or "XAUUSD247m",
+            )
+        except Exception as exc:                    # noqa: BLE001
+            logger.exception("MT5 一鍵設定失敗：%s", exc)
+            return {"ok": False, "reason": f"設定過程出錯：{exc}"}
+
+        if result.ok:
+            keep: Dict[str, Any] = {"mt5_files_dir": result.files_dir,
+                                    "mt5_login": login, "mt5_server": server}
+            if mt5_path:
+                keep["mt5_install_dir"] = mt5_path
+            self.save_settings(keep)
+            logger.info("MT5 一鍵設定完成：%s", result.files_dir)
+        else:
+            logger.warning("MT5 一鍵設定未完成：%s", result.reason)
+        return {"ok": result.ok, "reason": result.reason,
+                "mt5_files_dir": result.files_dir}
+
+    def _line_quiet_seconds(self, latest_rowid: int, now: float) -> Optional[float]:
+        """整個 LINE 資料庫多久沒有新列了。第一次呼叫回 0.0。
+
+        這是唯一能抓到「靜默停擺」的指標。LINE 沒開、被登出、或我們握著的是
+        一個已經被換掉的檔案句柄 —— 這三種情況下讀檔都成功、integrity_check
+        都回 ok、run_cycle() 也不會拋例外，整條路看起來全綠，實際上停在過去。
+        （2026-09-11 親眼看過：LINE 被登出十三個小時，心跳照樣回報 line_ok。）
+        """
+        if latest_rowid <= 0:
+            return None
+        if latest_rowid > self._line_rowid_seen:
+            self._line_rowid_seen = latest_rowid
+            self._line_rowid_at = now
+            self._line_quiet_logged = False
+            return 0.0
+        if not self._line_rowid_at:
+            self._line_rowid_at = now
+            return 0.0
+        quiet = now - self._line_rowid_at
+        if quiet >= LINE_QUIET_ALERT_SECONDS and not self._line_quiet_logged:
+            self._line_quiet_logged = True
+            logger.warning(
+                "LINE 資料庫已經 %.0f 分鐘沒有任何新訊息 —— LINE 可能沒開、被登出，"
+                "或訊號中心握著的是失效的檔案連線。訊號來源可能已經停擺。",
+                quiet / 60.0,
+            )
+        return quiet
+
+    def _notify_line_desktop(self, payload: Dict[str, Any]) -> None:
+        """用 LINE 桌面版把這筆通知發到社群。純旁路，壞掉只留日誌。
+
+        文字用的是 Hub 給官方帳號 Bot 的同一支 format_signal_notice —— 兩邊
+        長得一樣，之後要停掉 Bot 或兩邊並行都不會有落差。
+
+        送出丟到背景 thread：一則含回執確認大約 1.7 秒，而擷取迴圈每秒跑一次，
+        擋在這裡會讓訊號跟著慢。
+        """
+        sender = self.line_desktop
+        if sender is None:
+            return
+        try:
+            from copy_trader.central.hub_server import format_signal_notice
+
+            event_id = str(payload.get("event_id") or "")
+            if event_id:
+                if event_id in self._line_desktop_seen:
+                    return
+                self._line_desktop_seen[event_id] = time.time()
+                if len(self._line_desktop_seen) > 500:
+                    stale = sorted(self._line_desktop_seen,
+                                   key=self._line_desktop_seen.get)[:200]
+                    for key in stale:
+                        self._line_desktop_seen.pop(key, None)
+            text = format_signal_notice(payload)
+            if not text:
+                return
+
+            def _send() -> None:
+                try:
+                    result = sender.send_with_retry(text)
+                except Exception as exc:            # noqa: BLE001
+                    logger.warning("LINE 社群播報異常：%s", exc)
+                    return
+                if result.ok:
+                    logger.info("LINE 社群播報成功（id=%s）", result.message_id)
+                else:
+                    # 沒送到就是沒送到。官方帳號 Bot 那條路還在，會員不會完全
+                    # 收不到通知，但這行必須留下 —— 靜靜漏掉才是最糟的。
+                    logger.warning("LINE 社群播報失敗：%s", result.reason)
+
+            threading.Thread(target=_send, daemon=True).start()
+        except Exception as exc:                    # noqa: BLE001
+            logger.exception("LINE 社群播報前置失敗，訊號不受影響：%s", exc)
 
     def _report_central_status(self) -> None:
         """把訊號端的健康狀態回報給 Hub，讓另一台的管理端看得到死活。
@@ -1243,12 +1423,15 @@ class LauncherState:
         line_ok = collector is not None
         line_detail = ""
         line_cursor = ""
+        line_quiet = None
         if line_ok:
             try:
                 status = collector.source.status()
                 chats = status.get("chats") or []
                 line_detail = "、".join(c.get("display_name", "") for c in chats)
                 line_cursor = str(status.get("integrity_check") or "")
+                line_quiet = self._line_quiet_seconds(
+                    int(status.get("latest_insert_rowid") or 0), now)
             except Exception as exc:                      # noqa: BLE001
                 line_ok = False
                 line_detail = f"讀取失敗：{exc}"
@@ -1273,6 +1456,7 @@ class LauncherState:
             "line_ok": line_ok,
             "line_detail": line_detail,
             "line_cursor": line_cursor,
+            "line_quiet_seconds": line_quiet,
             "ultra_enabled": _truthy(self.settings.get("ultra_enabled")),
             "shadow": shadow_summary,
         }
@@ -2332,6 +2516,44 @@ def make_handler(state: LauncherState):
                 if parsed.path == "/api/settings":
                     settings = state.save_settings(_read_json(self))
                     _json_response(self, 200, {"ok": True, "settings": settings})
+                    return
+                # 一鍵把 MT5 設定好並跑起來。只有會員端有意義。
+                #
+                # **密碼只在這個請求裡活著。** 它被寫進一個一次性的啟動設定檔
+                # 交給 MT5 完成首次登入，之後由 MT5 自己的 KeepPrivate 記住，
+                # 檔案立刻刪除。不進 settings.json、不上傳 Hub —— 會員的券商
+                # 密碼一旦落到我們的儲存或伺服器上，責任性質就完全不同了。
+                if parsed.path == "/api/mt5-onboard":
+                    if state.role != "client":
+                        _json_response(self, 403, {"ok": False, "error": "client_only"})
+                        return
+                    data = _read_json(self)
+                    result = state.onboard_mt5(
+                        str(data.get("login") or ""),
+                        str(data.get("password") or ""),
+                        str(data.get("server") or ""),
+                        str(data.get("mt5_path") or ""),
+                        str(data.get("symbol") or ""),
+                    )
+                    _json_response(self, 200 if result.get("ok") else 400, result)
+                    return
+                # 社群播報自我測試。UI 自動化會被 LINE 改版、視窗被關、螢幕
+                # 鎖定弄壞，而這條路壞掉時只會在下一筆真訊號漏掉 —— 要有一個
+                # 隨時能主動確認「現在還發得出去」的方法。
+                if parsed.path == "/api/line-desktop-test":
+                    if state.role != "central":
+                        _json_response(self, 403, {"ok": False, "error": "central_only"})
+                        return
+                    sender = state.line_desktop
+                    if sender is None:
+                        _json_response(self, 400, {"ok": False,
+                                                   "error": "line_desktop_disabled"})
+                        return
+                    text = str(_read_json(self).get("text") or "").strip()
+                    result = sender.send_with_retry(
+                        text or "🔔 測試：黃金訊號中心的社群播報已連線")
+                    _json_response(self, 200, {"ok": result.ok, "reason": result.reason,
+                                               "message_id": result.message_id})
                     return
                 if parsed.path == "/api/start":
                     data = _read_json(self)

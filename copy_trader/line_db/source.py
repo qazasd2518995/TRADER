@@ -270,6 +270,10 @@ class LineDatabaseSource:
             "database": str(self.provider.database_path),
             "database_id": self.provider.database_id,
             "integrity_check": self.provider.integrity_check(),
+            # 整庫的寫入計數。呼叫端拿它跨次比對:數字不動就代表 LINE 沒有在
+            # 往資料庫寫 —— 沒登入、沒在跑,或我們握著的是一個已經被換掉的
+            # 檔案句柄。這三種都不會拋例外,只能靠這個數字看出來。
+            "latest_insert_rowid": self.provider.latest_insert_rowid(),
             "chats": [
                 {
                     "name": chat.target.name,

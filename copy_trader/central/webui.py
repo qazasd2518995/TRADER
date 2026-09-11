@@ -26,6 +26,21 @@ from typing import Any
 
 CLIENT_FIELDS = """
       <div class="field-group">
+        <h3>MT5 連線</h3>
+        <div class="field-grid">
+          <label>MT5 帳號<input id="mt5_login" inputmode="numeric" placeholder="券商給你的一串數字" /></label>
+          <label>MT5 密碼<input id="mt5_onboard_password" type="password" placeholder="只用來讓 MT5 登入一次，不會存起來" /></label>
+          <label>伺服器<input id="mt5_server" placeholder="例如 Exness-MT5Real43" /></label>
+          <label>黃金商品代號<input id="mt5_symbol" placeholder="XAUUSD247m" /></label>
+        </div>
+        <div class="inline-actions">
+          <button class="btn" id="setupMt5" type="button">一鍵設定並啟動 MT5</button>
+          <span class="hint" id="mt5SetupResult"></span>
+        </div>
+        <p class="hint">按下去會自動幫你：把下單程式(EA)裝進 MT5、打開「演算法交易」、登入你的帳號、開好黃金圖表並掛上 EA。整個過程大約一分鐘，不需要你操作 MT5。<b>密碼只用來讓 MT5 完成這一次登入，之後由 MT5 自己保管 —— 我們不會儲存，也不會上傳。</b></p>
+      </div>
+
+      <div class="field-group">
         <h3>訊號來源設定</h3>
         <div id="sourceSettings"></div>
         <input type="hidden" id="source_profiles" />
@@ -2397,7 +2412,10 @@ function ids() {
     // 會員端只剩「訊號來源設定」一個地方要填。連線(MT5路徑/輪詢/Shadow/自動開始)與
     // 其他策略(EA)全移除,不給會員看:MT5 路徑自動偵測、auto_start 預設開、shadow 關,
     // 這些值後端各自保留,不從前端回送(少送的欄位 save_settings 會保住)。
-    : ["source_profiles", "auto_schedules"];
+    // MT5 連線那三格要回填(會員重開設定頁時看得到自己填過什麼)也要存檔。
+    // **密碼的 id 是 mt5_onboard_password，刻意不在這個清單裡** —— 它不該被
+    // collect() 收走、不該進 settings.json、也不該在 fill() 時被寫回畫面。
+    : ["source_profiles", "auto_schedules", "mt5_login", "mt5_server", "mt5_symbol"];
 }
 function collect() {
   const out = {};
@@ -5163,12 +5181,31 @@ async function refreshCentralStatus() {
   // 心跳每分鐘一次，超過 5 分鐘沒來就當作失聯 —— 少數幾次漏報不該報警。
   const silent = (now - Number(c.reported_at)) / 60;
   const alive = silent < 5;
+
+  /* 「LINE 擷取正常」以前只代表「那個檔案讀得到」。
+
+     2026-09-11 踩過：重開機後 LINE 沒有跟著起來(它不在啟動資料夾也不在 Run
+     機碼)，十三個小時收不到任何訊號 —— 而這格一直是綠的，因為檔案確實在、
+     讀得到、integrity_check 也回 ok。LINE 沒開、被登出、或訊號中心握著失效的
+     檔案句柄，三種都長這樣，而且都不會拋例外。
+
+     line_quiet_seconds 是訊號端回報的「整個 LINE 資料庫多久沒有新列」。看整庫
+     而不是只看那兩個報單群 —— 它們安靜好幾小時是正常的(提供者收盤就不發了)，
+     拿來當依據會每晚誤報。整庫則是上千個聊天室在灌，正常幾分鐘內一定有東西。
+     null 代表訊號端還是舊版沒回報這個欄位，那就維持舊行為不要亂報警。 */
+  const QUIET_BAD = 1200;                       // 跟 LINE_QUIET_ALERT_SECONDS 一致
+  const quiet = c.line_quiet_seconds;
+  const stalled = c.line_ok && quiet != null && Number(quiet) >= QUIET_BAD;
+  const lineText = !c.line_ok ? "異常"
+                 : stalled ? ("停擺 " + Math.round(Number(quiet) / 60) + " 分鐘")
+                 : "正常";
+  const lineCls = (!c.line_ok || stalled) ? "mbr-state bad" : "mbr-state good";
   box.innerHTML =
     stat("心跳", ago(c.reported_at), alive ? "mbr-state good" : "mbr-state bad") +
     stat("服務狀態", esc(c.status || "—"), alive && c.status === "運行中" ? "mbr-state good" : "") +
     stat("最後發布", ago(c.last_publish_at)) +
     stat("今日發布", Number(c.published_today || 0)) +
-    stat("LINE 擷取", c.line_ok ? "正常" : "異常", c.line_ok ? "mbr-state good" : "mbr-state bad") +
+    stat("LINE 擷取", lineText, lineCls) +
     stat("已開機", ago(c.started_at).replace("前", ""));
 
   const bits = [];
@@ -5177,6 +5214,9 @@ async function refreshCentralStatus() {
   if (c.ultra_enabled) bits.push("超高頻已啟用");
   const sh = c.shadow || {};
   if (sh.settled != null) bits.push("影子對照 已定案 " + sh.settled + " / 進行中 " + sh.pending);
+  if (stalled) bits.unshift("⚠ LINE 資料庫已停止更新 —— LINE 可能沒開、被登出，"
+                            + "或訊號中心的資料庫連線已失效。訊號來源等於停擺，"
+                            + "先確認 LINE 有登入，再重啟訊號中心");
   if (!alive) bits.unshift("⚠ 已失聯 " + Math.round(silent) + " 分鐘 —— 那台可能當掉或斷網");
   $("cenDetail").textContent = bits.join("　·　");
   refreshLineNotify(stat, ago);
@@ -5986,6 +6026,37 @@ if ($("findLineDatabase")) {
       }
     } catch (e) {
       result.textContent = "搜尋失敗：" + e.message;
+    } finally {
+      button.disabled = false;
+    }
+  };
+}
+
+/* 一鍵把 MT5 設定好。取代安裝說明裡最長的那一段（複製 EA → F7 編譯 →
+   開圖表 → 拖 EA → 勾允許演算法交易）。
+
+   密碼欄位刻意**不在 collect() 收集的設定裡** —— 它只跟著這一次請求走，
+   後端交給 MT5 之後立刻把暫存檔刪掉。送出後也把輸入框清空，免得它留在
+   畫面上被看到。 */
+if ($("setupMt5")) {
+  $("setupMt5").onclick = async () => {
+    const button = $("setupMt5");
+    const result = $("mt5SetupResult");
+    const password = $("mt5_onboard_password").value;
+    if (!password) { result.textContent = "請先填 MT5 密碼"; return; }
+    button.disabled = true;
+    result.textContent = "設定中…（要啟動 MT5、登入並掛上 EA，約一分鐘）";
+    try {
+      const response = await post("/api/mt5-onboard", {
+        login: $("mt5_login").value.trim(),
+        password: password,
+        server: $("mt5_server").value.trim(),
+        symbol: $("mt5_symbol").value.trim(),
+      });
+      result.textContent = (response.ok ? "✅ " : "❌ ") + (response.reason || "");
+      if (response.ok) $("mt5_onboard_password").value = "";
+    } catch (e) {
+      result.textContent = "設定失敗：" + e.message;
     } finally {
       button.disabled = false;
     }

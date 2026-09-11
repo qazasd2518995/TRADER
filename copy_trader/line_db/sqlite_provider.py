@@ -166,6 +166,24 @@ class SQLiteLineDatabaseProvider:
         ).fetchone()
         return int(row[0] or 0)
 
+    def latest_insert_rowid(self) -> int:
+        """整個資料庫最新的 rowid（不限聊天室）—— 拿來判斷 LINE 還有沒有在寫。
+
+        為什麼不看那兩個訊號來源群：它們安靜好幾個小時是正常的（提供者收盤
+        就不發了），拿來當活著的依據會每晚誤報。整庫則是持續在動的 —— 使用者
+        待在上千個聊天室裡，訊息幾乎沒停過。
+
+        為什麼看 rowid 而不是最新訊息的時間：斷線重連時補下來的舊訊息會拿到
+        **新的 rowid 配舊的時間戳**，看時間會以為還是停擺。rowid 是單調遞增的
+        寫入計數，它不動就是真的沒有新資料寫進來。
+
+        max(rowid) 走 rowid 索引，是 O(1)，可以放心每分鐘問一次。
+        """
+        row = self.connect().execute(
+            "SELECT COALESCE(max(rowid), 0) FROM _message"
+        ).fetchone()
+        return int(row[0] or 0)
+
     def fetch_after(
         self,
         chat: ResolvedLineChat,
