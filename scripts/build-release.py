@@ -9,7 +9,9 @@
 產出：
   macOS    dist/installers/GoldCopyTrader-Member-<版本>-macOS.dmg
   Windows  dist/installers/GoldCopyTrader-Member-<版本>-Windows.exe
-  MT5 EA   dist/installers/MT5_File_Bridge_Enhanced.mq5
+  MT5 EA   dist/installers/MT5_File_Bridge_Enhanced.ex5（+ .mq5 原始碼）
+           —— 正常情況會員不會用到，程式會自己把 .ex5 裝進 MT5；
+              留著是自動設定失敗時的手動後備
 
 只有會員端會發出去。訊號中心跑在自己的中央機上，要更新時加 --central 另外建。
 
@@ -42,7 +44,7 @@ for _stream in (sys.stdout, sys.stderr):
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
 OUT = DIST / "installers"
-VERSION = "1.3.2"
+VERSION = "1.4.0"
 
 # slug 只用在發布檔名上。GitHub Release 會把非 ASCII 從資產名稱剝掉，
 # 「黃金跟單會員端_1.0.1_Windows.exe」和「黃金訊號中心_1.0.1_Windows.exe」
@@ -93,10 +95,25 @@ def preflight(plat: str) -> None:
     except ImportError:
         raise SystemExit("缺 PyInstaller。先跑：pip install pyinstaller")
 
-    ea = ROOT / "mt5_ea" / "MT5_File_Bridge_Enhanced.mq5"
-    if not ea.is_file():
-        raise SystemExit(f"找不到 EA 原始碼：{ea}")
-    log(f"EA 原始碼 {ea.stat().st_size // 1024} KB")
+    ea_src = ROOT / "mt5_ea" / "MT5_File_Bridge_Enhanced.mq5"
+    ea_bin = ROOT / "mt5_ea" / "MT5_File_Bridge_Enhanced.ex5"
+    if not ea_src.is_file():
+        raise SystemExit(f"找不到 EA 原始碼：{ea_src}")
+    # **.ex5 才是會出貨的那個。** 會員端安裝時把它複製進 MQL5\Experts，會員
+    # 不用開 MetaEditor 編譯。缺了它或它比原始碼舊，安裝檔就會帶著舊的下單
+    # 邏輯出貨 —— 而且完全看不出來，會員那邊只會表現成「行為跟說明不一樣」。
+    if not ea_bin.is_file():
+        raise SystemExit(
+            f"找不到編譯好的 EA：{ea_bin}\n"
+            "請先編譯：<任一台 MT5>\\metaeditor64.exe /compile:\"" + str(ea_src) + "\""
+        )
+    if ea_bin.stat().st_mtime < ea_src.stat().st_mtime:
+        raise SystemExit(
+            f"{ea_bin.name} 比 {ea_src.name} 舊 —— 改過程式碼但沒重新編譯。\n"
+            "請先編譯：<任一台 MT5>\\metaeditor64.exe /compile:\"" + str(ea_src) + "\""
+        )
+    log(f"EA 原始碼 {ea_src.stat().st_size // 1024} KB"
+        f"／已編譯 {ea_bin.stat().st_size // 1024} KB")
 
     # 打包當下匯入一次，讓相依問題現在就炸，而不是等會員按下按鈕才炸
     sys.path.insert(0, str(ROOT))
@@ -214,13 +231,21 @@ def make_installer(role: str) -> Path | None:
 
 
 def copy_member_ea() -> Path:
-    """把安裝包內同一份 EA 另外輸出，方便會員直接複製進 MT5。"""
-    source = ROOT / "mt5_ea" / "MT5_File_Bridge_Enhanced.mq5"
+    """把安裝包內同一份 EA 另外輸出，當作出問題時的後備。
+
+    正常情況下會員根本不會碰到這兩個檔 —— 程式會自己把 .ex5 裝進 MQL5\\Experts。
+    留著是為了自動設定失敗時，客服可以請會員手動複製 .ex5 進去（仍然不用編譯）。
+    .mq5 一起放，讓想確認「這支 EA 到底做了什麼」的人看得到原始碼。
+    """
     OUT.mkdir(parents=True, exist_ok=True)
-    target = OUT / source.name
-    shutil.copy2(source, target)
-    log(f"{target.name}（{target.stat().st_size // 1024} KB）")
-    return target
+    made: list[Path] = []
+    for name in ("MT5_File_Bridge_Enhanced.ex5", "MT5_File_Bridge_Enhanced.mq5"):
+        source = ROOT / "mt5_ea" / name
+        target = OUT / name
+        shutil.copy2(source, target)
+        log(f"{target.name}（{target.stat().st_size // 1024} KB）")
+        made.append(target)
+    return made[0]
 
 
 # ---------------------------------------------------------------- 冒煙測試
