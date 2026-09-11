@@ -1429,6 +1429,22 @@ body[data-role="admin"] .signal-only { display: none; }
 /* 表格在窄視窗要能自己捲，不要把整頁撐橫 */
 .mbr-scroll { overflow-x: auto; }
 
+/* 「操作」是會員列表的第 14 欄。表格要橫向捲，所以在多數螢幕上那一整欄
+   （續期／改等級／停權／重設密碼／踢下線／刪除）預設是看不到的 —— 使用者
+   得先發現有橫向捲軸、再一路捲到底才碰得到，等於那些按鈕不存在。
+   釘在右緣，捲到哪都看得到。hover 時背景要跟著列變，否則滑過去會看到
+   一塊顏色不一樣的方塊。 */
+.mbr-scroll table th:last-child,
+.mbr-scroll table td:last-child {
+  position: sticky; right: 0;
+  background: var(--card);
+  box-shadow: -8px 0 8px -8px rgba(0, 0, 0, .45);
+}
+/* 表頭本來就有 sticky top，再加 right 就同時釘在右上角。背景要跟其他表頭
+   一致（--card），不然那一格會變成另一個顏色的方塊。 */
+.mbr-scroll table thead th:last-child { z-index: 2; }
+.mbr-scroll table tbody tr:hover td:last-child { background: var(--sunk); }
+
 /* IB 客戶總覽的統計列 */
 .ib-stats {
   display: flex; flex-wrap: wrap; gap: var(--s-3);
