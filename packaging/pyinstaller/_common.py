@@ -42,6 +42,9 @@ _CENTRAL = [
     # 訊號），這種延遲 import 不保證被靜態分析抓到，明確列出來。
     "copy_trader.central.bar_store",
     "copy_trader.central.exec_shadow",
+    # 部位鏡像。同樣是函式裡才 import（壞掉不能影響 LINE 訊號流），
+    # 漏了的話打包後只會寫一行「部位鏡像未啟用」，超高頻就靜靜不發。
+    "copy_trader.central.mirror_collector",
     "copy_trader.backtest",
     "copy_trader.backtest.engine",
     "apsw",

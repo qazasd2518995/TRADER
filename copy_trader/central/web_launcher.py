@@ -195,6 +195,8 @@ class LauncherState:
         # already_published）不能讓社群收到第二則一模一樣的訊號。
         self.line_desktop = None
         self._line_desktop_seen: Dict[str, float] = {}
+        # 部位鏡像收集器。服務啟動時才建；沒啟用就是 None。
+        self.mirror = None
         # 「整庫多久沒有新列」的追蹤狀態，見 _line_quiet_seconds。
         self._line_rowid_seen = 0
         self._line_rowid_at = 0.0
@@ -246,6 +248,13 @@ class LauncherState:
                 # window 留空代表不發；填的是那個聊天視窗的標題（＝聊天室名稱）。
                 "line_desktop_notify": "false",
                 "line_desktop_window": "",
+                # 部位鏡像：把一個別人在操作的 MT5 帳戶即時抄成超高頻訊號。
+                # files_dir 指向那個帳戶的 MQL5\Files（**只讀**，永遠不對它下單）。
+                # 預設關閉：開著就會真的把別人的單發給所有旗艦版會員。
+                "mirror_enabled": "false",
+                "mirror_files_dir": "",
+                "mirror_symbol": "XAUUSD",
+                "mirror_comment_filter": "",
                 "cloudflare_tunnel": "true",
                 "cloudflared_path": "",
                 "auto_start": "false",
@@ -870,6 +879,29 @@ class LauncherState:
             elif window_title:
                 logger.info("LINE 社群播報已設定但未開啟：%s", window_title)
 
+            # 部位鏡像：把一個「別人在操作的 MT5 帳戶」即時抄成超高頻訊號。
+            # 只讀那個帳戶的 positions.json，永遠不對它下單 —— 它是實倉，
+            # 而且不是我們的錢。跟 LINE 那條 pipeline 完全獨立，任何一邊壞掉
+            # 都不該影響另一邊。
+            self.mirror = None
+            mirror_dir = str(self.settings.get("mirror_files_dir") or "").strip()
+            if _truthy(self.settings.get("mirror_enabled")) and mirror_dir:
+                try:
+                    from copy_trader.central import membership
+                    from copy_trader.central.mirror_collector import MirrorCollector
+
+                    self.mirror = MirrorCollector(
+                        mirror_dir, publisher.publish,
+                        source=membership.ULTRA_HIGH_FREQ,
+                        symbol=str(self.settings.get("mirror_symbol") or "XAUUSD"),
+                        comment_filter=str(self.settings.get("mirror_comment_filter") or ""),
+                    )
+                    logger.info("部位鏡像已啟用（唯讀）：%s", mirror_dir)
+                except Exception as exc:            # noqa: BLE001
+                    logger.warning("部位鏡像未啟用（不影響其他訊號）：%s", exc)
+            elif mirror_dir:
+                logger.info("部位鏡像已設定但未開啟：%s", mirror_dir)
+
             # LINE 與市場模型共用 Hub，但不是同一條資料 pipeline。LINE DB
             # 尚未登入、資料庫暫時鎖住或金鑰錯誤時，模型仍應照常維護掛單與撤單；
             # collector 在背景每十秒重試初始化，不阻擋第三來源。
@@ -909,6 +941,17 @@ class LauncherState:
                     except Exception as exc:
                         next_line_init_at = time.monotonic() + 10.0
                         logger.warning("LINE pipeline 尚未就緒，10 秒後重試；第三來源不受影響：%s", exc)
+                # 部位鏡像。放在 LINE 擷取之前：來源是市價進出的高頻策略，
+                # 每多一秒就是滑價，不該排在別人後面等。壞掉只記 log ——
+                # 它是加值來源，不能拖垮 LINE 那條主訊號流。
+                if self.mirror is not None:
+                    try:
+                        mirrored = self.mirror.run_cycle()
+                        if mirrored:
+                            logger.info("部位鏡像本輪發布 %s 個事件", mirrored)
+                    except Exception as exc:        # noqa: BLE001
+                        logger.warning("部位鏡像出錯（不影響 LINE 訊號）：%s", exc)
+
                 if collector is not None:
                     try:
                         published = collector.run_cycle()
