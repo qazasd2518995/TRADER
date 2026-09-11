@@ -12,16 +12,17 @@ from pathlib import Path
 
 ROOT = Path(SPECPATH).parents[1]
 sys.path.insert(0, str(Path(SPECPATH)))
-from _common import hidden, datas, excludes, collect_apsw   # noqa: E402
+from _common import hidden, datas, excludes, collect_apsw, collect_uia   # noqa: E402
 
 _apsw_datas, _apsw_bins, _apsw_hidden = collect_apsw()
+_uia_datas, _uia_bins, _uia_hidden = collect_uia()
 
 a = Analysis(
     [str(ROOT / "copy_trader/central/central_signal_center_web.py")],
     pathex=[str(ROOT)],
-    binaries=_apsw_bins,
-    datas=datas(ROOT, "central") + _apsw_datas,
-    hiddenimports=hidden("central", "windows") + _apsw_hidden,
+    binaries=_apsw_bins + _uia_bins,
+    datas=datas(ROOT, "central") + _apsw_datas + _uia_datas,
+    hiddenimports=hidden("central", "windows") + _apsw_hidden + _uia_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
