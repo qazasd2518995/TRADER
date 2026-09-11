@@ -97,10 +97,46 @@ class FormatSignalTests(unittest.TestCase):
             },
         })
         self.assertIn("訊號未掛單", text)
-        self.assertIn("焦點利潤(yuyu)｜點位關係錯誤", text)
+        self.assertIn("高頻交易｜點位關係錯誤", text)
         self.assertIn("進場 4374｜止損 4469｜止盈 4480／4485／4490", text)
         self.assertIn("買單必須符合「止損 < 進場 < 止盈」", text)
         self.assertIn("系統未發送掛單", text)
+
+    def test_notices_never_leak_the_chat_room_name(self):
+        """通知只能出現交易頻率，不能出現提供者的群組名或暱稱。
+
+        record["source"] 是 LINE 聊天室的名字 —— 它是會員端設定的 key、也是
+        Hub 過濾等級的依據，但一旦印進通知，等於把訊號來源的群組名發給每一位
+        會員。訊號改由社群播報之後，這件事的代價更高：社群是公開的。
+        """
+        from copy_trader.central import membership
+
+        rooms = {membership.HIGH_FREQ: "高頻交易", membership.MID_FREQ: "中頻交易"}
+        for room, label in rooms.items():
+            for record in (
+                {"type": "signal", "source": room,
+                 "signal": {"direction": "buy", "symbol": "XAUUSD", "entry_price": 4400,
+                            "stop_loss": 4390, "take_profit": [4410]}},
+                {"type": "signal_rejected", "source": room,
+                 "parse_status": "rejected_missing_entry",
+                 "signal": {"direction": "buy", "stop_loss": 4390}},
+                {"type": "cancel_signal", "source": room,
+                 "cancel_reason": "line_reply", "target_signals": [{"entry_price": 4400}]},
+            ):
+                text = format_signal_notice(record) or ""
+                with self.subTest(kind=record["type"], room=room):
+                    self.assertIn(label, text)
+                    self.assertNotIn(room, text)
+                    for leaked in ("yuyu", "焦點", "言群"):
+                        self.assertNotIn(leaked, text)
+
+    def test_unknown_source_falls_back_to_a_safe_word(self):
+        """沒登記的來源要退成「訊號」，不能把原始名字漏出去。"""
+        text = format_signal_notice({
+            "type": "cancel_signal", "source": "乘🈲黃金報單群（新）",
+            "cancel_reason": "line_reply", "target_signals": [{"entry_price": 4400}]})
+        self.assertIn("訊號｜引用撤單", text)
+        self.assertNotIn("黃金報單群", text)
 
     def test_missing_entry_notice_uses_safe_message_preview(self):
         text = format_signal_notice({

@@ -35,6 +35,34 @@ def _http_error(code, body=b'{"message":"You have reached your monthly limit."}'
                                   __import__("io").BytesIO(body))
 
 
+class BotPushIsOffByDefaultTests(unittest.TestCase):
+    """2026-09-10 起訊號通知走社群播報，官方帳號 Bot 預設不推。
+
+    token 還在 fly secret 裡（刪掉要去 LINE 後台重發），所以「有 token」不能
+    再等於「會推播」—— 否則額度每月重置那天，Bot 會自己復活，對著舊群組
+    重新發一份，而沒有人記得它還開著。
+    """
+
+    def test_token_alone_does_not_enable_pushing(self):
+        with mock.patch.dict("os.environ",
+                             {"LINE_CHANNEL_ACCESS_TOKEN": "tok"}, clear=False), \
+             mock.patch.dict("os.environ", {"LINE_BOT_PUSH_ENABLED": ""}, clear=False):
+            tmp = TemporaryDirectory()
+            st = LineNotifyState(Path(tmp.name) / "line.json")
+            self.assertFalse(st.enabled)
+            self.assertEqual(st.push_text("不該送出去"), 0)
+            tmp.cleanup()
+
+    def test_explicit_opt_in_brings_the_bot_back(self):
+        with mock.patch.dict("os.environ",
+                             {"LINE_CHANNEL_ACCESS_TOKEN": "tok",
+                              "LINE_BOT_PUSH_ENABLED": "1"}, clear=False):
+            tmp = TemporaryDirectory()
+            st = LineNotifyState(Path(tmp.name) / "line.json")
+            self.assertTrue(st.enabled)
+            tmp.cleanup()
+
+
 class PushFailureIsVisibleTests(unittest.TestCase):
     def test_quota_exhausted_leaves_a_readable_reason(self):
         st = _state()

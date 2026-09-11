@@ -46,6 +46,27 @@ ULTRA_HIGH_FREQ = "超高頻交易"     # 市場資料模型；不是 LINE 聊�
 # 收到第一筆訊號之前它就是一個「已授權但還沒有訊號」的來源, 不會下單。
 LOW_FREQ = "低頻交易"
 
+# 對外顯示名稱。上面那些 name 是 LINE 聊天室的名字 —— 拿它當 key 沒問題
+# (會員端的來源設定、Hub 的等級過濾都靠它)，但**絕不能被會員看到**：
+# 報單通知、手機控制台、社群播報一律只出現交易頻率，不出現提供者的群組名
+# 或暱稱。順序跟電腦版一樣：低頻、中頻、高頻、超高頻。
+SOURCE_LABELS: Dict[str, str] = {
+    LOW_FREQ: "低頻交易",
+    MID_FREQ: "中頻交易",
+    HIGH_FREQ: "高頻交易",
+    ULTRA_HIGH_FREQ: "超高頻交易",
+}
+
+
+def source_label(name: Any) -> str:
+    """來源名 -> 對外的頻率名稱。
+
+    對不上就回「訊號」，而不是原字串。將來新增來源時，忘記在 SOURCE_LABELS
+    登記的後果應該是「少了一個標籤」，不是「把聊天室名字漏到會員眼前」。
+    """
+    return SOURCE_LABELS.get(str(name or "").strip(), "訊號")
+
+
 TIERS: Dict[str, Dict[str, Any]] = {
     "trial": {
         "label": "體驗版",

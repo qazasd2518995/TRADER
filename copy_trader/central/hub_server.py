@@ -283,6 +283,11 @@ class CentralHeartbeat:
             "line_ok": bool(payload.get("line_ok")),
             "line_detail": str(payload.get("line_detail") or "")[:200],
             "line_cursor": str(payload.get("line_cursor") or "")[:80],
+            # 整個 LINE 資料庫多久沒有新列。line_ok/line_cursor 量的都是「讀不讀
+            # 得到那個檔案」—— LINE 沒開、被登出、或訊號端握著失效的檔案句柄時，
+            # 那兩項照樣全綠。只有這個數字看得出來訊號來源其實已經停擺。
+            # None = 訊號端還是舊版沒回報，前端要當成「不知道」而不是「正常」。
+            "line_quiet_seconds": _as_float(payload.get("line_quiet_seconds")),
             "ultra_enabled": bool(payload.get("ultra_enabled")),
             "shadow": payload.get("shadow") if isinstance(payload.get("shadow"), dict) else {},
             "version": str(payload.get("version") or "")[:40],
@@ -334,6 +339,10 @@ class MemberPollTracker:
         return previous is None or (now - previous) > self.resume_gap
 
 
+def _truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _line_error_zh(code: int, detail: str) -> str:
     """把 LINE 的 HTTP 錯誤翻成後台看得懂的一句話。
 
@@ -362,7 +371,17 @@ class LineNotifyState:
 
     def __init__(self, state_path: Path, token: str = "", secret: str = ""):
         self.state_path = Path(state_path)
-        self.token = token or os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
+        # 2026-09-10：訊號通知改由訊號中心用登入中的 LINE 桌面版直接發到社群
+        # (copy_trader.central.line_desktop_sender)。官方帳號 Bot 有兩個到不了
+        # 的地方：進不去社群(OpenChat)，而且免費額度是按送達人數扣的 200 則/月
+        # —— 實際在 199/200 用完後就靜靜停掉過（那次事故就是 test_line_quota）。
+        #
+        # token 留在 fly secret 不動（從 fly 讀不回來，刪掉要去 LINE 後台重發），
+        # 但預設不再從環境變數撿它。要換回 Bot：把 LINE_BOT_PUSH_ENABLED 設成 1。
+        env_token = ""
+        if _truthy_env("LINE_BOT_PUSH_ENABLED"):
+            env_token = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
+        self.token = token or env_token
         self.secret = secret or os.environ.get("LINE_CHANNEL_SECRET", "")
         self._lock = threading.Lock()
         self._groups: Dict[str, Dict[str, Any]] = {}
@@ -588,7 +607,9 @@ def _rejection_copy(record: Dict[str, Any], signal: Dict[str, Any]) -> tuple[str
 def format_signal_notice(record: Dict[str, Any]) -> Optional[str]:
     """把 Hub 訊號 record 轉成給會員看的 LINE 通知文字。None = 不通知。"""
     when = _fmt_time(record.get("message_time"))
-    source = str(record.get("source") or "訊號").strip()
+    # 只出現交易頻率。record["source"] 是 LINE 聊天室的名字，直接印出去等於
+    # 把提供者的群組名交給每一位會員 —— 跟 /me 的 all_sources 同一條規矩。
+    source = membership.source_label(record.get("source"))
     if record.get("type") == "cancel_signal":
         reason = record.get("cancel_reason")
         label = "訊息收回" if reason == "line_unsent" else "引用撤單"
@@ -642,7 +663,9 @@ def format_signal_notice(record: Dict[str, Any]) -> Optional[str]:
     tp_str = "／".join(_fmt_point(value) for value in tps) if tps else "—"
     lines = [
         f"📌 新訊號{f' · {when}' if when else ''}",
-        f"{symbol} {dir_zh}",
+        # 標上交易頻率(不是聊天室名)。社群裡各等級的會員混在一起，沒有這個
+        # 就分不出這筆歸不歸自己 —— 撤單與未掛單通知本來就有，新訊號沒有。
+        f"{source}｜{symbol} {dir_zh}",
         f"進場 {_fmt_point(entry)}｜止損 {_fmt_point(sl)}｜止盈 {tp_str}",
     ]
     repair_line = _repair_notice(sig.get("repair"))
@@ -821,12 +844,7 @@ class HubRequestHandler(BaseHTTPRequestHandler):
             # 一律叫交易頻率，不出現提供者的群組名或暱稱。
             "all_sources": [
                 {"name": name, "label": label, "need": _tier_needed(name)}
-                for name, label in (
-                    (membership.LOW_FREQ, "低頻交易"),
-                    (membership.MID_FREQ, "中頻交易"),
-                    (membership.HIGH_FREQ, "高頻交易"),
-                    (membership.ULTRA_HIGH_FREQ, "超高頻交易"),
-                )
+                for name, label in membership.SOURCE_LABELS.items()
             ],
             "tier_labels": {k: membership.TIERS[k]["label"] for k in membership.TIER_ORDER},
             "min_password_length": membership.MIN_PASSWORD_LENGTH,
@@ -1482,9 +1500,12 @@ def run_server(host: str, port: int, store_path: Path, token: str = "",
     heartbeat = CentralHeartbeat()
     line = LineNotifyState(store_path.parent / "line_notify_state.json")
     if line.enabled:
-        logger.info("LINE 通知已啟用（已登記 %d 個群組）", len(line.target_groups()))
+        logger.info("LINE 官方帳號推播已啟用（已登記 %d 個群組）", len(line.target_groups()))
+    elif os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"):
+        logger.info("LINE 官方帳號推播已停用：訊號通知改由訊號中心的社群播報發送"
+                    "（要換回來就設 LINE_BOT_PUSH_ENABLED=1）")
     else:
-        logger.info("LINE 通知未啟用（未設 LINE_CHANNEL_ACCESS_TOKEN）")
+        logger.info("LINE 官方帳號推播未啟用（未設 LINE_CHANNEL_ACCESS_TOKEN）")
 
     # 會員資料庫壞掉不該讓整個 Hub 起不來 —— 訊號流是核心, 會員系統是加值。
     # 起不來就退回「只認管理 token」的舊行為, 並把錯誤大聲印出來。
