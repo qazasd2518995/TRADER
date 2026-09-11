@@ -295,6 +295,43 @@ class TradeManager:
 
         return signal_id
 
+    def close_signal_positions(self, signal_id: str, reason: str = "mirror_close") -> bool:
+        """把這個訊號對應的部位**立刻市價平掉**。
+
+        跟 cancel_pending_order 是相反的兩件事，不要混用：
+          cancel_pending_order  只刪未成交掛單，永遠不碰已成交部位
+          close_signal_positions 只平已成交部位（沒成交的交給撤單處理）
+
+        這是給「部位鏡像」用的 —— 來源帳戶(代理商操作)沒有 SL/TP，出場完全由
+        它自己決定，所以我們必須在它平倉的當下跟著平。晚幾秒就是滑價，晚很久
+        就是把一筆已實現獲利放成虧損。
+
+        回 False 代表「還不能確認，下一輪再試」—— 呼叫端不可以推進 Hub 序號，
+        否則這筆平倉就永遠掉了。
+        """
+        with self._lock:
+            order = self.orders.get(signal_id)
+            if order is None:
+                # 本來就沒跟到這一單（來源開倉時我們可能被風控擋掉或還沒上線）。
+                # 沒有部位要平，算完成 —— 不能一直重試卡住整條 Hub 序列。
+                return True
+            if order.status in (OrderStatus.CLOSED, OrderStatus.CANCELLED,
+                                OrderStatus.REJECTED, OrderStatus.FAILED):
+                return True
+            if order.status in (OrderStatus.PENDING, OrderStatus.SENT) and order.ticket is None:
+                # 指令送出去了但 MT5 還沒回 ticket。這時平不了，也不能放棄。
+                return False
+            ticket = order.ticket
+        if ticket is None:
+            return False
+        ok = self._close_position(int(ticket))
+        if ok:
+            logger.info("鏡像平倉已送出：signal=%s ticket=%s reason=%s",
+                        signal_id, ticket, reason)
+        else:
+            logger.warning("鏡像平倉送不出去：signal=%s ticket=%s", signal_id, ticket)
+        return ok
+
     def cancel_pending_order(self, signal_id: str, reason: str = "line_reply") -> bool:
         """Handle one exact LINE cancellation without ever closing a position.
 

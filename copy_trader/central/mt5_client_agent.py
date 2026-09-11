@@ -169,13 +169,21 @@ def _sl_tp_consistent(signal: ParsedSignal) -> bool:
     return True
 
 
-def _is_executable_signal(signal: ParsedSignal) -> bool:
+def _is_executable_signal(signal: ParsedSignal, *, managed_exit: bool = False) -> bool:
+    """這筆訊號能不能下單。
+
+    managed_exit=True 是「部位鏡像」：出場由來源帳戶驅動（它平我們就平），
+    所以沒有 SL/TP 是**正常的**，不是解析失敗。只有這種訊號才豁免 ——
+    一般 LINE 訊號沒讀到停損就是解析出問題，那種必須擋下來，不能讓一個
+    沒有停損的部位進到系統裡（見 signals-always-limit 的同一個道理）。
+    """
     has_entry = signal.entry_price is not None or bool(signal.is_market_order)
+    if not (signal.is_valid and signal.direction in {"buy", "sell"} and has_entry):
+        return False
+    if managed_exit:
+        return True
     return bool(
-        signal.is_valid
-        and signal.direction in {"buy", "sell"}
-        and has_entry
-        and signal.stop_loss is not None
+        signal.stop_loss is not None
         and signal.take_profit
         and _sl_tp_consistent(signal)
     )
@@ -311,6 +319,32 @@ class MT5ClientAgent:
         for item in records:
             seq = int(item.get("seq") or 0)
 
+            # 部位鏡像的平倉：來源帳戶把那個部位平掉了，我們要立刻跟著平。
+            # 跟 cancel_signal 是相反的兩件事 —— 那個只刪未成交掛單、永不碰
+            # 已成交部位；這個只平已成交部位。
+            #
+            # 跟撤單一樣，close_signal_positions 回 False 就**不推進序號**，
+            # 下一輪重試。平倉漏掉的代價比重試一次大得多：來源已經出場了，
+            # 我們還抱著，等於拿一筆已實現的結果去賭之後的行情。
+            if item.get("type") == "close_signal":
+                reason = str(item.get("close_reason") or "mirror_source_closed")
+                target_ids = [str(v) for v in (item.get("target_execution_ids") or []) if str(v)]
+                done = 0
+                try:
+                    for signal_id in target_ids:
+                        if not self.trade_manager.close_signal_positions(signal_id, reason=reason):
+                            logger.info("鏡像平倉等待 MT5 確認，保留 Hub seq=%s 下輪重試", seq)
+                            return count
+                        done += 1
+                    logger.info("收到鏡像平倉 seq=%s reason=%s → 已處理 %s/%s",
+                                seq, reason, done, len(target_ids))
+                except Exception as exc:                       # noqa: BLE001
+                    logger.exception("鏡像平倉失敗 seq=%s：%s", seq, exc)
+                    return count
+                self._mark_seq(seq)
+                count += 1
+                continue
+
             # LINE 引用撤單／原訊息收回：事件直接帶原報單的 deterministic execution ID。
             # 只撤未成交掛單，不猜方向、不撤「最近一張」、也不平已成交部位。
             if item.get("type") == "cancel_signal":
@@ -351,7 +385,11 @@ class MT5ClientAgent:
 
             payload = item.get("signal") or {}
             signal = _parsed_signal_from_payload(payload)
-            if not _is_executable_signal(signal):
+            # 部位鏡像：出場由來源帳戶驅動，沒有 SL/TP 是正常的。旗標由發布端
+            # 明確宣告，不是靠「剛好沒有 SL」推論出來的 —— 那樣會讓解析失敗的
+            # 一般訊號也被當成鏡像單放行。
+            managed_exit = bool(item.get("managed_exit"))
+            if not _is_executable_signal(signal, managed_exit=managed_exit):
                 if signal.direction in {"buy", "sell"} and not _sl_tp_consistent(signal):
                     logger.warning(
                         "rejected hub signal seq=%s: SL/TP on wrong side for %s (entry=%s sl=%s tp=%s) — skipped",
