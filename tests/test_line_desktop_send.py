@@ -232,5 +232,67 @@ class LauncherDeduplicationTests(unittest.TestCase):
         state._notify_line_desktop({"event_id": "evt-2", "type": "signal"})   # 不能爆
 
 
+
+class WindowWaitTests(unittest.TestCase):
+    """聊天視窗還沒還原時要等，不是馬上放棄。
+
+    2026-09-11 實際漏掉三則通知：使用者剛重新登入 LINE，同步下來的三筆訊號
+    通知全部送不出去 —— 當下 LINE 還沒把獨立的聊天視窗還原回來，而舊的重試
+    只等了 3 秒。等下去是安全的：播報是通知不是下單，單子由 Hub 直接發給
+    會員端，完全不經過這條路。
+    """
+
+    def setUp(self):
+        patcher = mock.patch.dict(sys.modules, {"uiautomation": _fake_uiautomation()})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        unlocked = mock.patch.object(lds, "workstation_locked", return_value=False)
+        unlocked.start()
+        self.addCleanup(unlocked.stop)
+        nosleep = mock.patch.object(lds.time, "sleep", lambda _s: None)
+        nosleep.start()
+        self.addCleanup(nosleep.stop)
+
+    def test_keeps_waiting_while_the_window_is_missing(self):
+        box = _FakeBox()
+        sender = _sender(box)
+        calls = {"n": 0}
+
+        def flaky(text, **kwargs):
+            calls["n"] += 1
+            if calls["n"] < 4:          # 前三次視窗都還沒開
+                return lds.SendResult(False, "找不到聊天視窗：測試社群（是不是被關掉了）")
+            return lds.SendResult(True, "已送出並確認", message_id="m")
+
+        sender.send = flaky
+        result = sender.send_with_retry("訊號", attempts=2)
+        self.assertTrue(result.ok, result.reason)
+        self.assertEqual(calls["n"], 4, "視窗沒開不該算進重試次數")
+
+    def test_gives_up_once_the_wait_window_closes(self):
+        box = _FakeBox()
+        sender = _sender(box)
+        sender.send = lambda text, **kw: lds.SendResult(
+            False, "找不到聊天視窗：測試社群（是不是被關掉了）")
+        result = sender.send_with_retry("訊號", attempts=2, window_wait=0.0)
+        self.assertFalse(result.ok)
+        self.assertIn("找不到聊天視窗", result.reason)
+
+    def test_other_failures_still_use_the_attempt_budget(self):
+        """「Enter 沒生效」這種等再久也不會好，不該吃掉整個等待視窗。"""
+        box = _FakeBox()
+        sender = _sender(box)
+        calls = {"n": 0}
+
+        def always_fail(text, **kwargs):
+            calls["n"] += 1
+            return lds.SendResult(False, "Enter 沒有送出訊息，輸入框仍有內容")
+
+        sender.send = always_fail
+        result = sender.send_with_retry("訊號", attempts=2)
+        self.assertFalse(result.ok)
+        self.assertEqual(calls["n"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

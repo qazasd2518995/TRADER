@@ -44,6 +44,11 @@ LINE_PROCESS = "line.exe"
 INPUT_CLASS = "AutoSuggestTextArea"     # UIA 樹裡唯一的 EditControl
 
 SEND_MIN_INTERVAL = 2.0                 # 兩則之間至少隔這麼久，免得被判洗版
+
+# 聊天視窗還沒還原時要等多久。LINE 開機自動啟動或重新登入後，要過好幾分鐘
+# 才會把獨立的聊天視窗叫回來（實測 13:09 啟動、約 13:14 才出現）。
+WINDOW_WAIT_SECONDS = 300.0
+WINDOW_POLL_SECONDS = 10.0
 RECEIPT_TIMEOUT = 20.0                  # 等 DB 回執最多這麼久
 RECEIPT_POLL = 1.0
 UIA_MAX_DEPTH = 14                      # 輸入框在第 9 層，留點餘裕
@@ -353,16 +358,37 @@ class LineDesktopSender:
                     self.window_title, rowid, message_id)
         return SendResult(True, "已送出並確認", message_id=message_id, rowid=rowid)
 
-    def send_with_retry(self, text: str, attempts: int = 2) -> SendResult:
-        """重試。草稿佔用跟螢幕鎖定屬於「等一下也不會好」，不浪費次數重試。"""
+    def send_with_retry(self, text: str, attempts: int = 2,
+                        window_wait: float = WINDOW_WAIT_SECONDS) -> SendResult:
+        """重試。草稿佔用跟螢幕鎖定屬於「等一下也不會好」，不浪費次數重試。
+
+        「找不到聊天視窗」要等久一點，而且不算進重試次數。LINE 開機自動啟動
+        或重新登入之後，要過好幾分鐘才會把獨立的聊天視窗還原回來 —— 而訊號
+        常常就在那個空檔進來。2026-09-11 實際漏掉三則通知：15:08 使用者剛登入
+        LINE，同步下來的三筆訊號通知全部送不出去，因為當下視窗還沒還原，
+        而舊的重試只等了 3 秒就放棄。
+
+        等下去是安全的：播報是**通知**，不是下單。單子由 Hub 直接發給會員端，
+        完全不經過這條路。通知晚幾分鐘到，比沒到好得多。
+        睡眠不持有鎖（鎖只在 send() 裡），所以多則通知會交錯進行，不會卡住。
+        """
+        deadline = time.time() + max(0.0, window_wait)
         result = SendResult(False, "沒有嘗試")
-        for attempt in range(1, max(1, attempts) + 1):
+        tries = 0
+        while True:
             result = self.send(text)
             if result.ok or "草稿" in result.reason or "螢幕已鎖定" in result.reason:
                 return result
-            logger.warning("LINE 桌面發送第 %s 次失敗：%s", attempt, result.reason)
+            if "找不到聊天視窗" in result.reason and time.time() < deadline:
+                logger.info("聊天視窗還沒開，%.0f 秒後再試（LINE 可能還在啟動）",
+                            WINDOW_POLL_SECONDS)
+                time.sleep(WINDOW_POLL_SECONDS)
+                continue
+            tries += 1
+            if tries >= max(1, attempts):
+                return result
+            logger.warning("LINE 桌面發送第 %s 次失敗：%s", tries, result.reason)
             time.sleep(1.5)
-        return result
 
 
 def _main() -> int:
