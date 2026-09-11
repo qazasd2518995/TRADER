@@ -32,6 +32,7 @@ CLIENT_FIELDS = """
           <label>MT5 密碼<input id="mt5_onboard_password" type="password" placeholder="只用來讓 MT5 登入一次，不會存起來" /></label>
           <label>伺服器<input id="mt5_server" placeholder="例如 Exness-MT5Real43" /></label>
           <label>黃金商品代號<input id="mt5_symbol" placeholder="XAUUSD247m" /></label>
+          <label class="field-wide">MT5 安裝資料夾<input id="mt5_install_dir" placeholder="留空自動尋找；裝在非預設位置才需要填" /></label>
         </div>
         <div class="inline-actions">
           <button class="btn" id="setupMt5" type="button">一鍵設定並啟動 MT5</button>
@@ -2415,7 +2416,7 @@ function ids() {
     // MT5 連線那三格要回填(會員重開設定頁時看得到自己填過什麼)也要存檔。
     // **密碼的 id 是 mt5_onboard_password，刻意不在這個清單裡** —— 它不該被
     // collect() 收走、不該進 settings.json、也不該在 fill() 時被寫回畫面。
-    : ["source_profiles", "auto_schedules", "mt5_login", "mt5_server", "mt5_symbol"];
+    : ["source_profiles", "auto_schedules", "mt5_login", "mt5_server", "mt5_symbol", "mt5_install_dir"];
 }
 function collect() {
   const out = {};
@@ -6052,6 +6053,7 @@ if ($("setupMt5")) {
         password: password,
         server: $("mt5_server").value.trim(),
         symbol: $("mt5_symbol").value.trim(),
+        mt5_path: $("mt5_install_dir").value.trim(),
       });
       result.textContent = (response.ok ? "✅ " : "❌ ") + (response.reason || "");
       if (response.ok) $("mt5_onboard_password").value = "";

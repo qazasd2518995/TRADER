@@ -40,6 +40,10 @@ logger = logging.getLogger(__name__)
 EA_NAME = "MT5_File_Bridge_Enhanced"
 EA_FILE = f"{EA_NAME}.ex5"
 
+# 找不到 MT5 時要給會員的去處。給官方頁面而不是直連的 .exe：直連網址會變，
+# 而「從我們的程式自動抓一個執行檔下來靜默執行」本身就不是該做的事。
+MT5_DOWNLOAD_PAGE = "https://www.exness.com/metatrader-5/"
+
 # 橋接檔比這個新就當作 MT5 已經在正常運作，不要再啟動一次。
 FRESH_SECONDS = 90.0
 
@@ -92,15 +96,26 @@ def find_terminal(configured: str = "") -> Optional[Path]:
 
 
 def _default_install_dirs() -> list[Path]:
-    """安裝檔會把 MT5 裝在這裡；也順手找一下標準安裝位置。"""
+    """可能裝著 MT5 的資料夾，由最可能到最不可能。
+
+    **不能只找「MetaTrader 5」這個名字。** 券商版會裝成自己的名字 ——
+    Exness 的是「MetaTrader 5 EXNESS」，別家又不一樣，而且同一台可能同時
+    裝了好幾個。用 glob 把 MetaTrader 5* 都撈出來，交給呼叫端挑第一個裝得
+    起來的。會員自己在設定裡指定路徑時完全不會走到這裡。
+    """
     out: list[Path] = []
     local = os.environ.get("LOCALAPPDATA")
     if local:
-        out.append(Path(local) / "黃金跟單MT5")
-    for env in ("ProgramFiles", "ProgramFiles(x86)"):
+        out.append(Path(local) / "黃金跟單MT5")     # 我們自己裝的位置優先
+    for env in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"):
         base = os.environ.get(env)
-        if base:
-            out.append(Path(base) / "MetaTrader 5")
+        if not base:
+            continue
+        try:
+            out.extend(sorted(p for p in Path(base).glob("MetaTrader 5*")
+                              if p.is_dir()))
+        except OSError:
+            continue
     return out
 
 
@@ -229,8 +244,16 @@ def onboard(*, mt5_path: str, login: str, password: str, server: str,
 
     terminal = find_terminal(mt5_path)
     if terminal is None:
-        return OnboardResult(False, "找不到 MT5（terminal64.exe）。請確認已安裝，"
-                                    "或在設定裡指定安裝資料夾")
+        # 刻意不自動下載安裝檔。那需要從網路抓一個執行檔然後靜默跑起來，
+        # 而券商的下載網址沒有可驗證的固定位置 —— 網址失效或被換掉，等於在
+        # 會員的電腦上靜默執行不明程式。開戶本來就要去券商網站，順手裝 MT5
+        # 是同一趟，而且那一步只是下一步下一步，沒有任何要設定的東西。
+        return OnboardResult(
+            False,
+            f"這台電腦上找不到 MT5。請先到 {MT5_DOWNLOAD_PAGE} 下載安裝，"
+            "裝好之後回來再按一次這個按鈕就會自動接手。"
+            "（如果你裝在非預設位置，把資料夾填進「MT5 安裝資料夾」）",
+        )
 
     if bridge_is_fresh(terminal):
         # 已經在跑而且 EA 正常。再啟動一次只會多一個實例、多一份下單風險。

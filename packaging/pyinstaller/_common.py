@@ -18,6 +18,10 @@ _CLIENT = [
     "copy_trader.central.mt5_client_agent",
     "copy_trader.trade_manager.manager",
     "copy_trader.signal_parser.regex_parser",
+    # MT5 一鍵設定。web_launcher 是在函式裡才 import（設定過程壞掉不能讓整個
+    # 會員端起不來），這種延遲 import 不保證被靜態分析抓到 —— 漏了的話按鈕
+    # 會回「No module named ...」，而那要等到會員真的按下去才發現。
+    "copy_trader.central.mt5_onboard",
 ]
 
 _CENTRAL = [
