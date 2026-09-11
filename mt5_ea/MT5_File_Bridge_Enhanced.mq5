@@ -557,6 +557,13 @@ void WriteClosedTrades()
 
       double entry_price = 0;
       datetime open_time = 0;
+      // 部位本身的方向，由**進場**那筆成交決定。
+      //
+      // 上面那個 deal_type 是 DEAL_ENTRY_OUT，也就是平倉成交，而平倉成交的
+      // 方向跟部位永遠相反（賣出平掉買單）。舊版 change_percent 直接拿它算，
+      // 所以每一筆的正負號都是反的 —— 用數字驗得出來：進 4346.89 → 出
+      // 4351.16、損益 +8.54，價格上漲而且賺錢，那是 buy，但舊版算出 -0.10%。
+      long position_type = -1;
       double sl = 0;
       double tp = 0;
       double total_position_profit = 0;
@@ -575,6 +582,7 @@ void WriteClosedTrades()
             {
                entry_price = HistoryDealGetDouble(related_ticket, DEAL_PRICE);
                open_time = (datetime)HistoryDealGetInteger(related_ticket, DEAL_TIME);
+               position_type = HistoryDealGetInteger(related_ticket, DEAL_TYPE);
             }
             total_position_profit += HistoryDealGetDouble(related_ticket, DEAL_PROFIT);
             total_position_swap += HistoryDealGetDouble(related_ticket, DEAL_SWAP);
@@ -604,11 +612,17 @@ void WriteClosedTrades()
          }
       }
       
+      // 找不到進場成交時（歷史視窗只有 30 天，更早開的部位會被切掉）退而求
+      // 其次：把平倉成交的方向反過來。那一定是對的，因為平倉永遠是反向成交。
+      long dir = position_type;
+      if(dir < 0)
+         dir = (deal_type == DEAL_TYPE_BUY) ? DEAL_TYPE_SELL : DEAL_TYPE_BUY;
+
       double change_percent = 0;
       if(entry_price > 0)
       {
-         if(deal_type == DEAL_TYPE_BUY) change_percent = ((price - entry_price) / entry_price) * 100.0;
-         else                            change_percent = ((entry_price - price) / entry_price) * 100.0;
+         if(dir == DEAL_TYPE_BUY) change_percent = ((price - entry_price) / entry_price) * 100.0;
+         else                      change_percent = ((entry_price - price) / entry_price) * 100.0;
       }
       
       if(json != "{\"timestamp\":" + IntegerToString(TimeCurrent()) + ",\"trades\":[")
@@ -622,7 +636,11 @@ void WriteClosedTrades()
       // 只有 closed_trades.json 漏了。
       json += "\"magic\":" + IntegerToString((int)deal_magic) + ",";
       json += "\"symbol\":\"" + symbol + "\",";
+      // type 維持「平倉成交的方向」不動 —— 下游(stats._position_side)已經在
+      // 補償它，而且會員機器上跑著各種舊版 EA，翻轉既有欄位會讓新舊混用時
+      // 兩邊都壞。改成新增一個意思明確的欄位，讓新的消費端直接用。
       json += "\"type\":\"" + (deal_type == DEAL_TYPE_BUY ? "buy" : "sell") + "\",";
+      json += "\"position_type\":\"" + (dir == DEAL_TYPE_BUY ? "buy" : "sell") + "\",";
       json += "\"volume\":" + DoubleToString(volume, 2) + ",";
       json += "\"entry_price\":" + DoubleToString(entry_price, 5) + ",";
       json += "\"exit_price\":" + DoubleToString(price, 5) + ",";

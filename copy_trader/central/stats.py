@@ -541,13 +541,22 @@ def _load_ea_sources(settings: Dict[str, Any]) -> Dict[str, str]:
     return out
 
 
-def _position_side(close_deal_type: Any) -> str:
-    """從「平倉成交的方向」還原出當初持倉的方向。
+def _position_side(close_deal_type: Any, position_type: Any = None) -> str:
+    """還原這筆成交當初持倉的方向。
 
-    MT5 的歷史成交記的是成交本身的方向：平掉一張買單是靠「賣出」成交完成的，
-    所以 closed_trades.json 裡 type=sell 的那筆，當初下的其實是買單。
-    直接拿 type 當方向顯示，每一筆都會是相反的。
+    新版 EA 會直接寫 position_type（進場那筆成交的方向），有就用它 —— 意思
+    明確，不用推。
+
+    沒有的話走舊路：MT5 的歷史成交記的是成交本身的方向，平掉一張買單是靠
+    「賣出」成交完成的，所以 closed_trades.json 裡 type=sell 的那筆，當初
+    下的其實是買單。直接拿 type 當方向顯示，每一筆都會是相反的。
+
+    兩條路都留著是因為會員機器上跑著各種版本的 EA。只認新欄位的話，還沒
+    更新的人整個績效表的買賣方向會全部變空白。
     """
+    direct = str(position_type or "").strip().lower()
+    if direct in ("buy", "sell"):
+        return direct
     raw = str(close_deal_type or "").strip().lower()
     if raw in ("buy", "0"):
         return "sell"
@@ -658,9 +667,9 @@ def build_stats(
             "position_id": raw.get("position_id"),
             "signal_id": signal_id,
             "symbol": raw.get("symbol") or "",
-            # closed_trades 的 type 是「平倉成交」的方向，跟持倉方向相反
-            # （平掉買單靠賣出成交）。要顯示成當初下的單，必須反過來。
-            "side": _position_side(raw.get("type")),
+            # 新版 EA 直接給 position_type；舊版只有 type（平倉成交的方向，
+            # 跟持倉相反），那種要反過來才是當初下的單。
+            "side": _position_side(raw.get("type"), raw.get("position_type")),
             "volume": volume,
             "entry_price": _float(raw.get("entry_price"), 0.0),
             "exit_price": _float(raw.get("exit_price"), 0.0),

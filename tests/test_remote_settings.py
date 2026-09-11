@@ -448,10 +448,31 @@ class ConsolePageTests(_HubCase):
         self.assertIn("電腦沒開機", html)
 
     def test_page_has_no_third_party_assets(self):
-        """Hub 只有標準庫、也沒有外連資源 —— 整頁必須自帶。"""
+        """會員的瀏覽器打開這一頁時，不該對外連任何一個網址。
+
+        Hub 只有標準庫、也沒有靜態檔路由，所以 CSS/JS/圖片必須整頁自帶；
+        而且會員端的瀏覽器不該因為打開控制台就去連第三方（那等於把「誰在
+        什麼時候看了自己的帳戶」洩漏給外面的主機）。
+
+        **連結預覽的 meta 標籤是例外**：og:image / og:url / twitter:image 是
+        給 LINE、Facebook 的爬蟲讀的 metadata，瀏覽器渲染這一頁時完全不會去
+        抓它們。原本用「整頁不准出現 https://」當代理條件，把這些也一起擋掉
+        了 —— 結果是貼進社群的預覽只能由 LINE 自己抓內文拼，抓出來是登入框
+        的欄位名。所以這裡改成檢查真正會讓瀏覽器發出請求的東西。
+        """
         _s, html = self._get_html("/console")
-        for bad in ("http://", "https://", "cdn.", "<img"):
+        for bad in ("<img", "<script src=", "<link rel=\"stylesheet\"", "cdn.",
+                    "@import", "url(http"):
             self.assertNotIn(bad, html, f"頁面不該有外部資源：{bad}")
+        # 剩下的網址只能出現在預覽用的 meta 標籤裡
+        for line in html.splitlines():
+            if "http://" not in line and "https://" not in line:
+                continue
+            self.assertRegex(
+                line.strip(),
+                r'^<meta (?:property="og:|name="twitter:)',
+                f"這一行帶了網址但不是預覽用的 meta 標籤：{line.strip()[:100]}",
+            )
 
     def test_four_tabs_exist(self):
         """內容太多，切成四個分頁。少一個就是一整塊功能上不了手機。"""
