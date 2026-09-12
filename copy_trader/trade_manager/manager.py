@@ -1210,24 +1210,41 @@ class TradeManager:
 
         return success
 
-    def _write_command(self, command: dict) -> bool:
-        """Write a command to the MT5 commands file.
+    # 等 EA 消化上一筆指令的秒數。EA 的 OnTimer 每秒只處理一筆，所以一波
+    # N 筆指令至少要 N 秒才排得完 —— 2026-09-11 實際遇過 7 筆平倉擠在 6 秒
+    # 內（鏡像來源一次關掉整組網格）。5 秒太緊。
+    COMMAND_SLOT_TIMEOUT = 20.0
 
-        Waits for previous command to be consumed by EA (file contains '{}')
-        before writing, to prevent command overwrites.
+    def _write_command(self, command: dict) -> bool:
+        """把一筆指令寫進 MT5 的 commands.json。
+
+        **等不到空檔就回 False，絕對不覆蓋還沒被吃掉的指令。**
+
+        舊版等 5 秒之後「照寫並回傳 True」—— 註解寫著要避免覆蓋，程式卻正好
+        做了覆蓋，而且回報成功。後果是：呼叫端以為送出去了，Hub 序號照常推進，
+        被蓋掉的那筆永遠不會重試。
+
+        2026-09-11 實際事故：鏡像來源一次平掉 7 個部位，7 筆平倉指令在 6 秒內
+        送進來，只有 2 筆真的執行，另外 5 個部位就一直掛在對照帳號上 3 小時，
+        而日誌裡每一筆都寫著「已送出」。回 False 之後呼叫端才有機會重試 ——
+        close_signal 那條路本來就會「不推進序號、下輪重試」。
         """
+        deadline = time.time() + self.COMMAND_SLOT_TIMEOUT
         try:
-            # Wait up to 5 seconds for EA to consume the previous command
-            for _ in range(50):
+            while True:
                 try:
-                    if self.commands_file.exists():
-                        content = self.commands_file.read_text().strip()
-                        if content in ('{}', ''):
-                            break  # Previous command consumed, safe to write
-                    else:
-                        break  # File doesn't exist yet, safe to write
+                    if not self.commands_file.exists():
+                        break                      # 還沒建檔，可以寫
+                    if self.commands_file.read_text().strip() in ("{}", ""):
+                        break                      # 上一筆已被消化
                 except (PermissionError, OSError):
-                    pass  # File locked by EA, keep waiting
+                    pass                           # EA 正在寫，再等
+                if time.time() >= deadline:
+                    logger.warning(
+                        "MT5 指令槽被佔用超過 %.0f 秒，這筆不送出（避免蓋掉還沒"
+                        "執行的指令）：%s", self.COMMAND_SLOT_TIMEOUT,
+                        command.get("action"))
+                    return False
                 time.sleep(0.1)
 
             with open(self.commands_file, 'w') as f:

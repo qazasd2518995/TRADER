@@ -199,5 +199,51 @@ class ExecutionIdTests(unittest.TestCase):
             self.assertNotEqual(a.execution_id(12345), a.execution_id(12346))
 
 
+
+class CommandSlotTests(unittest.TestCase):
+    """指令槽被佔用時絕對不能覆蓋前一筆。
+
+    2026-09-11 實際事故：鏡像來源一次平掉 7 個部位，7 筆平倉指令在 6 秒內擠
+    進來。舊版 _write_command 等 5 秒之後「照寫並回傳 True」—— 註解說要避免
+    覆蓋，程式卻正好做了覆蓋，而且回報成功。結果只有 2 筆真的執行，另外 5 個
+    部位在對照帳號上掛了 3 小時，日誌裡每一筆都寫著「已送出」。
+
+    回 False 才能讓呼叫端重試 —— close_signal 那條路本來就是「不推進 Hub
+    序號、下輪再試」。
+    """
+
+    def _manager(self, tmp: Path):
+        from copy_trader.trade_manager.manager import TradeManager
+
+        m = TradeManager.__new__(TradeManager)
+        m.commands_file = tmp / "commands.json"
+        m.COMMAND_SLOT_TIMEOUT = 0.3          # 測試不等 20 秒
+        return m
+
+    def test_refuses_to_overwrite_an_unconsumed_command(self):
+        with TemporaryDirectory() as tmp:
+            m = self._manager(Path(tmp))
+            m.commands_file.write_text('{"action":"close","ticket":111}',
+                                       encoding="utf-8")
+            ok = m._write_command({"action": "close", "ticket": 222})   # noqa: SLF001
+            self.assertFalse(ok, "指令槽還有東西就不該寫入")
+            # 前一筆必須原封不動 —— 被蓋掉的那筆永遠不會有人重試
+            self.assertIn("111", m.commands_file.read_text(encoding="utf-8"))
+            self.assertNotIn("222", m.commands_file.read_text(encoding="utf-8"))
+
+    def test_writes_once_the_slot_is_free(self):
+        with TemporaryDirectory() as tmp:
+            m = self._manager(Path(tmp))
+            m.commands_file.write_text("{}", encoding="utf-8")
+            self.assertTrue(m._write_command({"action": "close", "ticket": 333}))  # noqa: SLF001
+            self.assertIn("333", m.commands_file.read_text(encoding="utf-8"))
+
+    def test_writes_when_the_file_does_not_exist_yet(self):
+        with TemporaryDirectory() as tmp:
+            m = self._manager(Path(tmp))
+            self.assertTrue(m._write_command({"action": "buy"}))        # noqa: SLF001
+            self.assertTrue(m.commands_file.is_file())
+
+
 if __name__ == "__main__":
     unittest.main()
