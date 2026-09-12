@@ -1032,11 +1032,14 @@ main { max-width: 1560px; margin: 0 auto; padding: 22px 28px 72px; }
   display: block; margin-bottom: 3px; font-size: 11px; color: var(--muted);
 }
 .src-table .sp-be-wrap input { width: 100%; min-width: 0; box-sizing: border-box; text-align: center; }
-.src-table .sp-base-wrap, .src-table .sp-risk-wrap { display: block; min-width: 92px; }
-.src-table .sp-base-wrap span, .src-table .sp-risk-wrap span {
+.src-table .sp-base-wrap, .src-table .sp-risk-wrap,
+.src-table .sp-sratio-wrap { display: block; min-width: 92px; }
+.src-table .sp-base-wrap span, .src-table .sp-risk-wrap span,
+.src-table .sp-sratio-wrap span {
   display: block; margin-bottom: 3px; font-size: 11px; color: var(--muted); white-space: nowrap;
 }
-.src-table .sp-risk-wrap input { text-align: center; }
+.src-table .sp-risk-wrap input,
+.src-table .sp-sratio-wrap input { text-align: center; }
 
 /* ── 自動排程 ─────────────────────────────────────────────────────── */
 .sched-table { width: 100%; min-width: 520px; border-collapse: collapse; font-size: 13px; }
@@ -2924,7 +2927,8 @@ function renderSourcePerformance(trades, sourceRows) {
       // 徽章改看交易本身的 mode——同一個來源的交易 mode 一定一致
       const isEaNative = !cfg.mode && list[0] && list[0].mode === "ea_native";
       const badge = cfg.mode === "flat" ? "均注" : cfg.mode === "martingale" ? "馬丁" :
-        cfg.mode === "risk_percent" ? "本金比例" : (isEaNative ? "EA 自動" : "");
+        cfg.mode === "risk_percent" ? "本金比例" :
+        cfg.mode === "source" ? "跟隨來源" : (isEaNative ? "EA 自動" : "");
       // 報酬率用帳戶餘額當分母。沒有「每個來源分配多少資金」這種設定，
       // 硬掰一個數字出來會比不顯示更糟。
       const bal = Number((S.stats && S.stats.account && S.stats.account.balance) || 0);
@@ -3215,29 +3219,39 @@ function renderLadder(mg, cycles, sources) {
     const on = s.source === S.ladderSource ? "is-on" : "";
     const off = s.enabled ? "" : "is-off";
     const badge = s.mode === "flat" ? "均注" :
-      s.mode === "risk_percent" ? "動態" : "第 " + (s.level + 1) + " 關";
+      s.mode === "risk_percent" ? "動態" :
+      s.mode === "source" ? "跟來源" : "第 " + (s.level + 1) + " 關";
     return '<button type="button" class="src-tab ' + on + " " + off + '" data-src="' + esc(s.source) + '">' +
       esc(srcName(s.source)) + '<span class="badge">' + badge + "</span></button>";
   }).join("");
   }
 
   $("ladderTitle").textContent = row.mode === "flat" ? "均注模式" :
-    row.mode === "risk_percent" ? "本金比例動態手數" : "馬丁階梯";
-  if (row.mode === "flat" || row.mode === "risk_percent") {
+    row.mode === "risk_percent" ? "本金比例動態手數" :
+    row.mode === "source" ? "跟隨來源手數" : "馬丁階梯";
+  if (row.mode === "flat" || row.mode === "risk_percent" || row.mode === "source") {
     $("rungs").hidden = true;
     const note = $("flatNote");
     note.hidden = false;
     const dynamic = row.mode === "risk_percent";
-    note.innerHTML = dynamic
+    const follow = row.mode === "source";
+    const ratio = Number(row.source_ratio) || 1;
+    note.innerHTML = follow
+      ? "<div><div class=\"big\">來源手數 × " + ratio + "</div>" +
+        "<p>來源那一筆下多少手，我們就照這個倍率等比例下多少；來源加碼時我們一起加碼。" +
+        "算出來不足 0.01 手會補到 0.01。</p></div>"
+      : dynamic
       ? "<div><div class=\"big\">" + Number(row.risk_percent || 0.5) + "% / 筆</div>" +
         "<p>以餘額與淨值較低者為本金，依每則訊號的進場價與 SL 即時計算；低於 0.01 手會略過。</p></div>"
       : "<div><div class=\"big\">" + lots(row.base_lot) + " 手</div>" +
         "<p>這個來源每一筆都下固定手數，輸贏都不加碼、不進關卡。</p></div>";
     $("ladderLevel").textContent = !row.enabled ? "此來源已停用，不跟單" :
+      follow ? "每筆跟著來源的手數等比例縮放" :
       dynamic ? "每筆依本金與停損距離重算" : "固定手數，不進關";
-    $("nextLot").textContent = dynamic ? "收到訊號時計算" : lots(row.base_lot) + " 手";
+    $("nextLot").textContent = (dynamic || follow) ? "收到訊號時計算" : lots(row.base_lot) + " 手";
     $("consecLoss").textContent = "—";
-    $("openCycle").textContent = dynamic ? "動態風險無回合" : "均注無回合";
+    $("openCycle").textContent = follow ? "跟隨來源無回合" :
+      dynamic ? "動態風險無回合" : "均注無回合";
     return;
   }
   $("flatNote").hidden = true;
@@ -3323,22 +3337,30 @@ function pickTpMode(source, stored) {
 
 /* 手數模式所有會員都看得到；未達等級的 option 保留在清單裡但 disabled。
    pickLotMode 也保證舊設定／竄改設定不會停在一個實際選不到的模式。 */
-function lotModeOptions() {
-  return [
+function lotModeOptions(source) {
+  const opts = [
     { v: "flat",         label: "均注",     ok: true,              need: "trial" },
     { v: "martingale",   label: "馬丁",     ok: !!ENT.martingale,  need: "advanced" },
     { v: "risk_percent", label: "本金比例", ok: !!ENT.dynamic_lot, need: "flagship" },
   ];
+  /* 「跟隨來源」只掛在訊號本身帶得出手數的來源上。超高頻是鏡像別人的帳戶，
+     看得到真實 volume；LINE 報單的訊息裡沒有手數，選了每筆都只會退回基礎
+     手數，所以那些來源連選項都不列出來。 */
+  if (source && source === ULTRA_SOURCE) {
+    opts.push({ v: "source", label: "跟隨來源", ok: !!ENT.dynamic_lot, need: "flagship" });
+  }
+  return opts;
 }
-function pickLotMode(stored) {
-  const hit = lotModeOptions().find((o) => o.v === stored && o.ok);
+function pickLotMode(stored, source) {
+  const hit = lotModeOptions(source).find((o) => o.v === stored && o.ok);
   return hit ? hit.v : "flat";
 }
 
 function blankSourceRow(name) {
   return { source: name, trades: 0, configured: false, enabled: false, mode: "flat",
            tp_mode: name === MID_SOURCE ? "single" : "partial",
-           base_lot: 0.01, risk_percent: 0.5, multiplier: 2, max_level: 5, partial_ratios: [],
+           base_lot: 0.01, risk_percent: 0.5, source_ratio: 1,
+           multiplier: 2, max_level: 5, partial_ratios: [],
            // 預設 3 美元:黃金的停損多半抓 6~10 美元，走一半再保本是常見做法。
            // 預設 0 等於「選了保本移損卻永遠不保本」，那是最糟的預設值。
            breakeven_distance: 3, max_daily_profit: 0, max_daily_loss: 0 };
@@ -3346,7 +3368,7 @@ function blankSourceRow(name) {
 
 function sourceRowHtml(r, meta, locked, need) {
   const dis = locked ? " disabled" : "";
-  const mode = pickLotMode(r.mode);
+  const mode = pickLotMode(r.mode, r.source);
   const tp = pickTpMode(r.source, r.tp_mode);
   const maxLot = ENT.max_lot;
   const lotMax = (maxLot == null || !(maxLot > 0)) ? "" : ' max="' + maxLot + '"';
@@ -3360,7 +3382,7 @@ function sourceRowHtml(r, meta, locked, need) {
     '<td><input type="checkbox" class="sp-enabled"' +
       (r.enabled && !locked ? " checked" : "") + dis + " /></td>" +
     '<td><select class="sp-mode"' + dis + ">" +
-      lotModeOptions().map((o) => optionHtml(o, mode)).join("") +
+      lotModeOptions(r.source).map((o) => optionHtml(o, mode)).join("") +
     "</select></td>" +
     '<td class="sp-size-cell">' +
       '<label class="sp-base-wrap"><span>基礎手數</span>' +
@@ -3370,6 +3392,10 @@ function sourceRowHtml(r, meta, locked, need) {
         '<input type="number" class="sp-risk" step="0.05" min="0.01" max="5"' +
         ' value="' + (Number(r.risk_percent) || 0.5) + '"' + dis +
         ' title="每筆打到停損最多承擔 min(餘額,淨值) 的百分比；允許 0.01%～5%" /></label>' +
+      '<label class="sp-sratio-wrap"><span>來源手數 ×</span>' +
+        '<input type="number" class="sp-sratio" step="0.05" min="0.01" max="1"' +
+        ' value="' + (Number(r.source_ratio) || 1) + '"' + dis +
+        ' title="來源下多少手，就照這個倍率等比例下單。1 = 照抄，0.5 = 來源的一半；只能縮小，算出來不足 0.01 手會補到 0.01" /></label>' +
     "</td>" +
     '<td><input type="number" class="sp-mult" step="0.1" min="1" value="' + r.multiplier + '"' + dis + " /></td>" +
     '<td><input type="number" class="sp-max" step="1" min="1" max="12" value="' + r.max_level + '"' + dis + " /></td>" +
@@ -3470,10 +3496,14 @@ function validateSourceLots() {
   for (const row of document.querySelectorAll("[data-source-row]")) {
     const note = row.querySelector(".sp-ratio-note");
     const mode = row.querySelector(".sp-tpmode").value;
-    const dynamic = row.querySelector(".sp-mode").value === "risk_percent";
-    if (dynamic && mode === "partial" && row.dataset.locked !== "1") {
+    const lotMode = row.querySelector(".sp-mode").value;
+    const dynamic = lotMode === "risk_percent";
+    const follow = lotMode === "source";
+    if ((dynamic || follow) && mode === "partial" && row.dataset.locked !== "1") {
       if (note) {
-        note.textContent = "總手數依本金與 SL 動態計算，再按分批比例配置（每段最低 0.01 手）";
+        note.textContent = follow
+          ? "總手數跟著來源那一筆走，再按分批比例配置（每段最低 0.01 手）"
+          : "總手數依本金與 SL 動態計算，再按分批比例配置（每段最低 0.01 手）";
         note.className = "sp-ratio-note is-ok";
       }
       continue;
@@ -3524,6 +3554,9 @@ function syncSourceProfiles() {
     const mode = row.querySelector(".sp-mode").value;
     const martingale = mode === "martingale";
     const dynamic = mode === "risk_percent";
+    // 跟隨來源跟本金比例一樣，總手數不是會員自己填的，而是每筆訊號算出來的。
+    const follow = mode === "source";
+    const sized = dynamic || follow;
     // 均注沒有倍數與關卡可言，把欄位鎖住比留著讓人填了沒作用好
     row.querySelector(".sp-mult").disabled = locked || !martingale;
     row.querySelector(".sp-max").disabled = locked || !martingale;
@@ -3539,11 +3572,15 @@ function syncSourceProfiles() {
     const baseWrap = row.querySelector(".sp-base-wrap");
     const riskWrap = row.querySelector(".sp-risk-wrap");
     const riskInput = row.querySelector(".sp-risk");
-    if (lotsInput) lotsInput.style.display = partial && !dynamic ? "" : "none";
+    const sratioWrap = row.querySelector(".sp-sratio-wrap");
+    const sratioInput = row.querySelector(".sp-sratio");
+    if (lotsInput) lotsInput.style.display = partial && !sized ? "" : "none";
     if (beWrap) beWrap.style.display = tpMode === "breakeven" ? "" : "none";
-    if (baseWrap) baseWrap.style.display = dynamic ? "none" : "block";
+    if (baseWrap) baseWrap.style.display = sized ? "none" : "block";
     if (riskWrap) riskWrap.style.display = dynamic ? "block" : "none";
     if (riskInput) riskInput.disabled = locked || !dynamic || !ENT.dynamic_lot;
+    if (sratioWrap) sratioWrap.style.display = follow ? "block" : "none";
+    if (sratioInput) sratioInput.disabled = locked || !follow || !ENT.dynamic_lot;
     const entry = {
       enabled: !locked && row.querySelector(".sp-enabled").checked,
       mode,
@@ -3552,10 +3589,12 @@ function syncSourceProfiles() {
       breakeven_distance: Math.max(0, parseFloat(beInput && beInput.value) || 0),
       // 即使切回其他模式也保留會員上次設定的百分比；真正執行仍以 mode 為準。
       risk_percent: Math.min(5, Math.max(0.01, parseFloat(riskInput && riskInput.value) || 0.5)),
+      // 只准縮小：來源的本金跟會員的無關，放大它沒有風控意義（後端也再箝制一次）。
+      source_ratio: Math.min(1, Math.max(0.01, parseFloat(sratioInput && sratioInput.value) || 1)),
       max_daily_loss: parseFloat(row.querySelector(".sp-loss").value) || 0,
       max_daily_profit: parseFloat(row.querySelector(".sp-profit").value) || 0,
     };
-    if (partial && lotsInput && !dynamic) {
+    if (partial && lotsInput && !sized) {
       const lots = parseLots(lotsInput.value);
       if (lots && lots.every((l) => l >= 0.01)) {
         const sum = pround2(lots.reduce((a, b) => a + b, 0));

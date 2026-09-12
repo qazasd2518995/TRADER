@@ -57,6 +57,11 @@ SOURCE_LABELS: Dict[str, str] = {
     ULTRA_HIGH_FREQ: "超高頻交易",
 }
 
+# 訊號本身就帶得出「來源下了幾手」的來源。只有這些能選 mode="source"
+# （跟隨來源手數）—— LINE 報單的訊息裡沒有手數，選了每筆都只會退回基礎手數。
+# 超高頻是鏡像別人的帳戶，positions.json 裡看得到真實 volume。
+SOURCE_VOLUME_SOURCES = frozenset({ULTRA_HIGH_FREQ})
+
 
 def source_label(name: Any) -> str:
     """來源名 -> 對外的頻率名稱。
@@ -196,11 +201,12 @@ LOT_MAX = 100.0
 # 每個來源可以調的東西。跟電腦版會員端的面板一致 —— 手機上少一項，會員就得
 # 為了改一個數字特地開電腦。
 #
-#   mode      下單量怎麼決定：均注 / 馬丁 / 本金比例
+#   mode      下單量怎麼決定：均注 / 馬丁 / 本金比例 / 跟隨來源
 #   tp_mode   多個止盈怎麼處理：只用第一個 / 保本移損 / 分批平倉
-SOURCE_MODES = ("flat", "martingale", "risk_percent")
+SOURCE_MODES = ("flat", "martingale", "risk_percent", "source")
 TP_MODES = ("single", "breakeven", "partial")
 SOURCE_FIELDS = ("enabled", "mode", "tp_mode", "base_lot", "risk_percent",
+                 "source_ratio",
                  "breakeven_distance", "max_daily_loss", "max_daily_profit",
                  "max_active_orders", "max_daily_trades",
                  "multiplier", "max_level", "partial_ratios")
@@ -209,6 +215,7 @@ SOURCE_FIELDS = ("enabled", "mode", "tp_mode", "base_lot", "risk_percent",
 # 就要在驗證裡多寫一段 if。範圍跟電腦版面板一致(見 central/stats.py)。
 _SOURCE_NUMBERS = (
     ("risk_percent", 0.01, 5.0, False),        # 本金比例動態手數: 每單風險 %
+    ("source_ratio", 0.01, 1.0, False),        # 跟隨來源: 來源手數 × 幾倍(只能縮小)
     ("breakeven_distance", 0.0, 5000.0, False),
     ("max_daily_loss", 0.0, 1_000_000.0, False),
     ("max_daily_profit", 0.0, 1_000_000.0, False),
@@ -349,6 +356,11 @@ def _clean_source_profile(name: str, raw: Any, ent: Dict[str, Any],
                 mode = "flat"
             if mode == "risk_percent" and not ent.get("dynamic_lot"):
                 rejected.append(f"source:{name}:dynamic_lot_not_in_tier")
+                mode = "flat"
+            # 「跟隨來源」只有帶得出來源手數的來源才成立 —— 一般 LINE 報單
+            # 的訊息裡根本沒有手數，選了也只會每筆退回基礎手數。
+            if mode == "source" and name not in SOURCE_VOLUME_SOURCES:
+                rejected.append(f"source:{name}:no_source_volume")
                 mode = "flat"
             out["mode"] = mode
 

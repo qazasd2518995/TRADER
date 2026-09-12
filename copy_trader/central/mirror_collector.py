@@ -189,6 +189,10 @@ class MirrorCollector:
         direction = str(row.get("type") or "").lower()
         if direction not in ("buy", "sell"):
             return False
+        try:
+            source_volume = float(row.get("volume") or 0) or None
+        except (TypeError, ValueError):
+            source_volume = None
         exec_id = self.execution_id(ticket)
         payload = {
             "event_id": f"{exec_id}-open",
@@ -206,7 +210,7 @@ class MirrorCollector:
             # **出場由來源驅動**。會員端看到這個旗標才會接受沒有 SL/TP 的訊號；
             # 一般 LINE 訊號沒有這個旗標，缺停損一律照舊擋下來。
             "managed_exit": True,
-            "mirror": {"ticket": ticket, "source_volume": row.get("volume"),
+            "mirror": {"ticket": ticket, "source_volume": source_volume,
                        "source_price": row.get("price_open")},
             "signal": {
                 "symbol": self.symbol,
@@ -217,7 +221,10 @@ class MirrorCollector:
                 "is_market_order": True,
                 "stop_loss": None,
                 "take_profit": [],
-                "lot_size": None,
+                # 來源的原始手數。會員端把來源設成「跟隨來源」模式時，才是
+                # 照這個數字去乘自己的比例；其他模式（均注／馬丁／本金比例）
+                # 一律沿用會員自己的設定，不會被來源影響。
+                "lot_size": source_volume,
                 "parse_status": "ok",
                 "parse_method": "mirror",
                 "raw_text_summary": f"鏡像 {direction} 來源部位 {ticket}",

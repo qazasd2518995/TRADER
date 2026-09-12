@@ -541,10 +541,14 @@ function renderBySource(s){
 }
 
 /* ── 策略：跟電腦版 sourceRowHtml / syncSourceProfiles / validateSourceLots 一致 ── */
-function lotModeOptions(ent){
-  return [{v:"flat",label:"均注",ok:true,need:"trial"},
-          {v:"martingale",label:"馬丁",ok:!!ent.martingale,need:"advanced"},
-          {v:"risk_percent",label:"本金比例",ok:!!ent.dynamic_lot,need:"flagship"}];
+function lotModeOptions(ent,isUltra){
+  var o=[{v:"flat",label:"均注",ok:true,need:"trial"},
+         {v:"martingale",label:"馬丁",ok:!!ent.martingale,need:"advanced"},
+         {v:"risk_percent",label:"本金比例",ok:!!ent.dynamic_lot,need:"flagship"}];
+  // 「跟隨來源」只有訊號本身帶得出手數的來源能選。超高頻是鏡像別人的帳戶，
+  // 看得到真實手數；LINE 報單的訊息裡沒有手數，選了每筆都只會退回基礎手數。
+  if(isUltra) o.push({v:"source",label:"跟隨來源",ok:!!ent.dynamic_lot,need:"flagship"});
+  return o;
 }
 function tpOptions(ent,isMid){
   var partial={v:"partial",label:"分批平倉",ok:!!ent.partial_close,need:"advanced"};
@@ -588,7 +592,7 @@ function ladderFor(base,mult,levels){
 // 空白列的預設值，跟電腦版 blankSourceRow 一樣（保本距離預設 3 美元：黃金停損多半 6~10，走一半保本）
 function defaults(isMid){
   return {enabled:false,mode:"flat",tp_mode:isMid?"single":"partial",base_lot:0.01,
-          risk_percent:0.5,multiplier:2,max_level:5,partial_ratios:[],
+          risk_percent:0.5,source_ratio:1,multiplier:2,max_level:5,partial_ratios:[],
           breakeven_distance:3,max_daily_profit:0,max_daily_loss:0};
 }
 function sameProfile(d,a){
@@ -606,7 +610,7 @@ function renderSources(v){
       state=v.source_state||{}, h="";
   for(var i=0;i<list.length;i++){
     var name=list[i].name, label=list[i].label, need=list[i].need, ok=allowed.indexOf(name)>=0;
-    var isMid=label==="中頻交易", isLow=label==="低頻交易";
+    var isMid=label==="中頻交易", isLow=label==="低頻交易", isUltra=label==="超高頻交易";
     var p=defaults(isMid), k;
     for(k in (a[name]||{})) p[k]=a[name][k];
     for(k in (d[name]||{})) p[k]=d[name][k];
@@ -626,13 +630,13 @@ function renderSources(v){
        '<label class="sw"><input type="checkbox" data-f="enabled"'+
        (on?" checked":"")+(ok?"":" disabled")+'><i></i></label></div>';
     if(ok){
-      var mode=pick(lotModeOptions(ent),p.mode), tp=pick(tpOptions(ent,isMid),p.tp_mode);
+      var mode=pick(lotModeOptions(ent,isUltra),p.mode), tp=pick(tpOptions(ent,isMid),p.tp_mode);
       var lotMax=(ent.max_lot&&ent.max_lot>0)?' max="'+ent.max_lot+'"':"";
       var st=state[name]||{}, lv=Number(st.level||0), ls=Number(st.losses||0);
       h+='<div class="body">'+
          '<div class="fld"><div class="lbl" style="font-size:14px">下單方式</div>'+
          '<div class="inline"><select data-f="mode">';
-      var lm=lotModeOptions(ent); for(var m=0;m<lm.length;m++) h+=optionHtml(lm[m],mode);
+      var lm=lotModeOptions(ent,isUltra); for(var m=0;m<lm.length;m++) h+=optionHtml(lm[m],mode);
       h+='</select></div>'+
          '<div class="sub-fld" data-box="base"><div class="lbl2">基礎手數</div>'+
          '<div class="inline"><input type="number" inputmode="decimal" data-f="base_lot" step="0.01" min="0.01"'+lotMax+
@@ -642,6 +646,10 @@ function renderSources(v){
          '<div class="inline"><input type="number" inputmode="decimal" data-f="risk_percent" step="0.05" min="0.01" max="5"'+
          ' value="'+esc(p.risk_percent)+'"></div>'+
          '<div class="note">以餘額與淨值較低者為本金，依每則訊號的進場價與 SL 即時計算；低於 0.01 手會略過。</div></div>'+
+         '<div class="sub-fld" data-box="sratio"><div class="lbl2">來源手數 ×（倍率）</div>'+
+         '<div class="inline"><input type="number" inputmode="decimal" data-f="source_ratio" step="0.05" min="0.01" max="1"'+
+         ' value="'+esc(p.source_ratio)+'"></div>'+
+         '<div class="note" data-note="sratio"></div></div>'+
          '<div class="sub-fld" data-box="mg"><div class="two">'+
          '<label><span>馬丁倍數</span><input type="number" inputmode="decimal" data-f="multiplier" step="0.1" min="1" max="10" value="'+esc(p.multiplier)+'"></label>'+
          '<label><span>關卡數</span><input type="number" inputmode="numeric" data-f="max_level" step="1" min="1" max="10" value="'+esc(p.max_level)+'"></label>'+
@@ -684,17 +692,28 @@ function fv(card,key){ var e=q(card,'[data-f="'+key+'"]'); return e?e.value:""; 
 function reflow(card){
   var mode=fv(card,"mode"), tp=fv(card,"tp_mode");
   var mg=mode==="martingale", dyn=mode==="risk_percent", partial=tp==="partial", be=tp==="breakeven";
-  q(card,'[data-box="base"]').className="sub-fld"+(dyn?" hide":"");
+  // 跟隨來源跟本金比例一樣：總手數不是會員填的，是每筆訊號當場算出來的
+  var follow=mode==="source", sized=dyn||follow;
+  q(card,'[data-box="base"]').className="sub-fld"+(sized?" hide":"");
   q(card,'[data-box="risk"]').className="sub-fld"+(dyn?"":" hide");
+  q(card,'[data-box="sratio"]').className="sub-fld"+(follow?"":" hide");
   q(card,'[data-box="mg"]').className="sub-fld"+(mg?"":" hide");
-  q(card,'[data-box="lots"]').className="sub-fld"+((partial&&!dyn)?"":" hide");
+  q(card,'[data-box="lots"]').className="sub-fld"+((partial&&!sized)?"":" hide");
   q(card,'[data-box="be"]').className="sub-fld"+(be?"":" hide");
   var baseIn=q(card,'[data-f="base_lot"]'), lotsIn=q(card,'[data-f="partial_lots"]');
   var lotsNote=q(card,'[data-note="lots"]'), baseNote=q(card,'[data-note="base"]');
   var ent=(V&&V.entitlements)||{};
   var errs=[];
   // 分批：基礎手數自動 = 各段總和，鎖住不讓改
-  if(partial&&!dyn){
+  if(follow){
+    var sr=Number(fv(card,"source_ratio"));
+    var srNote=q(card,'[data-note="sratio"]');
+    if(!(sr>=0.01&&sr<=1)){ srNote.textContent="倍率要在 0.01 ~ 1 之間（只能縮小）"; srNote.className="note bad";
+      errs.push("來源手數倍率要在 0.01 ~ 1 之間"); }
+    else{ srNote.textContent="來源下 1 手就跟 "+r2(sr)+" 手；算出來不足 0.01 手會補到 0.01。";
+      srNote.className="note ok"; }
+  }
+  if(partial&&!sized){
     var lots=parseLots(lotsIn.value);
     if(!lots){ lotsNote.textContent="格式錯誤，請填像 0.01/0.01/0.01"; lotsNote.className="note bad";
       errs.push("分批手數格式不對，請填像 0.01/0.01/0.01"); }
@@ -714,10 +733,10 @@ function reflow(card){
   }else{
     baseIn.readOnly=false; baseNote.textContent=ent.max_lot?"方案上限 "+ent.max_lot+" 手":"";
     var bl=Number(baseIn.value);
-    if(!dyn&&(!isFinite(bl)||bl<0.01)) errs.push("基礎手數至少 0.01");
-    if(!dyn&&ent.max_lot&&bl>ent.max_lot) errs.push("基礎手數超過方案上限 "+ent.max_lot+" 手");
+    if(!sized&&(!isFinite(bl)||bl<0.01)) errs.push("基礎手數至少 0.01");
+    if(!sized&&ent.max_lot&&bl>ent.max_lot) errs.push("基礎手數超過方案上限 "+ent.max_lot+" 手");
   }
-  if(partial&&dyn){ lotsNote.textContent=""; }
+  if(partial&&sized){ lotsNote.textContent=""; }
   var beNote=q(card,'[data-note="be"]');
   if(be){
     var dist=Number(fv(card,"breakeven_distance"))||0;
@@ -726,7 +745,7 @@ function reflow(card){
   }
   // 馬丁階梯：每關實際手數。跟上一關一樣的標紅 —— 那一關等於沒加碼
   if(mg){
-    var base=dyn?0:Number(baseIn.value)||0.01, mult=Number(fv(card,"multiplier"))||2,
+    var base=sized?0:Number(baseIn.value)||0.01, mult=Number(fv(card,"multiplier"))||2,
         lv=Math.max(1,Math.min(10,parseInt(fv(card,"max_level"),10)||5));
     var lad=ladderFor(base,mult,lv), st=((V&&V.source_state)||{})[card._name]||{};
     var cur=Math.min(Number(st.level||0),lv-1), top=Math.max.apply(null,lad)||1, lh="", dup=[];
@@ -751,20 +770,23 @@ function reflow(card){
 // 組成要送給 Hub 的這一個來源的設定 —— 鍵與電腦版 syncSourceProfiles 完全一樣
 function collect(card){
   var mode=fv(card,"mode"), tp=fv(card,"tp_mode"), dyn=mode==="risk_percent", partial=tp==="partial";
+  var sized=dyn||mode==="source";
   var one={enabled:!!q(card,'[data-f="enabled"]').checked, mode:mode, tp_mode:tp,
     breakeven_distance:Math.max(0,Number(fv(card,"breakeven_distance"))||0),
     risk_percent:Math.min(5,Math.max(0.01,Number(fv(card,"risk_percent"))||0.5)),
+    // 只准縮小 —— 來源的本金跟會員的無關，放大它沒有風控意義（後端再箝制一次）
+    source_ratio:Math.min(1,Math.max(0.01,Number(fv(card,"source_ratio"))||1)),
     max_daily_loss:Number(fv(card,"max_daily_loss"))||0,
     max_daily_profit:Number(fv(card,"max_daily_profit"))||0};
   var lots=parseLots(fv(card,"partial_lots"));
-  if(partial&&!dyn&&lots){
+  if(partial&&!sized&&lots){
     var sum=0; for(var i=0;i<lots.length;i++) sum+=lots[i]; sum=r2(sum);
     one.base_lot=sum;
     one["partial_ratios"]=lots.map(function(l){return l/sum;});
   }else{
     one.base_lot=Number(fv(card,"base_lot"))||0.01;
-    // 本金比例配分批：沿用欄位裡記著的分配比例，沒設就由後端退回 50/30/20
-    if(dyn&&lots){ var s2=0; for(var j=0;j<lots.length;j++) s2+=lots[j];
+    // 本金比例／跟隨來源配分批：沿用欄位裡記著的分配比例，沒設就由後端退回 50/30/20
+    if(sized&&lots){ var s2=0; for(var j=0;j<lots.length;j++) s2+=lots[j];
       one["partial_ratios"]=lots.map(function(l){return l/s2;}); }
   }
   if(mode==="martingale"){

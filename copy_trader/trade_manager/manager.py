@@ -115,6 +115,9 @@ class TradeManager:
     MT5_ABSOLUTE_MIN_LOT = 0.01
     DEFAULT_RISK_PERCENT = 0.5
     MAX_RISK_PERCENT = 5.0
+    # 「跟隨來源」的倍率上限。來源是別人的帳戶，手數可能是我們本金的好幾倍；
+    # 放大它沒有任何風控意義，所以只允許 0 < ratio <= 1（等比縮小）。
+    MAX_SOURCE_RATIO = 1.0
 
     def __init__(self, mt5_files_dir: str):
         """
@@ -634,11 +637,12 @@ class TradeManager:
         """把某個來源的下單設定解析成完整的一份（沒設定的欄位回退全域值）。
 
         mode: "martingale" = 逐關加碼；"flat" = 均注；"risk_percent" =
-        依本機 MT5 本金、淨值與訊號停損距離動態反推每筆手數。
+        依本機 MT5 本金、淨值與訊號停損距離動態反推每筆手數；"source" =
+        跟隨來源手數（乘 source_ratio）。
         """
         raw = self.source_profiles.get(source_window) or {} if source_window else {}
         mode = str(raw.get("mode") or "").strip().lower()
-        if mode not in ("martingale", "flat", "risk_percent"):
+        if mode not in ("martingale", "flat", "risk_percent", "source"):
             mode = "martingale" if self.use_martingale else "flat"
 
         def _num(key, fallback):
@@ -693,6 +697,12 @@ class TradeManager:
             "risk_percent": min(
                 self.MAX_RISK_PERCENT,
                 _num("risk_percent", self.DEFAULT_RISK_PERCENT),
+            ),
+            # 「跟隨來源」的倍率。1.0 = 照抄來源手數，0.5 = 來源的一半。
+            # 上限做在後端，避免直接改 settings.json 繞過前端的箝制。
+            "source_ratio": min(
+                self.MAX_SOURCE_RATIO,
+                _num("source_ratio", 1.0),
             ),
             "multiplier": _num("multiplier", self.martingale_multiplier),
             "max_level": int(_num("max_level", self.martingale_max_level)),
@@ -896,6 +906,80 @@ class TradeManager:
         )
         return result
 
+    def _broker_volume_limits(self) -> tuple:
+        """(最小手數, 手數級距, 最大手數或 None)。讀不到券商規格就用保守預設。
+
+        跟 calculate_dynamic_lot 不同，這裡讀不到 symbol_info.json **不會**
+        丟例外。本金比例模式沒有規格就算不出數字，只能等；跟隨來源模式手上
+        已經有一個明確的手數了，為了一個暫時讀不到的檔案把鏡像單整批擋掉，
+        代價比用 0.01 級距近似大得多。
+        """
+        absolute_min = Decimal(str(self.MT5_ABSOLUTE_MIN_LOT))
+        symbol = self._read_json_file(self.mt5_files_dir / "symbol_info.json")
+        if not isinstance(symbol, dict):
+            return absolute_min, absolute_min, None
+        def _pos(value, fallback):
+            try:
+                d = Decimal(str(value))
+            except (InvalidOperation, TypeError, ValueError):
+                return fallback
+            return d if d.is_finite() and d > 0 else fallback
+        minimum = max(absolute_min, _pos(symbol.get("volume_min"), absolute_min))
+        # 橋接 EA 把手數正規化成兩位小數，所以就算券商宣告更小的級距也吃不到。
+        step = max(absolute_min, _pos(symbol.get("volume_step"), absolute_min))
+        maximum = _pos(symbol.get("volume_max"), None)
+        return minimum, step, maximum
+
+    def calculate_source_lot(self, signal: 'ParsedSignal', source_window: str = "") -> float:
+        """跟隨來源手數：來源這一筆開多少，我們就照 source_ratio 等比例下多少。
+
+        鏡像來源（代理商代操的帳戶）跑的是網格，0.02 起、愈攤愈大。用均注去跟
+        等於把它的加碼結構整個抹平 —— 來源加碼時我們沒加、來源只試單時我們卻
+        押一樣多，損益根本對不起來。
+
+        兩個刻意的取捨：
+
+        * 縮到低於券商最低手數時**補回最低手數**，不是丟掉這一筆。這條路是
+          「鏡像」，漏掉網格中的一格會讓後面的平倉配對和損益比較整個失真；
+          本金比例模式那邊會拒單，因為那是會員自己設的風險上限，補上去等於
+          超出他准許的風險，性質不一樣。
+        * ratio 只准縮小（<=1）。來源的本金跟會員的無關，放大它沒有風控意義。
+        """
+        try:
+            source_volume = Decimal(str(signal.lot_size))
+        except (InvalidOperation, TypeError, ValueError):
+            source_volume = None
+        if source_volume is None or not source_volume.is_finite() or source_volume <= 0:
+            fallback = round(self.profile_for(source_window)["base_lot"], 2)
+            logger.warning(
+                "跟隨來源手數 [%s]：這筆訊號沒有帶來源手數，退回基礎手數 %s",
+                source_window or "全域", fallback,
+            )
+            return fallback
+
+        profile = self.profile_for(source_window)
+        ratio = Decimal(str(profile["source_ratio"]))
+        minimum, step, maximum = self._broker_volume_limits()
+        raw_lot = source_volume * ratio
+        steps = (raw_lot / step).to_integral_value(rounding=ROUND_FLOOR)
+        lot = steps * step
+        if maximum is not None:
+            max_steps = (maximum / step).to_integral_value(rounding=ROUND_FLOOR)
+            lot = min(lot, max_steps * step)
+        if lot < minimum:
+            logger.info(
+                "跟隨來源手數 [%s]：%s × %s = %s 低於最低手數，補到 %s",
+                source_window or "全域", source_volume, ratio, raw_lot, minimum,
+            )
+            lot = minimum
+
+        result = float(lot)
+        logger.info(
+            "跟隨來源手數 [%s]: 來源 %s 手 × %s = %s → %s 手",
+            source_window or "全域", source_volume, ratio, raw_lot, result,
+        )
+        return result
+
     def on_trade_result(self, is_win: bool, signal_id: str = None, source_window: str = ""):
         """
         Update martingale level based on trade result.
@@ -910,11 +994,15 @@ class TradeManager:
         # 均注／本金比例來源：輸贏都不進關、也不能去動全域層級，否則會污染
         # 跑馬丁的那一群。本金比例的下一手一定要等下一則訊號的 SL 才能算，
         # 這裡不能用基礎手數假裝成「下一手」。
-        if profile["mode"] in ("flat", "risk_percent"):
-            mode_label = "均注" if profile["mode"] == "flat" else "本金比例"
+        if profile["mode"] in ("flat", "risk_percent", "source"):
+            mode_label = {
+                "flat": "均注", "risk_percent": "本金比例", "source": "跟隨來源",
+            }[profile["mode"]]
             next_size = (
                 f"下一手數={profile['base_lot']}"
                 if profile["mode"] == "flat"
+                else f"下一筆比例={profile['source_ratio']}×來源手數"
+                if profile["mode"] == "source"
                 else f"下一筆風險={profile['risk_percent']}%（收到進場價/SL 後計算）"
             )
             logger.info(
@@ -1108,6 +1196,8 @@ class TradeManager:
         try:
             if profile["mode"] == "risk_percent":
                 lot_size = self.calculate_dynamic_lot(signal, order.source_window)
+            elif profile["mode"] == "source":
+                lot_size = self.calculate_source_lot(signal, order.source_window)
             elif profile["configured"] or self.use_martingale:
                 lot_size = self.get_martingale_lot_size(order.source_window)
             else:

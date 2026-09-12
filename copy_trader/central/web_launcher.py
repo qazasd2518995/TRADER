@@ -1121,8 +1121,8 @@ class LauncherState:
             if not ent.get("martingale") and str(p.get("mode", "")).lower() == "martingale":
                 logger.info("來源「%s」的馬丁不在等級授權內，改為均注", name)
                 p["mode"] = "flat"
-            if not ent.get("dynamic_lot") and str(p.get("mode", "")).lower() == "risk_percent":
-                logger.info("來源「%s」的本金比例動態手數不在等級授權內，改為均注", name)
+            if not ent.get("dynamic_lot") and str(p.get("mode", "")).lower() in ("risk_percent", "source"):
+                logger.info("來源「%s」的動態手數不在等級授權內，改為均注", name)
                 p["mode"] = "flat"
             if not ent.get("partial_close") and str(p.get("tp_mode", "")).lower() == "partial":
                 # 降級成保本移損: 一樣吃得到多 TP, 但不分批出場
@@ -1209,11 +1209,15 @@ class LauncherState:
             for name, p in profiles.items():
                 raw_mode = str(p.get("mode", "")).lower()
                 mode = {"flat": "均注", "martingale": "馬丁",
-                        "risk_percent": "本金比例"}.get(raw_mode, "均注")
+                        "risk_percent": "本金比例",
+                        "source": "跟隨來源"}.get(raw_mode, "均注")
                 on = "跟單" if p.get("enabled", True) else "已停用"
-                size = (f"每筆風險 {p.get('risk_percent', 0.5)}%"
-                        if raw_mode == "risk_percent"
-                        else f"基礎手數 {p.get('base_lot', '(全域)')}")
+                if raw_mode == "risk_percent":
+                    size = f"每筆風險 {p.get('risk_percent', 0.5)}%"
+                elif raw_mode == "source":
+                    size = f"來源手數 × {p.get('source_ratio', 1.0)}"
+                else:
+                    size = f"基礎手數 {p.get('base_lot', '(全域)')}"
                 logger.info("來源設定：%s → %s / %s / %s", name, on, mode, size)
 
         # martingale_per_source 只從 config.json 或每群設定推導，面板沒有這個欄位；
