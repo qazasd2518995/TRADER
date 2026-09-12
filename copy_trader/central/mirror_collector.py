@@ -49,6 +49,17 @@ VANISH_CONFIRM_ROUNDS = 2
 # 一個幾十分鐘前的進場，跟原單完全不是同一回事。
 MAX_ENTRY_AGE_SECONDS = 90.0
 
+# 平倉事件重發的時間點（秒，從第一次發出算起）。
+#
+# 鏡像單**沒有 SL 也沒有 TP** —— 出場完全靠這一個事件。它要是漏掉了，
+# 會員就抱著一張沒有任何保護的單，而且沒有第二個機制會去平它。而漏掉是
+# 真的會發生的：會員端當下離線、MT5 指令槽塞住、Hub 序號跳過（重連後
+# 刻意不回補舊訊號）—— 每一種都只要一次就夠。
+#
+# 重發是安全的：close_signal_positions 找不到那張單時回 True（當成已經
+# 處理完），所以已經平掉的會員收到重發等於什麼都不做。
+CLOSE_REPUBLISH_DELAYS = (60.0, 300.0, 900.0)
+
 
 def _read_json(path: Path) -> Optional[Any]:
     """EA 隨時可能正在覆寫，讀到半截就回 None 讓呼叫端跳過這一輪。"""
@@ -70,6 +81,8 @@ class MirrorState:
 
     known: Dict[int, Dict[str, Any]] = field(default_factory=dict)
     vanished: Dict[int, int] = field(default_factory=dict)   # ticket -> 連續消失輪數
+    # ticket -> 還沒發的重發時間戳（見 CLOSE_REPUBLISH_DELAYS）
+    close_retries: Dict[int, list] = field(default_factory=dict)
     started_at: float = field(default_factory=time.time)
     primed: bool = False
 
@@ -165,7 +178,44 @@ class MirrorCollector:
 
         for ticket, row in current.items():
             self.state.known[ticket] = row
+        published += self._republish_due_closes()
         return published
+
+    def _republish_due_closes(self) -> int:
+        """把到期的平倉重發出去。沒有到期的就什麼都不做。"""
+        now = time.time()
+        sent = 0
+        for ticket in list(self.state.close_retries):
+            due = self.state.close_retries[ticket]
+            remaining = [t for t in due if t > now]
+            if len(remaining) == len(due):
+                continue                       # 還沒到時間
+            self.state.close_retries[ticket] = remaining
+            if not remaining:
+                self.state.close_retries.pop(ticket, None)
+            # 第幾次重發，要用**原始**的次數去算 —— 拿當下的 due 去減，每次
+            # 都會得到 1，三次重發的 event_id 就一模一樣，後兩次會被 Hub 當
+            # 成第一次的修訂吞掉，落後的會員永遠收不到。
+            attempt = len(CLOSE_REPUBLISH_DELAYS) - len(remaining)
+            exec_id = self.execution_id(ticket)
+            self.publish({
+                # event_id 必須跟第一次不同 —— Hub 用它去重，同名的會被當成
+                # 修訂而不是新事件，落後的會員就永遠收不到。
+                "event_id": f"{exec_id}-close-r{attempt}",
+                "type": "close_signal",
+                "source": self.source,
+                "source_name": "mirror",
+                "line_chat_id": "mirror",
+                "line_message_id": f"{exec_id}-close-r{attempt}",
+                "target_execution_ids": [exec_id],
+                "close_reason": "mirror_source_closed",
+                "line_revision": 2,
+                "message_time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "mirror": {"ticket": ticket, "republish": attempt},
+            })
+            sent += 1
+            logger.info("鏡像平倉重發：ticket=%s（還剩 %s 次）", ticket, len(remaining))
+        return sent
 
     # ---------- 事件 ----------
 
@@ -251,7 +301,10 @@ class MirrorCollector:
             "message_time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "mirror": {"ticket": ticket, "source_price": row.get("price_open")},
         })
-        logger.info("鏡像平倉：來源 ticket=%s 已消失", ticket)
+        now = time.time()
+        self.state.close_retries[ticket] = [now + d for d in CLOSE_REPUBLISH_DELAYS]
+        logger.info("鏡像平倉：來源 ticket=%s 已消失（另排 %s 次重發）",
+                    ticket, len(CLOSE_REPUBLISH_DELAYS))
         return True
 
     def _server_offset(self) -> Optional[float]:

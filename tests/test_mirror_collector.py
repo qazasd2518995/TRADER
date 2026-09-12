@@ -20,6 +20,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from copy_trader.central.mirror_collector import (
+    CLOSE_REPUBLISH_DELAYS,
     MAX_ENTRY_AGE_SECONDS,
     VANISH_CONFIRM_ROUNDS,
     MirrorCollector,
@@ -243,6 +244,83 @@ class CommandSlotTests(unittest.TestCase):
             m = self._manager(Path(tmp))
             self.assertTrue(m._write_command({"action": "buy"}))        # noqa: SLF001
             self.assertTrue(m.commands_file.is_file())
+
+
+class CloseRepublishTests(unittest.TestCase):
+    """平倉事件要重發幾次 —— 鏡像單沒有 SL/TP，出場只靠這一個事件。
+
+    2026-09-11 的事故是「指令槽被覆蓋」造成的（見 CommandSlotTests），但那
+    只是眾多漏法之一：會員端當下離線、Hub 序號被跳過（重連刻意不回補舊訊
+    號）、MT5 沒連上券商 —— 任何一個都只要發生一次，會員就抱著一張完全沒有
+    保護的單，而且沒有第二個機制會去平它。
+
+    重發是安全的：close_signal_positions 找不到那張單時回 True，已經平掉的
+    會員收到重發等於什麼都不做。
+    """
+
+    def _closed_once(self, d: _Dir, sent: list):
+        c = _collector(d, sent)
+        d.write_positions([_pos(777)])
+        c.run_cycle()                          # priming + 記住 777
+        d.write_positions([])
+        c.run_cycle()                          # 消失第一輪
+        c.run_cycle()                          # 第二輪 → 發平倉
+        return c
+
+    def test_first_close_schedules_republishes(self):
+        with TemporaryDirectory() as tmp:
+            d = _Dir(tmp); sent = []
+            c = self._closed_once(d, sent)
+            self.assertEqual(len(sent), 1)
+            self.assertEqual(len(c.state.close_retries[777]),
+                             len(CLOSE_REPUBLISH_DELAYS))
+
+    def test_nothing_is_republished_before_the_delay(self):
+        with TemporaryDirectory() as tmp:
+            d = _Dir(tmp); sent = []
+            c = self._closed_once(d, sent); sent.clear()
+            for _ in range(5):
+                self.assertEqual(c.run_cycle(), 0)
+            self.assertEqual(sent, [])
+
+    def test_due_republish_is_sent_with_a_fresh_event_id(self):
+        """event_id 跟第一次一樣的話，Hub 會當成修訂而不是新事件。"""
+        with TemporaryDirectory() as tmp:
+            d = _Dir(tmp); sent = []
+            c = self._closed_once(d, sent)
+            first_event = sent[0]["event_id"]
+            sent.clear()
+            # 把第一個到期時間往回撥，模擬時間過去
+            c.state.close_retries[777][0] = time.time() - 1
+            self.assertEqual(c.run_cycle(), 1)
+            ev = sent[0]
+            self.assertEqual(ev["type"], "close_signal")
+            self.assertEqual(ev["target_execution_ids"], ["mirror-ultra-777"])
+            self.assertNotEqual(ev["event_id"], first_event)
+            self.assertEqual(len(c.state.close_retries[777]),
+                             len(CLOSE_REPUBLISH_DELAYS) - 1)
+
+    def test_republishes_stop_after_the_last_one(self):
+        with TemporaryDirectory() as tmp:
+            d = _Dir(tmp); sent = []
+            c = self._closed_once(d, sent); sent.clear()
+            c.state.close_retries[777] = [time.time() - 1] * len(CLOSE_REPUBLISH_DELAYS)
+            c.run_cycle()
+            self.assertNotIn(777, c.state.close_retries)
+            sent.clear()
+            for _ in range(3):
+                self.assertEqual(c.run_cycle(), 0)
+            self.assertEqual(sent, [])
+
+    def test_every_republish_has_a_distinct_event_id(self):
+        with TemporaryDirectory() as tmp:
+            d = _Dir(tmp); sent = []
+            c = self._closed_once(d, sent); sent.clear()
+            for _ in range(len(CLOSE_REPUBLISH_DELAYS)):
+                c.state.close_retries[777][0] = time.time() - 1
+                c.run_cycle()
+            ids = [e["event_id"] for e in sent]
+            self.assertEqual(len(ids), len(set(ids)), ids)
 
 
 if __name__ == "__main__":
