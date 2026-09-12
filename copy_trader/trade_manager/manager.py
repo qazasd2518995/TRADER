@@ -1385,6 +1385,24 @@ class TradeManager:
     # 內（鏡像來源一次關掉整組網格）。5 秒太緊。
     COMMAND_SLOT_TIMEOUT = 20.0
 
+    # EA 認得的指令動作。槽裡的東西對不上這張表就不是「還沒被執行的指令」，
+    # 而是壞資料 —— 覆蓋它是安全的。
+    SLOT_ACTIONS = ("buy", "sell", "close", "modify", "delete")
+
+    def _slot_holds_a_real_command(self, raw: str) -> bool:
+        """槽裡那串東西，EA 有沒有可能把它執行掉？
+
+        寧可判「是」也不要判「否」—— 判錯成「否」等於回到覆蓋未執行指令的
+        老路。所以只有在明確解析失敗、或動作不在 EA 認得的清單裡時才回 False。
+        """
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(parsed, dict):
+            return False
+        return str(parsed.get("action") or "").strip().lower() in self.SLOT_ACTIONS
+
     def _write_command(self, command: dict) -> bool:
         """把一筆指令寫進 MT5 的 commands.json。
 
@@ -1405,8 +1423,17 @@ class TradeManager:
                 try:
                     if not self.commands_file.exists():
                         break                      # 還沒建檔，可以寫
-                    if self.commands_file.read_text().strip() in ("{}", ""):
+                    raw = self.commands_file.read_text().strip()
+                    if raw in ("{}", ""):
                         break                      # 上一筆已被消化
+                    if not self._slot_holds_a_real_command(raw):
+                        # 槽裡是壞資料（寫到一半就斷電、編碼壞掉）。EA 永遠
+                        # 解析不出來也就永遠不會清掉它 —— 而我們又不肯覆蓋，
+                        # 那台機器就從此再也送不出任何指令。這不是少做一件
+                        # 事，是全停。只有在「確定它不可能被執行」時才蓋掉。
+                        logger.warning("MT5 指令槽裡是無法執行的內容，覆蓋掉：%s",
+                                       raw[:120])
+                        break
                 except (PermissionError, OSError):
                     pass                           # EA 正在寫，再等
                 if time.time() >= deadline:

@@ -4,7 +4,7 @@
 //|   Supports buy/sell/modify/close commands & full state export   |
 //+------------------------------------------------------------------+
 #property copyright "Artan Ahmadi - Enhanced v4.3"
-#property version   "4.40"
+#property version   "4.41"
 
 // 交易品種預設「自動」：EA 掛在哪張圖表就用那個品種，自動對應各券商
 // (XAUUSD / XAUUSD.s / GOLD ...)，會員不用改。留空或 "AUTO" = 自動；
@@ -206,38 +206,51 @@ string ResolveTradeSymbol()
 //+------------------------------------------------------------------+
 //| OnInit                                                           |
 //+------------------------------------------------------------------+
-int OnInit()
+bool     g_started      = false;   // 啟動流程跑完了沒
+datetime g_last_wait_log = 0;      // 上次印「等待中」的時間，避免洗版
+
+//| 真正的啟動流程。商品清單還沒同步完就回 false，由 OnTimer 每秒重試。  |
+bool TryStartBridge()
 {
    g_sym = ResolveTradeSymbol();
    if(g_sym == "")
-   {
-      // 這張圖不是黃金，而且整個商品清單裡也找不到黃金。硬跑下去就會把
-      // 黃金訊號下到別的商品上，那比不啟動嚴重得多。
-      Print("EA 未啟動：這張圖表(", Symbol(), ")不是黃金，",
-            "而且在這個帳戶的商品清單裡找不到任何 XAUUSD / GOLD 商品。",
-            "請確認帳戶可以交易黃金，或把 EA 掛到黃金圖表上。");
-      return(INIT_FAILED);
-   }
+      return(false);
+
    g_is_bridge_owner = ClaimBridgeOwnership();
+   g_started = true;
    if(!g_is_bridge_owner)
    {
       Print("這個終端已經有另一個 File Bridge 在運作，這一個進入待命（不寫檔、",
             "不執行指令）。兩個同時做事會把同一筆指令下兩次。");
-      return(INIT_SUCCEEDED);      // 留在圖上但不做事，不自行移除
+      return(true);                // 留在圖上但不做事，不自行移除
    }
-   Print("Enhanced MT5 File Bridge v4.4 started. 交易品種=", g_sym,
+   Print("Enhanced MT5 File Bridge v4.41 started. 交易品種=", g_sym,
          "（圖表=", Symbol(), " / 參數TradingSymbol=", (TradingSymbol=="" ? "AUTO" : TradingSymbol), "）");
    if(g_sym != Symbol())
       Print("注意：交易品種與圖表品種不同 —— 圖表開的不是黃金，已自動改用 ", g_sym);
    Print("Auto trading enabled: ", IsTradeAllowedFunc());
    Print("Default lot size: ", DoubleToString(DefaultLotSize,2));
-   EventSetTimer(1);
 
-   // Write static symbol info at startup
    WriteSymbolInfo(g_sym);
-
    LoadHubConfig();
+   return(true);
+}
 
+int OnInit()
+{
+   // **絕對不要回 INIT_FAILED。**
+   //
+   // OnInit 跑在終端跟券商同步完商品清單「之前」——2026-09-12 MT5-7 實測：
+   // 17:46:20.6 expert loaded，17:46:22.1 才 terminal synchronized。那 1.5 秒
+   // 裡 ResolveTradeSymbol() 找不到黃金，舊版就此 INIT_FAILED，橋接從此死掉，
+   // 不寫檔、不收指令，要人工把 EA 重新拖上圖表才會回來。
+   //
+   // 而 MT5 會自己 LiveUpdate 重開（那天就重開了兩次），所以這不是罕見狀況，
+   // 是每次自動更新都可能讓一個會員的掛機無聲死亡。改成留在圖上每秒重試。
+   EventSetTimer(1);
+   if(!TryStartBridge())
+      Print("EA 等待中：還沒在商品清單裡找到黃金（終端可能還在跟券商同步），",
+            "會持續重試。");
    return(INIT_SUCCEEDED);
 }
 
@@ -259,36 +272,60 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTimer()
 {
+   // 寫檔的節流一律用 TimeLocal()（本機時鐘），不能用 TimeCurrent()。
+   //
+   // TimeCurrent() 是「伺服器最後一個 tick 的時間」—— 休市或行情中斷時它就
+   // 停在原地，於是 TimeCurrent()-last_write 永遠到不了門檻，整個橋接靜靜地
+   // 停止寫檔。2026-09-12（週六）實測：MT5-2/3/7 的所有輸出檔都凍在 04:59:58
+   // （黃金收盤那一秒），連終端在 13:07 自動更新重開之後也一個字都沒寫。
+   //
+   // 會員端看到的是「account_info.json 很舊」= MT5 好像掛了：動態手數會以
+   // transient 擋單、守護程式會去重啟一個其實好好的終端。而真正的交易指令
+   // 反而照跑（CheckTradeCommands 沒有這個 gate），所以症狀特別難懂。
+   // 啟動流程還沒跑完（多半是終端還在同步商品清單）就繼續重試。
+   if(!g_started)
+   {
+      if(!TryStartBridge())
+      {
+         if(TimeLocal() - g_last_wait_log >= 60)
+         {
+            g_last_wait_log = TimeLocal();
+            Print("EA 仍在等待黃金商品出現（圖表=", Symbol(), "）");
+         }
+         return;
+      }
+   }
+
    // 同一個終端裡只有一個實例做事。見 ClaimBridgeOwnership 的說明 ——
    // 兩個實例會把同一筆指令下兩次，那是這套系統最不能出的錯。
    if(!g_is_bridge_owner)
       return;
 
    // Existing writers
-   if(TimeCurrent() - last_write >= WriteIntervalSec) { WritePriceData(); last_write = TimeCurrent(); }
-   if(TimeCurrent() - last_account_write >= 2)        { WriteAccountInfo(); last_account_write = TimeCurrent(); }
-   if(TimeCurrent() - last_positions_write >= 2)      { WritePositions(); last_positions_write = TimeCurrent(); }
-   if(TimeCurrent() - last_trades_write >= 10)        { WriteClosedTrades(); last_trades_write = TimeCurrent(); }
+   if(TimeLocal() - last_write >= WriteIntervalSec) { WritePriceData(); last_write = TimeLocal(); }
+   if(TimeLocal() - last_account_write >= 2)        { WriteAccountInfo(); last_account_write = TimeLocal(); }
+   if(TimeLocal() - last_positions_write >= 2)      { WritePositions(); last_positions_write = TimeLocal(); }
+   if(TimeLocal() - last_trades_write >= 10)        { WriteClosedTrades(); last_trades_write = TimeLocal(); }
 
    // NEW: richer state
-   if(TimeCurrent() - last_tick_write >= 1)           { WriteTickData(); last_tick_write = TimeCurrent(); }
-   if(TimeCurrent() - last_orders_write >= 2)         { WritePendingOrders(); last_orders_write = TimeCurrent(); }
-   if(TimeCurrent() - last_orderbook_write >= 2)      { WriteOrderBook(); last_orderbook_write = TimeCurrent(); }
-   if(TimeCurrent() - last_rates_write >= 10)         { WriteRatesM1(g_sym, ChartBarCount); last_rates_write = TimeCurrent(); }
+   if(TimeLocal() - last_tick_write >= 1)           { WriteTickData(); last_tick_write = TimeLocal(); }
+   if(TimeLocal() - last_orders_write >= 2)         { WritePendingOrders(); last_orders_write = TimeLocal(); }
+   if(TimeLocal() - last_orderbook_write >= 2)      { WriteOrderBook(); last_orderbook_write = TimeLocal(); }
+   if(TimeLocal() - last_rates_write >= 10)         { WriteRatesM1(g_sym, ChartBarCount); last_rates_write = TimeLocal(); }
 
    // 多週期 K 線 + 自選報價。週期越大、重算越沒意義，所以間隔拉開；
    // 全部加起來平均每秒不到一次寫檔，比原本的 tick 檔還輕。
    if(ExportChartData)
    {
-      if(TimeCurrent() - last_rates_m5  >= 15)  { WriteRates(g_sym, PERIOD_M5,  ChartBarCount, "rates_M5.json");  last_rates_m5  = TimeCurrent(); }
-      if(TimeCurrent() - last_rates_m15 >= 30)  { WriteRates(g_sym, PERIOD_M15, ChartBarCount, "rates_M15.json"); last_rates_m15 = TimeCurrent(); }
-      if(TimeCurrent() - last_rates_h1  >= 60)  { WriteRates(g_sym, PERIOD_H1,  ChartBarCount, "rates_H1.json");  last_rates_h1  = TimeCurrent(); }
-      if(TimeCurrent() - last_rates_h4  >= 180) { WriteRates(g_sym, PERIOD_H4,  ChartBarCount, "rates_H4.json");  last_rates_h4  = TimeCurrent(); }
-      if(TimeCurrent() - last_rates_d1  >= 300) { WriteRates(g_sym, PERIOD_D1,  ChartBarCount, "rates_D1.json");  last_rates_d1  = TimeCurrent(); }
-      if(TimeCurrent() - last_watchlist >= 3)   { WriteWatchlist(); last_watchlist = TimeCurrent(); }
+      if(TimeLocal() - last_rates_m5  >= 15)  { WriteRates(g_sym, PERIOD_M5,  ChartBarCount, "rates_M5.json");  last_rates_m5  = TimeLocal(); }
+      if(TimeLocal() - last_rates_m15 >= 30)  { WriteRates(g_sym, PERIOD_M15, ChartBarCount, "rates_M15.json"); last_rates_m15 = TimeLocal(); }
+      if(TimeLocal() - last_rates_h1  >= 60)  { WriteRates(g_sym, PERIOD_H1,  ChartBarCount, "rates_H1.json");  last_rates_h1  = TimeLocal(); }
+      if(TimeLocal() - last_rates_h4  >= 180) { WriteRates(g_sym, PERIOD_H4,  ChartBarCount, "rates_H4.json");  last_rates_h4  = TimeLocal(); }
+      if(TimeLocal() - last_rates_d1  >= 300) { WriteRates(g_sym, PERIOD_D1,  ChartBarCount, "rates_D1.json");  last_rates_d1  = TimeLocal(); }
+      if(TimeLocal() - last_watchlist >= 3)   { WriteWatchlist(); last_watchlist = TimeLocal(); }
    }
    // re-dump symbol specs every 1h (in case of broker changes)
-   if(TimeCurrent() - last_symbolinfo_write >= 3600)  { WriteSymbolInfo(g_sym); last_symbolinfo_write = TimeCurrent(); }
+   if(TimeLocal() - last_symbolinfo_write >= 3600)  { WriteSymbolInfo(g_sym); last_symbolinfo_write = TimeLocal(); }
 
    // Command processor
    if(EnableTrading && IsTradeAllowedFunc())
@@ -1288,43 +1325,72 @@ void LogTradeAction(string action, bool result, TradeCommand &cmd, long retcode,
       Print("Trade logged: ", action, " ", (result ? "SUCCESS" : "FAIL"), " Symbol: ", cmd.symbol, " TradeID: ", cmd.trade_id, " RetCode: ", retcode, " Detail: ", detail);
 }
 
-void CheckTradeCommands()
+//| 讀指令槽。檔案被對方鎖住就回空字串，呼叫端當成「這一輪沒東西」。     |
+string ReadCommandSlot()
 {
    int handle = FileOpen("commands.json", FILE_READ|FILE_TXT|FILE_ANSI);
-   if(handle == INVALID_HANDLE) return;
-
-   string cmd = "";
-   string line;
-   while(!FileIsEnding(handle))
-   {
-      line = FileReadString(handle);
-      cmd += line;
-   }
+   if(handle == INVALID_HANDLE) return("");
+   string out = "";
+   while(!FileIsEnding(handle)) out += FileReadString(handle);
    FileClose(handle);
+   return(out);
+}
 
-   if(StringLen(cmd) < 10) return;
+void ClearCommandSlot()
+{
+   int h = FileOpen("commands.json", FILE_WRITE|FILE_TXT|FILE_ANSI);
+   if(h != INVALID_HANDLE) { FileWrite(h, "{}"); FileClose(h); }
+}
+
+void CheckTradeCommands()
+{
+   string cmd = ReadCommandSlot();
+   string trimmed = cmd;
+   StringTrimLeft(trimmed); StringTrimRight(trimmed);
+   if(trimmed == "" || trimmed == "{}") return;      // 槽是空的
+
    if(DetailedLogging) Print("Received command: ", cmd);
 
    TradeCommand trade_cmd;
-   if(ParseTradeCommand(cmd, trade_cmd))
+   if(!ParseTradeCommand(cmd, trade_cmd))
    {
-      bool result = false;
-      long retcode = 0;
-      string detail = "";
-      if(trade_cmd.action=="buy" || trade_cmd.action=="sell") result = ExecuteBuySellCommand(trade_cmd, retcode, detail);
-      else if(trade_cmd.action=="modify") result = ExecuteModifyCommand(trade_cmd, retcode, detail);
-      else if(trade_cmd.action=="close")  result = ExecuteCloseCommand(trade_cmd, retcode, detail);
-      else if(trade_cmd.action=="delete") result = ExecuteDeleteCommand(trade_cmd, retcode, detail);
-
-      LogTradeAction(trade_cmd.action, result, trade_cmd, retcode, detail);
-
-      int h = FileOpen("commands.json", FILE_WRITE|FILE_TXT|FILE_ANSI);
-      if(h != INVALID_HANDLE) { FileWrite(h, "{}"); FileClose(h); }
+      // 解析不出來的東西**一定要清掉**。它永遠不會執行成功，留著就是把整個
+      // 槽鎖死：會員端從 1.4.1 起改成「槽沒空就不寫、下輪重試」，所以一筆爛
+      // 資料會讓那台機器從此再也送不出任何指令 —— 不是少做一件事，是全停。
+      Print("指令解析失敗，已清掉以免卡住指令槽：", cmd);
+      ClearCommandSlot();
+      return;
    }
-   else
+
+   bool result = false;
+   long retcode = 0;
+   string detail = "";
+   if(trade_cmd.action=="buy" || trade_cmd.action=="sell") result = ExecuteBuySellCommand(trade_cmd, retcode, detail);
+   else if(trade_cmd.action=="modify") result = ExecuteModifyCommand(trade_cmd, retcode, detail);
+   else if(trade_cmd.action=="close")  result = ExecuteCloseCommand(trade_cmd, retcode, detail);
+   else if(trade_cmd.action=="delete") result = ExecuteDeleteCommand(trade_cmd, retcode, detail);
+
+   LogTradeAction(trade_cmd.action, result, trade_cmd, retcode, detail);
+
+   // 清空前先確認槽裡還是我們剛執行完的那一筆。
+   //
+   // OrderSend 是同步的，券商往返中位數 0.3 秒、但實測最久 16.3 秒
+   // (2026-09-11 MT5-7)。這段期間如果有人把新指令寫進同一個槽，無條件寫
+   // "{}" 會把那筆**從沒被讀過**的指令直接抹掉 —— 當天 seq 390 就是這樣
+   // 消失的，日誌裡連一行 Received command 都沒有。
+   //
+   // 只有「確定讀到另一筆看起來完整的指令」才不清空。其餘一律清掉：留著
+   // 自己剛執行完的那筆，下一個 tick 會再跑一次 —— 平倉重跑無害(部位已經
+   // 不在)，但開倉重跑就是憑空多一張單，那比漏掉一筆平倉更糟。
+   string after = ReadCommandSlot();
+   string after_trimmed = after;
+   StringTrimLeft(after_trimmed); StringTrimRight(after_trimmed);
+   if(after_trimmed != "" && after_trimmed != "{}" && after != cmd)
    {
-      if(DetailedLogging) Print("Failed to parse command: ", cmd);
+      if(DetailedLogging) Print("指令槽在執行期間被換成新指令，保留不清空");
+      return;
    }
+   ClearCommandSlot();
 }
 
 //+------------------------------------------------------------------+

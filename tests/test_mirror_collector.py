@@ -245,6 +245,34 @@ class CommandSlotTests(unittest.TestCase):
             self.assertTrue(m._write_command({"action": "buy"}))        # noqa: SLF001
             self.assertTrue(m.commands_file.is_file())
 
+    def test_garbage_in_the_slot_is_overwritten_instead_of_deadlocking(self):
+        """壞資料 EA 永遠解析不出來，也就永遠不會清掉。
+
+        「槽沒空就不寫」單獨存在的話，一筆爛資料會讓那台機器從此再也送不出
+        任何指令 —— 不是少做一件事，是全停。只有在確定它不可能被執行時才蓋。
+        """
+        for junk in ('{"action":"clo',           # 寫到一半就斷了
+                     "not json at all",         # 編碼壞掉
+                     '{"action":"explode"}',     # EA 不認得的動作
+                     '["close"]'):               # 不是物件
+            with TemporaryDirectory() as tmp:
+                m = self._manager(Path(tmp))
+                m.commands_file.write_text(junk, encoding="utf-8")
+                self.assertTrue(m._write_command({"action": "close",      # noqa: SLF001
+                                                  "ticket": 9}), junk)
+                self.assertIn("9", m.commands_file.read_text(encoding="utf-8"))
+
+    def test_every_action_the_ea_understands_is_protected(self):
+        """反過來：EA 認得的動作一律不准蓋，那才是真正等著被執行的指令。"""
+        for action in ("buy", "sell", "close", "modify", "delete"):
+            with TemporaryDirectory() as tmp:
+                m = self._manager(Path(tmp))
+                m.commands_file.write_text(
+                    json.dumps({"action": action, "ticket": 111}), encoding="utf-8")
+                self.assertFalse(m._write_command({"action": "close",     # noqa: SLF001
+                                                   "ticket": 222}), action)
+                self.assertIn("111", m.commands_file.read_text(encoding="utf-8"))
+
 
 class CloseRepublishTests(unittest.TestCase):
     """平倉事件要重發幾次 —— 鏡像單沒有 SL/TP，出場只靠這一個事件。
