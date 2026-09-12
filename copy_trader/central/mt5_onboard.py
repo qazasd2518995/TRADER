@@ -232,7 +232,16 @@ def _write_startup_ini(terminal: Path, login: str, password: str,
 def onboard(*, mt5_path: str, login: str, password: str, server: str,
             symbol: str = "XAUUSD247m", period: str = "M5",
             timeout: float = LAUNCH_TIMEOUT) -> OnboardResult:
-    """裝好 EA、開好演算法交易、登入並掛上圖表，等到橋接檔真的出現為止。"""
+    """裝好 EA、開好演算法交易、登入並掛上圖表，等到橋接檔真的出現為止。
+
+    symbol 預設是 Exness 的 24/7 黃金。**券商沒有這個代號的話，MT5 會開出一張
+    沒有資料的圖表** —— 2026-09-12 的 MT5-7 就是這樣：它在 MetaQuotes-Demo 上，
+    沒有 XAUUSD247m，於是 EA 掛在一張死圖上。
+
+    EA v4.41 起這件事不再是致命的（ResolveTradeSymbol 會自己去商品清單裡找
+    黃金，找不到就每秒重試而不是 INIT_FAILED），但圖表對了還是比較好 ——
+    所以這裡先確認代號存在，不存在就退回帳戶裡真的有的那個黃金代號。
+    """
     login = (login or "").strip()
     server = (server or "").strip()
     if not login.isdigit():
