@@ -132,6 +132,9 @@ class TradeManager:
         self.pending_orders_file = self.mt5_files_dir / "orders.json"
 
         self.orders: Dict[str, ManagedOrder] = {}
+        # 已經要求平掉、但還沒從 positions.json 消失的部位。
+        # ticket -> {"signal_id", "reason", "requested_at", "attempts", "next_at"}
+        self._pending_closes: Dict[int, Dict[str, Any]] = {}
         self._lock = threading.Lock()
         self._running = False
         self._monitor_thread: Optional[threading.Thread] = None
@@ -329,11 +332,88 @@ class TradeManager:
             return False
         ok = self._close_position(int(ticket))
         if ok:
+            # 「指令寫出去了」不等於「平掉了」—— EA 會把它送給券商，券商可能
+            # 直接退件（休市 10018、餘額不足、價格失效）。那個結果我們看不到，
+            # 所以登記下來，由 _retry_pending_closes 盯到部位真的消失為止。
+            self._register_pending_close(int(ticket), signal_id, reason)
             logger.info("鏡像平倉已送出：signal=%s ticket=%s reason=%s",
                         signal_id, ticket, reason)
         else:
             logger.warning("鏡像平倉送不出去：signal=%s ticket=%s", signal_id, ticket)
         return ok
+
+    # 平倉重試的間隔（秒）：指數退避，上限 5 分鐘後就一直用 5 分鐘。
+    #
+    # **不設放棄條件。** 這條路上的部位沒有 SL 也沒有 TP —— 放棄重試等於讓會員
+    # 無限期抱著一張沒有任何保護的單。週末休市兩天的話這裡大約每 5 分鐘試一次，
+    # 每次只是寫一個會被退件的指令，代價遠低於漏掉一次出場。
+    CLOSE_RETRY_BACKOFF = (5.0, 10.0, 20.0, 40.0, 80.0, 160.0, 300.0)
+
+    def _retry_delay(self, attempts: int) -> float:
+        idx = min(attempts, len(self.CLOSE_RETRY_BACKOFF) - 1)
+        return self.CLOSE_RETRY_BACKOFF[idx]
+
+    def _register_pending_close(self, ticket: int, signal_id: str, reason: str) -> None:
+        with self._lock:
+            entry = self._pending_closes.get(ticket)
+            if entry is None:
+                entry = {"signal_id": signal_id, "reason": reason,
+                         "requested_at": time.time(), "attempts": 0}
+                self._pending_closes[ticket] = entry
+            entry["attempts"] = int(entry.get("attempts") or 0) + 1
+            entry["next_at"] = time.time() + self._retry_delay(entry["attempts"])
+
+    def _retry_pending_closes(self) -> None:
+        """盯著已要求平倉的部位，沒真的消失就再送一次。
+
+        2026-09-11 的教訓：五筆平倉指令 EA 全部收到、全部執行，券商全部以
+        「Market closed」退件（RetCode 10018）。我們這邊看到的只有「指令寫成功」，
+        於是把它們當成平完了 —— 部位就這樣抱著過週末。
+
+        `_close_position` 只回報「有沒有寫進 commands.json」，拿不到券商的結果，
+        所以唯一可靠的判準是：**它還在不在 positions.json 裡**。
+        """
+        with self._lock:
+            if not self._pending_closes:
+                return
+            pending = dict(self._pending_closes)
+
+        rows = self._get_positions(allow_none=True)
+        if rows is None:
+            return              # 讀不到就下一輪再說，不能當成「都平掉了」
+
+        live = set()
+        for row in rows:
+            try:
+                live.add(int(row.get("ticket") or 0))
+            except (TypeError, ValueError):
+                continue
+
+        now = time.time()
+        for ticket, entry in pending.items():
+            if ticket not in live:
+                with self._lock:
+                    self._pending_closes.pop(ticket, None)
+                logger.info("平倉確認：ticket=%s 已從 MT5 消失（試了 %s 次）",
+                            ticket, entry.get("attempts"))
+                continue
+            if now < float(entry.get("next_at") or 0):
+                continue
+            attempts = int(entry.get("attempts") or 0)
+            waited = now - float(entry.get("requested_at") or now)
+            level = logger.warning if attempts % 10 == 0 else logger.info
+            level("部位 %s 要求平倉後 %.0f 秒還在（第 %s 次重送）：%s",
+                  ticket, waited, attempts + 1, entry.get("reason"))
+            if self._close_position(ticket):
+                self._register_pending_close(
+                    ticket, str(entry.get("signal_id") or ""),
+                    str(entry.get("reason") or ""))
+            else:
+                # 指令槽忙 —— 不算一次嘗試，下一輪馬上再試
+                with self._lock:
+                    live_entry = self._pending_closes.get(ticket)
+                    if live_entry is not None:
+                        live_entry["next_at"] = now + 2.0
 
     def cancel_pending_order(self, signal_id: str, reason: str = "line_reply") -> bool:
         """Handle one exact LINE cancellation without ever closing a position.
@@ -1449,6 +1529,8 @@ class TradeManager:
                 self._check_vanished_orders()
                 # 掛單掛太久還沒進場就自動撤掉
                 self._check_unfilled_timeout()
+                # 已要求平倉但還沒真的消失的部位，再送一次
+                self._retry_pending_closes()
 
                 # Periodically clean up finished orders to prevent memory growth
                 now = time.time()
