@@ -139,9 +139,19 @@ TIER_ORDER = ["trial", "basic", "advanced", "flagship"]
 # 上限 —— 排程表是手動維護的清單, 超過十來組就沒人管得動了。
 SCHEDULE_LIMIT = 10
 
-# session 多久沒動就失效 (秒)。會員端每秒輪詢, 正常使用不會碰到;
-# 這是為了讓「電腦直接關機、沒有登出」的 session 不要卡住帳號一輩子。
-SESSION_IDLE_TIMEOUT = 24 * 3600
+# session 多久沒動就失效 (秒)。
+#
+# 原本是 24 小時, 理由寫著「讓『電腦直接關機、沒有登出』的 session 不要卡住
+# 帳號一輩子」—— 但那個理由站不住腳: **新裝置登入本來就會覆蓋舊 session**,
+# 名額從來不需要靠逾時騰出來。它實際上只做了一件事: 掛機電腦離線超過一天,
+# session 就作廢, 而會員端沒有存密碼、也不會自己重登 —— 於是要人到場打一次
+# 密碼才會恢復。對一套設計成無人值守的系統, 那是致命的。
+#
+# 2026-09-21 實際事故: 斷網後重開機, 本機六台掛機端全部卡在登入畫面, 七台
+# MT5 只有四台被拉起來, 超高頻訊號源已經靜靜死了 6.8 天 —— 沒有任何一行日誌
+# 說不對勁。30 天久到任何合理的停機(連假停電、搬家、換 ISP)都撐得過, 又不至
+# 於真的一輩子。
+SESSION_IDLE_TIMEOUT = 30 * 24 * 3600
 
 # last_seen_at 最短寫入間隔 (秒)。見 resolve_session 裡的說明 —— 這是把
 # 「每次輪詢都寫磁碟」降成「每 30 秒才寫一次」的節流閥。
@@ -1149,9 +1159,17 @@ class MemberStore:
                 return None, "expired"
             last = float(row[seen_col] or 0)
             if last and now - last > SESSION_IDLE_TIMEOUT:
-                self._conn.execute(
-                    f"UPDATE members SET {tok_col} = NULL WHERE id = ?", (row["id"],))
-                self._conn.commit()
+                # **不要把 token 清掉。** 清掉之後下一次查詢就找不到這一列,
+                # 回的會是 session_invalid —— 而會員端把那個碼顯示成「此帳號已
+                # 在其他裝置登入」, 人就跑去找一台根本不存在的第二台電腦。
+                #
+                # 2026-09-21 就是這樣: /signals 那一拍把 token 清掉並回
+                # session_expired, 緊接著的 /auth/me 拿同一個 token 已經查不到,
+                # 變成 session_invalid, 面板上寫的是「已在其他裝置登入」。
+                #
+                # 留著 token, 每一次都穩定回 session_expired(「登入逾時, 請重新
+                # 登入」), 那才是真正的原因。名額不必靠這裡騰 —— 新裝置登入會
+                # 直接覆蓋。
                 return None, "session_expired"
 
             # ── 用量計時(進階版以上)──────────────────────────────────────

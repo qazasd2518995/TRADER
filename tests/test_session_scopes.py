@@ -49,6 +49,15 @@ class _Base(unittest.TestCase):
         member, _err = self.store.resolve_session(token)
         return member is not None
 
+    def outlive_the_idle_timeout(self):
+        """把會籍延長到遠超過閒置逾時。
+
+        要測「連線逾時」就得把時鐘往前撥超過 SESSION_IDLE_TIMEOUT，但預設的
+        basic 是 30 天日曆制 —— 撥過去的同時會籍也到期了，resolve_session 會
+        先回 expired，測到的根本不是想測的東西。
+        """
+        self.store.extend("alice", 3650)
+
 
 class TwoSlotsDoNotFightTests(_Base):
     """第一件事：手機登入不能把電腦踢下線。"""
@@ -221,6 +230,7 @@ class SelfChangePasswordTests(_Base):
 
 class IdleTimeoutIsPerSlotTests(_Base):
     def test_idle_console_does_not_expire_the_agent(self):
+        self.outlive_the_idle_timeout()
         agent = self.login(M.SCOPE_AGENT, "電腦")
         console = self.login(M.SCOPE_CONSOLE, "手機")
         now = time.time()
@@ -235,6 +245,63 @@ class IdleTimeoutIsPerSlotTests(_Base):
             self.assertEqual(err, "session_expired")
             self.assertIsNotNone(self.store.resolve_session(agent)[0],
                                  "手機閒置過期不該連累還在跟單的電腦")
+
+
+class IdleExpiryStaysReadableTests(_Base):
+    """逾時之後要一直回 session_expired，不能變成 session_invalid。
+
+    2026-09-21 實際事故：斷網重開機之後，本機六台掛機端全部顯示「此帳號已在
+    其他裝置登入」—— 根本沒有第二台。真正發生的是：
+
+      1. /signals 那一拍發現閒置超時，把 token 清成 NULL，回 session_expired
+      2. 緊接著的 /auth/me 拿同一個 token 去查，已經查不到那一列
+      3. 於是回 session_invalid，而會員端把它顯示成「已在其他裝置登入」
+
+    面板上寫的原因跟實際原因完全不同，人就跑去找一台不存在的電腦。逾時的
+    token 必須留著，這樣每一次都會得到同一個、而且是正確的答案。
+    """
+
+    def _expired(self, token):
+        with mock.patch.object(M.time, "time",
+                               return_value=time.time() + M.SESSION_IDLE_TIMEOUT + 60):
+            return self.store.resolve_session(token)
+
+    def test_repeated_calls_keep_saying_expired(self):
+        self.outlive_the_idle_timeout()
+        token = self.login(M.SCOPE_AGENT, "電腦")
+        for attempt in range(3):
+            member, err = self._expired(token)
+            self.assertIsNone(member)
+            self.assertEqual(err, "session_expired",
+                             f"第 {attempt + 1} 次查詢變成了 {err}")
+
+    def test_expiry_does_not_destroy_the_token(self):
+        """token 被清掉，會員端就再也問不出「為什麼」。"""
+        self.outlive_the_idle_timeout()
+        token = self.login(M.SCOPE_AGENT, "電腦")
+        self._expired(token)
+        row = self.store.get_member("alice")
+        self.assertTrue(row["online"] is not None)      # 這一列還在
+        # 直接確認 token 欄位沒被清空
+        with self.store._lock:                           # noqa: SLF001
+            found = self.store._conn.execute(            # noqa: SLF001
+                "SELECT session_token FROM members WHERE username = ?",
+                ("alice",)).fetchone()
+        self.assertEqual(found["session_token"], token)
+
+    def test_a_new_device_still_takes_over(self):
+        """名額不必靠逾時騰出來 —— 這是把逾時拉長到 30 天的前提。"""
+        old_token = self.login(M.SCOPE_AGENT, "舊電腦")
+        new_token = self.login(M.SCOPE_AGENT, "新電腦")
+        self.assertNotEqual(old_token, new_token)
+        member, err = self.store.resolve_session(old_token)
+        self.assertIsNone(member, "舊裝置應該已經被踢掉")
+        self.assertEqual(err, "session_invalid")
+        self.assertIsNotNone(self.store.resolve_session(new_token)[0])
+
+    def test_timeout_is_long_enough_to_survive_a_long_outage(self):
+        """24 小時太短：連假停電、搬家、換 ISP 都會讓無人值守的掛機端作廢。"""
+        self.assertGreaterEqual(M.SESSION_IDLE_TIMEOUT, 7 * 24 * 3600)
 
 
 class PublicViewTests(_Base):
