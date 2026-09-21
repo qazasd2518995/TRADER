@@ -2587,6 +2587,29 @@ def make_handler(state: LauncherState):
                 # 社群播報自我測試。UI 自動化會被 LINE 改版、視窗被關、螢幕
                 # 鎖定弄壞，而這條路壞掉時只會在下一筆真訊號漏掉 —— 要有一個
                 # 隨時能主動確認「現在還發得出去」的方法。
+                if parsed.path == "/api/line-desktop-check":
+                    # 唯讀自檢：只確認「聊天視窗開著、找得到輸入框」，**不送訊息**。
+                    #
+                    # 原本要驗證社群播報只有 /api/line-desktop-test 一條路，而它
+                    # 會真的發一則訊息到會員群 —— 於是每檢查一次就在群裡留一則
+                    # 測試訊息。要人去收回，而且收回本身也是一則動態。
+                    if state.role != "central":
+                        _json_response(self, 403, {"ok": False, "error": "central_only"})
+                        return
+                    sender = state.line_desktop
+                    if sender is None:
+                        _json_response(self, 400, {"ok": False,
+                                                   "error": "line_desktop_disabled"})
+                        return
+                    try:
+                        result = sender.preflight()
+                    except ImportError as exc:
+                        _json_response(self, 200, {"ok": False,
+                                                   "reason": f"缺少 uiautomation：{exc}"})
+                        return
+                    _json_response(self, 200, {"ok": result.ok, "reason": result.reason,
+                                               "window": sender.window_title})
+                    return
                 if parsed.path == "/api/line-desktop-test":
                     if state.role != "central":
                         _json_response(self, 403, {"ok": False, "error": "central_only"})
