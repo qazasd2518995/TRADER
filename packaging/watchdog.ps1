@@ -91,12 +91,38 @@ Ensure-Alive-ByPath "$env:LOCALAPPDATA\LINE\bin\current\LINE.exe" $null "LINE"
 # 裡那張掛著 EA 的圖表不見了,於是行程在跑、帳號連著、橋接檔卻停在開機那一刻。
 # 所以重啟一律帶 /config: 把 EA 釘回圖表上。代號不寫死:直接讀那台自己的
 # symbol_info.json(EA 上次用的代號),換券商換帳號都不必改這支程式。
+# 橋接檔多久沒更新就算「行程活著但 EA 死了」。EA 每 2 秒寫一次 account_info.json,
+# 180 秒已經是天荒地老。但終端剛啟動時要連券商、同步商品清單,所以只有在那個行程
+# 已經跑超過 GRACE 秒之後才認定。
+$MT5_STALE_SECONDS = 180
+$MT5_START_GRACE   = 300
+
 function Start-MT5($dir, $label) {
   $exe = Join-Path $dir 'terminal64.exe'
   if (-not (Test-Path $exe)) { Log ("找不到終端,跳過: " + $exe); return }
-  $alive = @(Get-CimInstance Win32_Process -Filter "Name='terminal64.exe'" |
-             Where-Object { $_.ExecutablePath -eq $exe }).Count -gt 0
-  if ($alive) { return }
+  $proc = @(Get-CimInstance Win32_Process -Filter "Name='terminal64.exe'" |
+            Where-Object { $_.ExecutablePath -eq $exe })
+  if ($proc.Count -gt 0) {
+    # **「行程活著」不等於「橋接活著」。** 只看行程的話,這一類故障永遠不會自己好:
+    # 2026-10-09 來源帳戶那台開機後跑了 2 小時 17 分,券商連著、圖表正常,但 EA
+    # 從來沒載入,橋接檔停在開機那一刻 —— 守護看到行程在就直接 return,放著不管。
+    $stale = $false
+    try {
+      $acct = Join-Path $dir 'MQL5\Files\account_info.json'
+      $up = ((Get-Date) - $proc[0].CreationDate).TotalSeconds
+      if ($up -gt $MT5_START_GRACE) {
+        if (-not (Test-Path $acct)) { $stale = $true }
+        else {
+          $age = ((Get-Date) - (Get-Item $acct).LastWriteTime).TotalSeconds
+          if ($age -gt $MT5_STALE_SECONDS) { $stale = $true }
+        }
+      }
+    } catch {}
+    if (-not $stale) { return }
+    Log ("$label 的行程活著但橋接檔已停擺,強制重啟")
+    foreach ($p in $proc) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Seconds 5
+  }
   $startArgs = @('/portable')
   $sym = $null
   try {
@@ -110,7 +136,12 @@ function Start-MT5($dir, $label) {
     $ini = Join-Path $dir 'watchdog_start.ini'
     # 這個檔案**不含任何帳密** —— 登入由 MT5 自己記住(KeepPrivate)。
     $body = "[Experts]`r`nEnabled=1`r`nAccount=1`r`nProfile=1`r`n`r`n[StartUp]`r`nExpert=MT5_File_Bridge_Enhanced`r`nSymbol=$sym`r`nPeriod=M1"
-    try { $body | Out-File -FilePath $ini -Encoding ascii -ErrorAction Stop; $startArgs += "/config:$ini" } catch {}
+    # 路徑**一定要加引號**。來源帳戶在 "C:\Program Files\MetaTrader 5",
+    # 不加引號 PowerShell 會把它拆成三個參數,MT5 只收到 /config:C:\Program ——
+    # 終端日誌寫的是 `cannot load config "C:\Program" at start`,設定檔整個沒生效,
+    # EA 從沒被掛上。2026-10-09 就是這樣讓超高頻訊號源靜靜死了兩小時。
+    # D:\MT5-N 沒有空白,所以那六台看起來都好 —— 只有這台中獎,更難發現。
+    try { $body | Out-File -FilePath $ini -Encoding ascii -ErrorAction Stop; $startArgs += ('/config:"' + $ini + '"') } catch {}
   }
   Start-Process -FilePath $exe -WorkingDirectory $dir -ArgumentList $startArgs
   Log ("重啟 " + $label + $(if ($sym) { " (EA 釘回 $sym)" } else { " (沒有代號資訊,只帶 /portable)" }))
