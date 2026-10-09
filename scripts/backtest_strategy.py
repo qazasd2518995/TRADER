@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 """自有策略回測 —— 區間逆勢限價，跑歷史資料。
 
+⚠⚠ 2026-10-09：這支的 run() 有事後選擇偏誤，產出的績效實盤做不到。不要再用它下結論。
+   它在每一根 K 線都問「現在掛的單，未來 4 小時內會不會成交」，沒成交就換下一根
+   的單 —— 換單的前提是已經知道未來 4 小時都不會成交。效果是：在多張價位不同、
+   時間重疊的掛單之間，事先挑中「比較深、而且確定會被碰到」的那張。
+   同一策略同一資料（XAUUSDm M15，2022-07 起 4 年）：這支 +139 USD/手、2,084 筆；
+   實盤可執行的版本（掛單凍結 4 小時、到期才重掛）−58 USD/手、1,000 筆。
+   2026-09-04 研究的 +404、以及 09-04 之後五週的 +249，都是這個偏誤造成的。
+   正確的實作與完整驗證流程：copy_trader/quant/ + scripts/quant_backtest.py。
+
     python scripts/backtest_strategy.py                    # 預設參數，含樣本外
     python scripts/backtest_strategy.py --tf M15 --sweep lookback
     python scripts/backtest_strategy.py --walk             # 滾動前進驗證
@@ -61,7 +70,11 @@ def bar_seconds(bars: Sequence[dict]) -> int:
 def run(bars: Sequence[dict], params: RangeFadeParams,
         rules: Optional[Rules] = None, *, start: int = 0,
         end: Optional[int] = None) -> List[Trade]:
-    """走過區間，回傳實際成交的每一筆。"""
+    """走過區間，回傳實際成交的每一筆。
+
+    ⚠ 有事後選擇偏誤（見檔頭），結果不可信。下面「沒成交就 i += 1」那一步用到了
+    未來 4 小時的資訊。保留這支只為了能重現 2026-09-04 的舊數字。
+    """
     rules = rules or Rules(pending_hours=params.pending_hours,
                            max_hold_hours=params.max_hold_hours,
                            partials=(1.0,), breakeven=False)
